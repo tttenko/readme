@@ -1,19 +1,33 @@
 /**
- * Тестовая конфигурация, переопределяющая CacheProps для интеграционных тестов.
- * Делает значения (имена кэшей/TTL/CRON) стабильными и независимыми от prod-конфига.
+ * Базовый класс для интеграционных тестов кэша.
+ * Инкапсулирует общий доступ к CacheManager и абстракции управления временем.
  */
-@TestConfiguration
-public class SchedulerConfig {
+public abstract class AbstractTTLAndAllCleanCacheTest {
+
+  /** Доступ к кэшам в тестах. */
+  protected final CacheManager cacheManager;
+
+  /** Возможность вызывать плановую очистку в тестах. */
+  @Setter
+  protected CacheEvictScheduler cacheEvictScheduler;
 
   /**
-   * Тестовые свойства кэша с аннотацией @Primary,
-   * чтобы перекрыть продовую конфигурацию.
-   *
-   * @return тестовый CacheProps
+   * @param cacheManager менеджер кэшей, предоставляемый контекстом Spring
    */
-  @Bean
-  @Primary
-  public CacheProps cacheProps() {
-    return new CacheProps(List.of("users"), 5, "0 0 3 * * *", "Europe/Moscow");
+  protected AbstractTTLAndAllCleanCacheTest(CacheManager cacheManager) {
+    this.cacheManager = cacheManager;
   }
+
+  /**
+   * Продвинуть тестовое время на указанное число минут.
+   * Реализация зависит от конкретного тикера/реализации кэша.
+   *
+   * @param minutes на сколько минут продвинуть время
+   */
+  protected abstract void advanceTime(long minutes);
+
+  /**
+   * @return ожидаемый TTL (в минутах), с которым настроен кэш в тесте
+   */
+  protected abstract long getConfiguredTTLMinutes();
 }
