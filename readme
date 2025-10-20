@@ -244,3 +244,12 @@ public class TerBankService extends AbstractMasterDataRequestService {
         return dto.getTbCode(); // <— предполагается геттер tbCode
     }
 }
+
+public static final String TB_BY_CODE   = "tb_by_code";
+public static final String TB_ALL       = "tb_all";
+public static final String TB_REQ_BY_CODE = "tb_req_by_code";
+public static final String TB_REQ_ALL     = "tb_req_all";
+
+public static final List<String> NAMES = List.of(
+    TB_BY_CODE, TB_ALL, TB_REQ_BY_CODE, TB_REQ_ALL
+);
