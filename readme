@@ -253,3 +253,210 @@ public static final String TB_REQ_ALL     = "tb_req_all";
 public static final List<String> NAMES = List.of(
     TB_BY_CODE, TB_ALL, TB_REQ_BY_CODE, TB_REQ_ALL
 );
+
+----------------------------------------------------------------------------------ОБЪЯСНЕНИЕ---------------------------------------------------------------------------------------------------
+Ниже — подробное разъяснение того, как работает TerBankService в новой реализации с Spring Cache (Caffeine): что именно кэшируется, как сервис ходит в кэш, зачем батчи, и за что отвечает каждый метод.
+
+1) Что кэшируем и какими ключами
+
+Мы используем 4 кэша (каждый — отдельный cacheName у Spring Cache):
+
+Кэш	Назначение	Ключ (key)	Значение (value)
+tb_by_code	Один банк по коду	tbCode	TerBankDto
+tb_all	Все банки	'ALL'	List<TerBankDto>
+tb_req_by_code	Один банк с реквизитами	tbCode	TerBankWithRequisiteDto
+tb_req_all	Все банки с реквизитами	'ALL'	List<TerBankWithRequisiteDto>
+
+TTL/размер задаются в CacheConfig через Caffeine.newBuilder() (например, expireAfterWrite(10m), maximumSize(10_000), recordStats()).
+
+2) Общая идея взаимодействия с кэшем
+
+Для одного кода — используем метод с @Cacheable: при первом запросе делает сетевой вызов и кладёт результат в кэш; при повторном — отдаёт из памяти.
+
+Для списка кодов — работаем батчем:
+
+Сначала вытаскиваем из кэша всё, что уже есть (хиты).
+
+Собираем только промахи (отсутствующие коды).
+
+Если промахи есть — одним сетевым запросом грузим недостающее и размазываем в кэш по ключам.
+
+Возвращаем объединённый результат в порядке входных кодов.
+
+Для «все банки» — отдельные методы с @Cacheable на ключ "'ALL'". Они не связаны с по-кодовыми кэшами: это осознанно (чёткая изоляция кэш-линий).
+
+3) Почему используем и @Cacheable, и программное API CacheManager
+Зачем @Cacheable
+
+Методы:
+
+getByCode(String) → @Cacheable(cacheNames = TB_BY_CODE, key = "#code")
+
+getRequisiteByCode(String) → @Cacheable(cacheNames = TB_REQ_BY_CODE, key = "#code")
+
+getAllBanks() → @Cacheable(cacheNames = TB_ALL, key = "'ALL'")
+
+getAllBanksWithRequisite() → @Cacheable(cacheNames = TB_REQ_ALL, key = "'ALL'")
+
+Аннотации дают «ленивую» загрузку и простую инвалидацию по TTL, без ручного кода.
+
+Зачем программный доступ через CacheManager
+
+Внутри класса вызов this.getByCode(code) не задействует AOP‑прокси (@Cacheable не сработает, это «self‑invocation»). А нам нужно:
+
+одним запросом догружать несколько кодов (минимум сетевых вызовов),
+
+руками положить результаты в кэш для всех недостающих ключей.
+
+Поэтому в батч‑методах мы работаем так:
+
+Cache cache = cacheManager.getCache(TB_BY_CODE);
+TerBankDto hit = cache.get(code, TerBankDto.class) // достать из кэша
+...
+cache.put(code, dto); // положить в кэш результаты массовой загрузки
+
+4) Разбор методов (кто за что отвечает)
+Публичные методы (вызывает контроллер)
+
+ResultObj<List<TerBankDto>> getTerBank(List<String> tbCodes)
+
+Если список пуст → getAllBanks() (кэш tb_all).
+
+Если список не пуст → getBanksByCodesBatch(normalize(tbCodes)) (батч‑логика + кэш tb_by_code).
+
+Оборачивает в ResultObj (как у тебя делалось в контроллере через handleBankRequest).
+
+ResultObj<List<TerBankWithRequisiteDto>> getTerBankRequisite(List<String> tbCodes)
+
+Аналогично, но с реквизитами и кэшами tb_req_*.
+
+Эти методы сами не кэшируются: они агрегируют результаты кэширующих методов и/или батч‑дозагрузку.
+
+Кэширующие методы «одиночки» и «все»
+
+@Cacheable TB_ALL → List<TerBankDto> getAllBanks()
+Делает «полный» запрос к МД и кладёт результат в tb_all под ключом ALL.
+
+@Cacheable TB_REQ_ALL → List<TerBankWithRequisiteDto> getAllBanksWithRequisite()
+
+@Cacheable TB_BY_CODE → TerBankDto getByCode(String code)
+
+@Cacheable TB_REQ_BY_CODE → TerBankWithRequisiteDto getRequisiteByCode(String code)
+
+Плюс: можно включить sync = true на одиночных методах, чтобы под одним ключом одновременно грузил один поток:
+
+@Cacheable(cacheNames = TB_BY_CODE, key = "#code", sync = true)
+
+Батч‑методы (приватные; оптимизируют сеть)
+
+List<TerBankDto> getBanksByCodesBatch(List<String> codes)
+
+Достаёт хиты из tb_by_code.
+
+Собирает промахи в miss.
+
+loadBanksByCodes(miss) — один сетевой вызов.
+
+Результаты кладёт в tb_by_code (cache.put(code, dto)).
+
+Склеивает хиты и загруженное, возвращает в исходном порядке входа.
+
+List<TerBankWithRequisiteDto> getBanksRequisiteByCodesBatch(List<String> codes)
+Точно так же, но для tb_req_by_code.
+
+Загрузчики (приватные; только сеть → DTO)
+
+loadBanksByCodes(List<String> codes)
+Вызывает твой requestDataWithAttribute(..., codes, ...) и маппер terBankMapper.
+
+loadBanksRequisiteByCodes(List<String> codes)
+То же для реквизитов и terBankWithRequisiteMapper.
+
+Утилиты (приватные; чистота кода)
+
+normalize(List<String>) — фильтрует null/"", делает distinct() с сохранением порядка.
+→ гарантирует стабильные и детерминированные ключи кэша.
+
+extractTbCode(dto) — единое место, где тянем tbCode из DTO (если поле переименуют — правим тут, а не по проекту).
+
+Почему много приватных методов?
+SOLID/читаемость/переиспользование:
+
+Чётко отделены задачи: «достать из кэша», «сходить в сеть», «положить в кэш», «нормализовать вход».
+
+Легко точечно тестировать (через публичные), расширять (tb_by_inn/tb_by_bic) и менять мапперы/загрузку, не трогая кэш‑логику.
+
+5) Жизненный цикл запроса — пошагово
+/tb?tbCodes=044525225,0123456789
+
+Контроллер → getTerBank(codes).
+
+normalize() → ["044525225","0123456789"].
+
+getBanksByCodesBatch():
+
+cache.get("044525225") → промах (первый раз).
+
+cache.get("0123456789") → промах.
+
+miss = ["044525225","0123456789"] → ОДИН вызов loadBanksByCodes(miss).
+
+Разложили put(code, dto) для каждого результата → теперь в кэше два хита.
+
+Вернули [dto1, dto2] (в порядке входа).
+
+Повторный запрос этими же кодами — оба хита, сети нет.
+
+/tb (без параметров)
+
+Контроллер → getTerBank(empty).
+
+Вызывает getAllBanks() (кэш tb_all, ключ ALL).
+
+Первый раз — сетевой вызов → положили в кэш; дальше — хиты.
+
+6) Важные нюансы
+
+Null‑значения. По умолчанию Spring Cache не кэширует null. В наших одиночных методах, если банк не найден, вернётся null и он не будет кэширован — повторные запросы к «плохому» коду снова пойдут в сеть. Если хотите кэшировать «не найдено», включите CaffeineCacheManager.setAllowNullValues(true) или храните «пустой» DTO/маркер, и добавьте unless в @Cacheable при необходимости.
+
+Согласованность tb_all и tb_by_code. Кэши независимы. Загрузка «всех» не прогревает по‑кодовые ключи (и наоборот). Это упрощает логику и исключает «сюрпризы» при инвалидации. Если нужен автопрогрев по кодам после getAllBanks() — можно в конце метода пройтись по списку и сделать cache.put(dto.getTbCode(), dto).
+
+Параллельные запросы к одному коду. Добавьте sync = true к @Cacheable одиночек, чтобы несколько потоков не дублировали загрузку одного и того же ключа.
+
+Метрики. Включён recordStats(). При желании можно чтить статистику Caffeine:
+
+var nativeCache = (com.github.benmanes.caffeine.cache.Cache<?, ?>)
+    ((org.springframework.cache.caffeine.CaffeineCache) cacheManager.getCache(TB_BY_CODE)).getNativeCache();
+log.info("hitRate={}", nativeCache.stats().hitRate());
+
+
+Инвалидация. Основная — TTL. Плюс у тебя есть CacheEvictScheduler на cron, который очищает все кэши через CacheManager (админ. операция/интеграционные тесты).
+
+7) Почему батчи — это важно
+
+Без батча сервис при списке из N кодов сделал бы N сетевых запросов (по одному на код). Батч‑подход:
+
+уменьшает сетевые RTT до 1 запроса на все промахи;
+
+снижает нагрузку на внешний сервис МД;
+
+поддерживает порядок в ответе, соответствующий входным кодам;
+
+не ломает семантику кэширования — хиты забираем из памяти, промахи догружаем и кладём в кэш для будущих обращений.
+
+8) Краткий «чит‑лист» по методам
+
+getTerBank(...) / getTerBankRequisite(...) — оркестраторы (выбор ветки all/batch, формирование ResultObj).
+
+getAllBanks() / getAllBanksWithRequisite() — @Cacheable «все» (ключ ALL).
+
+getByCode(code) / getRequisiteByCode(code) — @Cacheable одиночные (ключ code).
+
+getBanksByCodesBatch(codes) / getBanksRequisiteByCodesBatch(codes) — батч‑дозагрузка недостающих ключей + ручное cache.put.
+
+loadBanksByCodes(...) / loadBanksRequisiteByCodes(...) — один сетевой запрос к МД + маппинг.
+
+normalize(...), extractTbCode(...) — служебные; держат ключи детерминированными и код аккуратным.
+
+Если захочешь — покажу, как дополнительно «нагреть» tb_by_code внутри getAllBanks() и добавлю sync=true + unit‑тесты на батчи/хиты/промахи.
+
