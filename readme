@@ -85,3 +85,27 @@ public abstract class AbstractTTLAndAllCleanCacheTest {
   public CacheProps cacheProps() {
     return new CacheProps(List.of("users"), 5, "0 0 3 * * *", "Europe/Moscow");
   }
+
+
+// Получаем сам кэш
+    Cache cache = cacheManager.getCache("users");
+    assertThat(cache).isNotNull();
+
+    // Кладём значение
+    cache.put("42", "test-user");
+
+    // Проверяем, что значение записалось корректно
+    var valueBefore = cache.get("42");
+    assertThat(valueBefore).isNotNull();
+    assertThat(valueBefore.get()).isEqualTo("test-user");
+
+    // TTL ещё не истёк, значение должно быть на месте
+    advanceTime(getConfiguredTTLMinutes() - 1);
+    var stillThere = cache.get("42");
+    assertThat(stillThere).isNotNull();
+    assertThat(stillThere.get()).isEqualTo("test-user");
+
+    // TTL истёк — значение должно пропасть
+    advanceTime(2);
+    var expired = cache.get("42");
+    assertThat(expired).isNull();
