@@ -22,3 +22,17 @@ private final AtomicLong nanos = new AtomicLong();
     public void advanceMinutes(long minutes) {
       nanos.addAndGet(Duration.ofMinutes(minutes).toNanos());
     }
+
+public abstract class AbstractTTLAndAllCleanCacheTest {
+
+  protected final CacheManager cacheManager;
+  @Setter
+  protected com.example.scheduler.CacheEvictScheduler cacheEvictScheduler;
+
+  protected AbstractTTLAndAllCleanCacheTest(CacheManager cacheManager) {
+    this.cacheManager = cacheManager;
+  }
+
+  protected abstract void advanceTime(long minutes);
+  protected abstract long getConfiguredTTLMinutes();
+}
