@@ -1,1 +1,38 @@
+/**
+ * Конфигурация кэширования приложения.
+ * Настраивает Caffeine и регистрирует CacheManager с заданными именами кэшей.
+ */
+@Configuration
+@EnableCaching
+@EnableConfigurationProperties(CacheProps.class)
+public class CacheConfig {
+
+  /**
+   * Строит общий Caffeine-спецификатор.
+   *
+   * @param props свойства кэша (TTL, имена и т.д.)
+   * @return настроенный builder Caffeine
+   */
+  @Bean
+  public Caffeine<Object, Object> caffeineSpec(CacheProps props) {
+    return Caffeine.newBuilder()
+        .maximumSize(10_000)
+        .expireAfterWrite(Duration.ofMinutes(props.getTtlMinutes()))
+        .recordStats();
+  }
+
+  /**
+   * Регистрирует CacheManager с указанными кэшами и общей Caffeine-настройкой.
+   *
+   * @param caffeine общая спецификация Caffeine
+   * @param props свойства кэша с именами кэшей
+   * @return CacheManager для Spring Cache
+   */
+  @Bean
+  public CacheManager cacheManager(Caffeine<Object, Object> caffeine, CacheProps props) {
+    var cacheManager = new CaffeineCacheManager(props.getNames().toArray(String[]::new));
+    cacheManager.setCaffeine(caffeine);
+    return cacheManager;
+  }
+}
 
