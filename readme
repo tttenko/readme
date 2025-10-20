@@ -1,18 +1,246 @@
+package com.example.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.Cache;
+import org.springframework.cache.CacheManager;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
+
+import java.util.*;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import static com.example.config.CacheConst.TB_ALL;
+import static com.example.config.CacheConst.TB_BY_CODE;
+import static com.example.config.CacheConst.TB_REQ_ALL;
+import static com.example.config.CacheConst.TB_REQ_BY_CODE;
+
 /**
- * Проверяет, что метод плановой очистки (scheduledClearAllCaches)
- * вызывает фактическую очистку всех кэшей.
- * Тест не зависит от cron и таймзоны.
+ * Сервис ТерБанков с кешированием на Spring Cache (Caffeine).
+ * Кеши:
+ *  - tb_by_code: key = tbCode, value = TerBankDto
+ *  - tb_all:     key = 'ALL',  value = List<TerBankDto>
+ *  - tb_req_by_code: key = tbCode, value = TerBankWithRequisiteDto
+ *  - tb_req_all:     key = 'ALL',  value = List<TerBankWithRequisiteDto>
+ *
+ * Бизнес-методы getTerBank/getTerBankRequisite остаются теми же по сигнатуре —
+ * контроллер не меняем.
  */
-@Test
-void shouldInvokeScheduledClearAllCaches() {
-    // given
-    Cache cache = cacheManager.getCache("users");
-    cache.put("123", "scheduled-test");
-    assertThat(cache.get("123").get()).isEqualTo("scheduled-test");
+@Slf4j
+@Service
+public class TerBankService extends AbstractMasterDataRequestService {
 
-    // when
-    scheduler.scheduledClearAllCaches();
+    private static final String TB_CODE = "tbCode";
 
-    // then
-    assertThat(cache.get("123")).isNull();
+    private final CacheManager cacheManager;
+    private final TerBankMapper terBankMapper;
+    private final TerBankWithRequisiteMapper terBankWithRequisiteMapper;
+
+    public TerBankService(final SearchRequestProperties properties,
+                          final HttpRequestHelper httpRequestHelper,
+                          final ObjectMapper mapper,
+                          final CacheManager cacheManager,
+                          final TerBankMapper terBankMapper,
+                          final TerBankWithRequisiteMapper terBankWithRequisiteMapper) {
+        super(properties, httpRequestHelper, mapper);
+        this.cacheManager = Objects.requireNonNull(cacheManager);
+        this.terBankMapper = Objects.requireNonNull(terBankMapper);
+        this.terBankWithRequisiteMapper = Objects.requireNonNull(terBankWithRequisiteMapper);
+    }
+
+    // -------- Публичный API, который дергает контроллер --------
+
+    /** Список ТБ по кодам (или все, если список пуст). */
+    @Nonnull
+    public ResultObj<List<TerBankDto>> getTerBank(@Nullable final List<String> tbCodes) {
+        final List<TerBankDto> data = CollectionUtils.isEmpty(tbCodes)
+                ? getAllBanks()                                  // кэш tb_all
+                : getBanksByCodesBatch(normalize(tbCodes));      // кэш tb_by_code + дозагрузка
+        return getSuccessResponse(data);
+    }
+
+    /** Список ТБ с реквизитами по кодам (или все, если список пуст). */
+    @Nonnull
+    public ResultObj<List<TerBankWithRequisiteDto>> getTerBankRequisite(@Nullable final List<String> tbCodes) {
+        final List<TerBankWithRequisiteDto> data = CollectionUtils.isEmpty(tbCodes)
+                ? getAllBanksWithRequisite()                         // кэш tb_req_all
+                : getBanksRequisiteByCodesBatch(normalize(tbCodes)); // кэш tb_req_by_code + дозагрузка
+        return getSuccessResponse(data);
+    }
+
+    // -------- Кэширующие методы --------
+
+    /** Кэш «все ТБ». */
+    @Cacheable(cacheNames = TB_ALL, key = "'ALL'")
+    @Nonnull
+    public List<TerBankDto> getAllBanks() {
+        // В старом коде "allLoaded" делалось через null/empty. Здесь явно грузим все.
+        final GetItemsSearchResponse response = requestDataWithAttribute(
+                properties.getSlugValueForTerBank(),
+                null, // согласно прежней семантике: null -> «все»
+                SearchRequestProperties.Context.BOOK
+        );
+        return createResult(response, terBankMapper);
+    }
+
+    /** Кэш «все ТБ с реквизитами». */
+    @Cacheable(cacheNames = TB_REQ_ALL, key = "'ALL'")
+    @Nonnull
+    public List<TerBankWithRequisiteDto> getAllBanksWithRequisite() {
+        final GetItemsSearchResponse response = requestDataWithAttribute(
+                properties.getSlugValueForTerBank(),
+                null,
+                SearchRequestProperties.Context.BOOK
+        );
+        return createWithAttribute(response, terBankWithRequisiteMapper);
+    }
+
+    /** Кэш по одному коду (ТБ). */
+    @Cacheable(cacheNames = TB_BY_CODE, key = "#code")
+    @Nullable
+    public TerBankDto getByCode(@Nonnull final String code) {
+        final GetItemsSearchResponse response = requestDataWithAttribute(
+                properties.getSlugValueForTerBank(),
+                List.of(code),
+                SearchRequestProperties.Context.BOOK
+        );
+        final List<TerBankDto> list = createResult(response, terBankMapper);
+        return list.isEmpty() ? null : list.get(0);
+    }
+
+    /** Кэш по одному коду (ТБ с реквизитами). */
+    @Cacheable(cacheNames = TB_REQ_BY_CODE, key = "#code")
+    @Nullable
+    public TerBankWithRequisiteDto getRequisiteByCode(@Nonnull final String code) {
+        final GetItemsSearchResponse response = requestDataWithAttribute(
+                properties.getSlugValueForTerBank(),
+                List.of(code),
+                SearchRequestProperties.Context.BOOK
+        );
+        final List<TerBankWithRequisiteDto> list = createWithAttribute(response, terBankWithRequisiteMapper);
+        return list.isEmpty() ? null : list.get(0);
+    }
+
+    // -------- Batch-aware дозагрузка через CacheManager --------
+
+    /** Достаёт из кеша всё, чего хватает, недостающее грузит одним запросом и кладёт в кеш. */
+    @Nonnull
+    private List<TerBankDto> getBanksByCodesBatch(@Nonnull final List<String> codes) {
+        final Cache cache = cacheManager.getCache(TB_BY_CODE);
+        final Map<String, TerBankDto> hits = new LinkedHashMap<>();
+        final List<String> miss = new ArrayList<>();
+        for (String code : codes) {
+            final TerBankDto cached = (cache != null) ? cache.get(code, TerBankDto.class) : null;
+            if (cached != null) {
+                hits.put(code, cached);
+            } else {
+                miss.add(code);
+            }
+        }
+
+        final List<TerBankDto> loaded = miss.isEmpty() ? List.of() : loadBanksByCodes(miss);
+        if (cache != null) {
+            for (TerBankDto dto : loaded) {
+                final String code = extractTbCode(dto);
+                if (code != null) cache.put(code, dto);
+            }
+        }
+
+        // Собираем результат в исходном порядке входных кодов
+        final Map<String, TerBankDto> byCode = new HashMap<>();
+        hits.forEach((code, dto) -> byCode.put(code, dto));
+        for (TerBankDto dto : loaded) {
+            final String code = extractTbCode(dto);
+            if (code != null) byCode.put(code, dto);
+        }
+        return codes.stream()
+                .map(byCode::get)
+                .filter(Objects::nonNull)
+                .toList();
+    }
+
+    /** Аналогично batch для реквизитов. */
+    @Nonnull
+    private List<TerBankWithRequisiteDto> getBanksRequisiteByCodesBatch(@Nonnull final List<String> codes) {
+        final Cache cache = cacheManager.getCache(TB_REQ_BY_CODE);
+        final Map<String, TerBankWithRequisiteDto> hits = new LinkedHashMap<>();
+        final List<String> miss = new ArrayList<>();
+        for (String code : codes) {
+            final TerBankWithRequisiteDto cached = (cache != null) ? cache.get(code, TerBankWithRequisiteDto.class) : null;
+            if (cached != null) {
+                hits.put(code, cached);
+            } else {
+                miss.add(code);
+            }
+        }
+
+        final List<TerBankWithRequisiteDto> loaded = miss.isEmpty() ? List.of() : loadBanksRequisiteByCodes(miss);
+        if (cache != null) {
+            for (TerBankWithRequisiteDto dto : loaded) {
+                final String code = extractTbCode(dto);
+                if (code != null) cache.put(code, dto);
+            }
+        }
+
+        final Map<String, TerBankWithRequisiteDto> byCode = new HashMap<>();
+        hits.forEach((code, dto) -> byCode.put(code, dto));
+        for (TerBankWithRequisiteDto dto : loaded) {
+            final String code = extractTbCode(dto);
+            if (code != null) byCode.put(code, dto);
+        }
+        return codes.stream()
+                .map(byCode::get)
+                .filter(Objects::nonNull)
+                .toList();
+    }
+
+    // -------- Загрузка из внешнего источника (одним запросом) --------
+
+    @Nonnull
+    private List<TerBankDto> loadBanksByCodes(@Nonnull final List<String> codes) {
+        final GetItemsSearchResponse response = requestDataWithAttribute(
+                properties.getSlugValueForTerBank(),
+                codes,
+                SearchRequestProperties.Context.BOOK
+        );
+        return createResult(response, terBankMapper);
+    }
+
+    @Nonnull
+    private List<TerBankWithRequisiteDto> loadBanksRequisiteByCodes(@Nonnull final List<String> codes) {
+        final GetItemsSearchResponse response = requestDataWithAttribute(
+                properties.getSlugValueForTerBank(),
+                codes,
+                SearchRequestProperties.Context.BOOK
+        );
+        return createWithAttribute(response, terBankWithRequisiteMapper);
+    }
+
+    // -------- Утилиты --------
+
+    /** Нормализуем вход (trim, distinct, не-null/не-пустые). */
+    @Nonnull
+    private static List<String> normalize(@Nonnull final List<String> codes) {
+        return codes.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .distinct()
+                .collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    /** Извлечь tbCode из DTO. Подстрой при необходимости под фактическое поле. */
+    @Nullable
+    private static String extractTbCode(@Nonnull final TerBankDto dto) {
+        return dto.getTbCode(); // <— предполагается геттер tbCode
+    }
+
+    @Nullable
+    private static String extractTbCode(@Nonnull final TerBankWithRequisiteDto dto) {
+        return dto.getTbCode(); // <— предполагается геттер tbCode
+    }
 }
