@@ -1,0 +1,10 @@
+@Slf4j
+@Service
+public class TestCacheService {
+
+  @Cacheable(cacheNames = "users", key = "#id", unless = "#result == null", sync = true)
+  public String getUserById(String id) {
+    log.info("Loading user {}...", id);
+    return "User-" + id;
+  }
+}
