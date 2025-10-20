@@ -80,3 +80,8 @@ public abstract class AbstractTTLAndAllCleanCacheTest {
     scheduler.clearAllCachesNow();
     assertThat(cache.get("1")).isNull();
   }
+
+@Bean
+  public CacheProps cacheProps() {
+    return new CacheProps(List.of("users"), 5, "0 0 3 * * *", "Europe/Moscow");
+  }
