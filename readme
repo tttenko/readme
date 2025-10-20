@@ -1,21 +1,70 @@
 /**
- * Демонстрационный сервис, использующий Spring Cache.
- * Показывает базовую работу @Cacheable с ключом по идентификатору.
+ * Тестовая конфигурация Caffeine для интеграционных тестов.
+ * Подменяет время через Ticker и позволяет детерминированно проверять TTL.
  */
-@Slf4j
-@Service
-public class TestCacheService {
+@TestConfiguration
+public class CaffeineCacheConfigTest {
 
   /**
-   * Возвращает «псевдо-пользователя» по id.
-   * Первый вызов — вычисление и логирование; повторные — из кэша "users".
+   * Тестовый тикер: управляемые «наносекунды» вместо системных часов.
    *
-   * @param id идентификатор пользователя
-   * @return строка с префиксом "User-<id>"
+   * @return подставной Ticker
    */
-  @Cacheable(cacheNames = "users", key = "#id", unless = "#result == null")
-  public String getUserById(String id) {
-    log.info("Loading user {}...", id);
-    return "User-" + id;
+  @Bean
+  public AutoCleaningFakeTicker fakeTicker() {
+    return new AutoCleaningFakeTicker();
   }
+
+  /**
+   * Caffeine с тестовым тикером и TTL из свойств.
+   *
+   * @param fakeTicker управляемый тикер
+   * @return builder Caffeine для тестов
+   */
+  @Bean
+  public Caffeine<Object, Object> caffeine(AutoCleaningFakeTicker fakeTicker) {
+    return Caffeine.newBuilder()
+        .expireAfterWrite(Duration.ofMinutes(ttlMinutes))
+        .ticker(fakeTicker)
+        .recordStats();
+  }
+
+  /**
+   * Тестовый CacheManager с минимальным набором кэшей.
+   *
+   * @param caffeine общая тестовая конфигурация
+   * @return CacheManager для тестов
+   */
+  @Bean
+  public CacheManager cacheManager(Caffeine<Object, Object> caffeine) {
+    var cacheManager = new CaffeineCacheManager("users");
+    cacheManager.setCaffeine(caffeine);
+    return cacheManager;
+  }
+
+  /**
+   * Управляемый тикер для Caffeine в тестах.
+   * Позволяет искусственно «проматывать» время без ожиданий.
+   */
+  public static class AutoCleaningFakeTicker implements Ticker {
+    private final AtomicLong nanos = new AtomicLong();
+
+    /** @return текущее «виртуальное» время в наносекундах */
+    @Override
+    public long read() {
+      return nanos.get();
+    }
+
+    /**
+     * Продвигает виртуальное время на указанное число минут.
+     *
+     * @param minutes количество минут для продвижения
+     */
+    public void advanceMinutes(long minutes) {
+      nanos.addAndGet(Duration.ofMinutes(minutes).toNanos());
+    }
+  }
+
+  @Value("${spring.cache.ttl-minutes}")
+  private long ttlMinutes;
 }
