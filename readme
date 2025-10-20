@@ -1,38 +1,21 @@
 /**
- * Плановая и ручная очистка кэшей.
- * Содержит метод для немедленной очистки и шедулер для регулярной тотальной очистки.
+ * Демонстрационный сервис, использующий Spring Cache.
+ * Показывает базовую работу @Cacheable с ключом по идентификатору.
  */
-@Component
 @Slf4j
-@RequiredArgsConstructor
-public class CacheEvictScheduler {
-
-  private final CacheManager cacheManager;
-  private final CacheProps props;
+@Service
+public class TestCacheService {
 
   /**
-   * Полностью очищает все кэши, зарегистрированные в CacheManager.
-   * Используется как административная операция и в интеграционных тестах.
+   * Возвращает «псевдо-пользователя» по id.
+   * Первый вызов — вычисление и логирование; повторные — из кэша "users".
+   *
+   * @param id идентификатор пользователя
+   * @return строка с префиксом "User-<id>"
    */
-  public void clearAllCachesNow() {
-    for (String name : cacheManager.getCacheNames()) {
-      Cache cache = cacheManager.getCache(name);
-      if (cache != null) {
-        cache.clear();
-        log.info("Чистка кэша '{}'", name);
-      }
-    }
-  }
-
-  /**
-   * Плановая очистка всех кэшей по CRON.
-   * Запускается по расписанию в указанной таймзоне.
-   */
-  @Scheduled(cron = "0 0 3 * * *", zone = "Europe/Moscow")
-  public void scheduledClearAllCaches() {
-    log.info("Отложенная чистка кэша началась (cron={}, zone={})",
-        props.getClearCron(), props.getClearZone());
-    clearAllCachesNow();
+  @Cacheable(cacheNames = "users", key = "#id", unless = "#result == null")
+  public String getUserById(String id) {
+    log.info("Loading user {}...", id);
+    return "User-" + id;
   }
 }
-
