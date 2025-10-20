@@ -16,3 +16,9 @@ record CacheProps(
     String clearCron,
     String clearZone
 ) {}
+
+private final AtomicLong nanos = new AtomicLong();
+    @Override public long read() { return nanos.get(); }
+    public void advanceMinutes(long minutes) {
+      nanos.addAndGet(Duration.ofMinutes(minutes).toNanos());
+    }
