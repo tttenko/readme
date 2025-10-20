@@ -36,3 +36,47 @@ public abstract class AbstractTTLAndAllCleanCacheTest {
   protected abstract void advanceTime(long minutes);
   protected abstract long getConfiguredTTLMinutes();
 }
+
+@Autowired
+  private CacheEvictScheduler scheduler;
+  @Autowired
+  private CacheManager cacheManager;
+
+  public CaffeineCacheIntegrationTest(@Autowired CacheManager cacheManager) {
+    super(cacheManager);
+  }
+
+  @Override
+  protected void advanceTime(long minutes) {
+    ticker.advanceMinutes(minutes);
+    cacheManager.getCacheNames().forEach(n ->
+        ((org.springframework.cache.caffeine.CaffeineCache) cacheManager.getCache(n))
+            .getNativeCache().cleanUp());
+  }
+
+  @Override
+  protected long getConfiguredTTLMinutes() {
+    return 5;
+  }
+
+  @Test
+  void shouldExpireAfterConfiguredTTL() {
+    Cache cache = cacheManager.getCache("users");
+    cache.put("42", "test-user");
+
+    assertThat(cache.get("42").get()).isEqualTo("test-user");
+    advanceTime(getConfiguredTTLMinutes() - 1);
+    assertThat(cache.get("42").get()).isEqualTo("test-user");
+    advanceTime(2);
+    assertThat(cache.get("42")).isNull();
+  }
+
+  @Test
+  void shouldClearAllCachesCompletely() {
+    Cache cache = cacheManager.getCache("users");
+    cache.put("1", "first");
+    assertThat(cache.get("1").get()).isEqualTo("first");
+
+    scheduler.clearAllCachesNow();
+    assertThat(cache.get("1")).isNull();
+  }
