@@ -1,53 +1,18 @@
 /**
- * Юнит-тесты поведения @Cacheable на сервисе.
- * Проверяют кэш-хит, инвалидацию через clear() и изоляцию ключей.
+ * Проверяет, что метод плановой очистки (scheduledClearAllCaches)
+ * вызывает фактическую очистку всех кэшей.
+ * Тест не зависит от cron и таймзоны.
  */
-@SpringBootTest
-public class TestCacheServiceTest {
+@Test
+void shouldInvokeScheduledClearAllCaches() {
+    // given
+    Cache cache = cacheManager.getCache("users");
+    cache.put("123", "scheduled-test");
+    assertThat(cache.get("123").get()).isEqualTo("scheduled-test");
 
-  @Autowired
-  private CacheManager cacheManager;
+    // when
+    scheduler.scheduledClearAllCaches();
 
-  /** Spy на самом сервисе, чтобы считать реальные инвокации метода. */
-  @MockitoSpyBean
-  private TestCacheService testCacheService;
-
-  /**
-   * Проверяет, что второй вызов метода берёт значение из кэша (инвокация 1 раз).
-   */
-  @Test
-  void cacheable_shouldCacheResultAfterFirstCall() {
-    var first = testCacheService.getUserById("1");
-    var second = testCacheService.getUserById("1");
-
-    assertThat(first).isEqualTo(second);
-    verify(testCacheService, times(1)).getUserById("1");
-  }
-
-  /**
-   * Проверяет, что после явной очистки кэша значение вычисляется повторно.
-   */
-  @Test
-  void cacheable_shouldEvictWhenCacheCleared() {
-    testCacheService.getUserById("2");
-    testCacheService.getUserById("2");
-
-    var cache = cacheManager.getCache("users");
-    assertThat(cache).isNotNull();
-    assert cache != null;
-    cache.clear();
-
-    testCacheService.getUserById("2");
-    verify(testCacheService, times(2)).getUserById("2");
-  }
-
-  /**
-   * Проверяет, что разные ключи кэшируются независимо.
-   */
-  @Test
-  void cacheable_shouldReturnDifferentValueForDifferentKeys() {
-    var a = testCacheService.getUserById("A");
-    var b = testCacheService.getUserById("B");
-    assertThat(a).isNotEqualTo(b);
-  }
+    // then
+    assertThat(cache.get("123")).isNull();
 }
