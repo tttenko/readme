@@ -8,3 +8,11 @@ public class TestCacheService {
     return "User-" + id;
   }
 }
+
+@ConfigurationProperties(prefix = "app.cache")
+record CacheProps(
+    List<String> names,
+    long ttlMinutes,
+    String clearCron,
+    String clearZone
+) {}
