@@ -1,33 +1,100 @@
 /**
- * Базовый класс для интеграционных тестов кэша.
- * Инкапсулирует общий доступ к CacheManager и абстракции управления временем.
+ * Интеграционные тесты Caffeine: проверка TTL и полной очистки.
+ * Использует тестовый тикер для детерминированного контроля времени.
  */
-public abstract class AbstractTTLAndAllCleanCacheTest {
+@SpringBootTest(classes = { CaffeineCacheConfigTest.class, SchedulerConfig.class })
+@Import({ CacheEvictScheduler.class })
+@TestPropertySource(properties = {
+    "spring.main.allow-bean-definition-overriding=true",
+    "spring.cache.ttl-minutes=5"
+})
+public class CaffeineCacheIntegrationTest extends AbstractTTLAndAllCleanCacheTest {
 
-  /** Доступ к кэшам в тестах. */
-  protected final CacheManager cacheManager;
+  /** Подменный тикер для управления временем. */
+  @Autowired
+  private CaffeineCacheConfigTest.AutoCleaningFakeTicker ticker;
 
-  /** Возможность вызывать плановую очистку в тестах. */
-  @Setter
-  protected CacheEvictScheduler cacheEvictScheduler;
+  /** Доступ к административной очистке кэша. */
+  @Autowired
+  private CacheEvictScheduler scheduler;
+
+  /** Менеджер кэшей из тестового контекста. */
+  @Autowired
+  private CacheManager cacheManager;
 
   /**
-   * @param cacheManager менеджер кэшей, предоставляемый контекстом Spring
+   * Пробрасывает CacheManager в базовый тестовый класс.
    */
-  protected AbstractTTLAndAllCleanCacheTest(CacheManager cacheManager) {
-    this.cacheManager = cacheManager;
+  public CaffeineCacheIntegrationTest(@Autowired CacheManager cacheManager) {
+    super(cacheManager);
   }
 
   /**
-   * Продвинуть тестовое время на указанное число минут.
-   * Реализация зависит от конкретного тикера/реализации кэша.
+   * Продвигает время на указанное число минут и инициирует принудительную уборку Caffeine.
    *
-   * @param minutes на сколько минут продвинуть время
+   * @param minutes число минут
    */
-  protected abstract void advanceTime(long minutes);
+  @Override
+  protected void advanceTime(long minutes) {
+    ticker.advanceMinutes(minutes);
+    cacheManager.getCacheNames().forEach(n -> {
+      var cache = cacheManager.getCache(n);
+      if (cache instanceof CaffeineCache caffeineCache) {
+        caffeineCache.getNativeCache().cleanUp();
+      }
+    });
+  }
+
+  /** @return TTL в минутах, используемый в тесте (5 минут) */
+  @Override
+  protected long getConfiguredTTLMinutes() {
+    return 5;
+  }
 
   /**
-   * @return ожидаемый TTL (в минутах), с которым настроен кэш в тесте
+   * Проверяет, что запись исчезает после истечения TTL.
+   * Сначала значение доступно, затем после продвижения времени — протухает.
    */
-  protected abstract long getConfiguredTTLMinutes();
+  @BeforeEach
+  void setup() {
+    cacheManager.getCache("users").put("init", "warmup");
+    cacheManager.getCache("users").clear();
+  }
+
+  /**
+   * Проверяет протухание записи по TTL.
+   * До TTL – значение доступно; после TTL – отсутствует.
+   */
+  @Test
+  void shouldExpireAfterConfiguredTTL() {
+    Cache cache = cacheManager.getCache("users");
+    assertThat(cache).isNotNull();
+
+    cache.put("42", "test-user");
+    var valueBefore = cache.get("42");
+    assertThat(valueBefore).isNotNull();
+    assertThat(valueBefore.get()).isEqualTo("test-user");
+
+    advanceTime(getConfiguredTTLMinutes() - 1);
+    var stillThere = cache.get("42");
+    assertThat(stillThere).isNotNull();
+    assertThat(stillThere.get()).isEqualTo("test-user");
+
+    advanceTime(2);
+    var expired = cache.get("42");
+    assertThat(expired).isNull();
+  }
+
+  /**
+   * Проверяет полную очистку всех кэшей через шедулер.
+   */
+  @Test
+  void shouldClearAllCachesCompletely() {
+    Cache cache = cacheManager.getCache("users");
+    cache.put("1", "first");
+    assertThat(cache.get("1").get()).isEqualTo("first");
+
+    scheduler.clearAllCachesNow();
+    assertThat(cache.get("1")).isNull();
+  }
 }
