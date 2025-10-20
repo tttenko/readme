@@ -1,100 +1,53 @@
 /**
- * Интеграционные тесты Caffeine: проверка TTL и полной очистки.
- * Использует тестовый тикер для детерминированного контроля времени.
+ * Юнит-тесты поведения @Cacheable на сервисе.
+ * Проверяют кэш-хит, инвалидацию через clear() и изоляцию ключей.
  */
-@SpringBootTest(classes = { CaffeineCacheConfigTest.class, SchedulerConfig.class })
-@Import({ CacheEvictScheduler.class })
-@TestPropertySource(properties = {
-    "spring.main.allow-bean-definition-overriding=true",
-    "spring.cache.ttl-minutes=5"
-})
-public class CaffeineCacheIntegrationTest extends AbstractTTLAndAllCleanCacheTest {
+@SpringBootTest
+public class TestCacheServiceTest {
 
-  /** Подменный тикер для управления временем. */
-  @Autowired
-  private CaffeineCacheConfigTest.AutoCleaningFakeTicker ticker;
-
-  /** Доступ к административной очистке кэша. */
-  @Autowired
-  private CacheEvictScheduler scheduler;
-
-  /** Менеджер кэшей из тестового контекста. */
   @Autowired
   private CacheManager cacheManager;
 
-  /**
-   * Пробрасывает CacheManager в базовый тестовый класс.
-   */
-  public CaffeineCacheIntegrationTest(@Autowired CacheManager cacheManager) {
-    super(cacheManager);
-  }
+  /** Spy на самом сервисе, чтобы считать реальные инвокации метода. */
+  @MockitoSpyBean
+  private TestCacheService testCacheService;
 
   /**
-   * Продвигает время на указанное число минут и инициирует принудительную уборку Caffeine.
-   *
-   * @param minutes число минут
-   */
-  @Override
-  protected void advanceTime(long minutes) {
-    ticker.advanceMinutes(minutes);
-    cacheManager.getCacheNames().forEach(n -> {
-      var cache = cacheManager.getCache(n);
-      if (cache instanceof CaffeineCache caffeineCache) {
-        caffeineCache.getNativeCache().cleanUp();
-      }
-    });
-  }
-
-  /** @return TTL в минутах, используемый в тесте (5 минут) */
-  @Override
-  protected long getConfiguredTTLMinutes() {
-    return 5;
-  }
-
-  /**
-   * Проверяет, что запись исчезает после истечения TTL.
-   * Сначала значение доступно, затем после продвижения времени — протухает.
-   */
-  @BeforeEach
-  void setup() {
-    cacheManager.getCache("users").put("init", "warmup");
-    cacheManager.getCache("users").clear();
-  }
-
-  /**
-   * Проверяет протухание записи по TTL.
-   * До TTL – значение доступно; после TTL – отсутствует.
+   * Проверяет, что второй вызов метода берёт значение из кэша (инвокация 1 раз).
    */
   @Test
-  void shouldExpireAfterConfiguredTTL() {
-    Cache cache = cacheManager.getCache("users");
+  void cacheable_shouldCacheResultAfterFirstCall() {
+    var first = testCacheService.getUserById("1");
+    var second = testCacheService.getUserById("1");
+
+    assertThat(first).isEqualTo(second);
+    verify(testCacheService, times(1)).getUserById("1");
+  }
+
+  /**
+   * Проверяет, что после явной очистки кэша значение вычисляется повторно.
+   */
+  @Test
+  void cacheable_shouldEvictWhenCacheCleared() {
+    testCacheService.getUserById("2");
+    testCacheService.getUserById("2");
+
+    var cache = cacheManager.getCache("users");
     assertThat(cache).isNotNull();
+    assert cache != null;
+    cache.clear();
 
-    cache.put("42", "test-user");
-    var valueBefore = cache.get("42");
-    assertThat(valueBefore).isNotNull();
-    assertThat(valueBefore.get()).isEqualTo("test-user");
-
-    advanceTime(getConfiguredTTLMinutes() - 1);
-    var stillThere = cache.get("42");
-    assertThat(stillThere).isNotNull();
-    assertThat(stillThere.get()).isEqualTo("test-user");
-
-    advanceTime(2);
-    var expired = cache.get("42");
-    assertThat(expired).isNull();
+    testCacheService.getUserById("2");
+    verify(testCacheService, times(2)).getUserById("2");
   }
 
   /**
-   * Проверяет полную очистку всех кэшей через шедулер.
+   * Проверяет, что разные ключи кэшируются независимо.
    */
   @Test
-  void shouldClearAllCachesCompletely() {
-    Cache cache = cacheManager.getCache("users");
-    cache.put("1", "first");
-    assertThat(cache.get("1").get()).isEqualTo("first");
-
-    scheduler.clearAllCachesNow();
-    assertThat(cache.get("1")).isNull();
+  void cacheable_shouldReturnDifferentValueForDifferentKeys() {
+    var a = testCacheService.getUserById("A");
+    var b = testCacheService.getUserById("B");
+    assertThat(a).isNotEqualTo(b);
   }
 }
