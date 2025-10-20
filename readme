@@ -1,4 +1,38 @@
 /**
- * Свойства конфигурации кэша.
- * Бин маппится из конфигурации (prefix = "spring.cache") и используется в конфиге/шедулерах.
+ * Плановая и ручная очистка кэшей.
+ * Содержит метод для немедленной очистки и шедулер для регулярной тотальной очистки.
  */
+@Component
+@Slf4j
+@RequiredArgsConstructor
+public class CacheEvictScheduler {
+
+  private final CacheManager cacheManager;
+  private final CacheProps props;
+
+  /**
+   * Полностью очищает все кэши, зарегистрированные в CacheManager.
+   * Используется как административная операция и в интеграционных тестах.
+   */
+  public void clearAllCachesNow() {
+    for (String name : cacheManager.getCacheNames()) {
+      Cache cache = cacheManager.getCache(name);
+      if (cache != null) {
+        cache.clear();
+        log.info("Чистка кэша '{}'", name);
+      }
+    }
+  }
+
+  /**
+   * Плановая очистка всех кэшей по CRON.
+   * Запускается по расписанию в указанной таймзоне.
+   */
+  @Scheduled(cron = "0 0 3 * * *", zone = "Europe/Moscow")
+  public void scheduledClearAllCaches() {
+    log.info("Отложенная чистка кэша началась (cron={}, zone={})",
+        props.getClearCron(), props.getClearZone());
+    clearAllCachesNow();
+  }
+}
+
