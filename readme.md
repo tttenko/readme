@@ -1,3 +1,4 @@
+```java
 package com.example.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -459,4 +460,4 @@ loadBanksByCodes(...) / loadBanksRequisiteByCodes(...) — один сетево
 normalize(...), extractTbCode(...) — служебные; держат ключи детерминированными и код аккуратным.
 
 Если захочешь — покажу, как дополнительно «нагреть» tb_by_code внутри getAllBanks() и добавлю sync=true + unit‑тесты на батчи/хиты/промахи.
-
+```
