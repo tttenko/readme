@@ -14,6 +14,19 @@ import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+/**
+ * Утилита для «батчевой» работы с кэшем.
+ * <p>
+ * Основная идея: для набора ключей берём хиты из кэша, а промахи загружаем
+ * одним вызовом переданного загрузчика (batch loader). После загрузки
+ * результаты кладутся в кэш и возвращаются в порядке исходных ключей.
+ * <p>
+ * Особый случай для одиночного ключа и {@link CaffeineCache}: используется
+ * нативная атомарная вычислялка (single-flight) через
+ * {@code nativeCache.get(key, mappingFn)} — это исключает параллельные
+ * дубль-вызовы загрузчика по одному и тому же ключу и не заворачивает
+ * доменные исключения в {@code Cache.ValueRetrievalException}.
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -22,8 +35,40 @@ public class BatchCacheSupport {
     private final CacheManager cacheManager;
 
     /**
-     * Возвращает элементы по ключам: хиты берём из кэша, промахи грузим батчем.
-     * Для одиночного ключа с Caffeine используется атомарная вычислялка (single-flight).
+     * Получить значения по набору ключей, используя кэш и «батчевую» догрузку промахов.
+     *
+     * <h3>Поведение</h3>
+     * <ul>
+     *   <li>Ключи предварительно нормализуются: {@code trim}, отбрасываются {@code null}/пустые, оставляется исходный порядок без дубликатов.</li>
+     *   <li>Для одиночного ключа и {@link CaffeineCache} выполняется атомарная вычислялка (single-flight) без обёрток Spring Cache.</li>
+     *   <li>Для остальных случаев собираются хиты/промахи: промахи загружаются одним вызовом {@code loader.apply(miss)}.</li>
+     *   <li>Загруженные элементы кладутся в кэш, ключ для записи берётся из {@code keyExtractor}.</li>
+     *   <li>Результат упорядочивается в точном соответствии с исходным списком ключей.</li>
+     * </ul>
+     *
+     * <h3>Исключения</h3>
+     * <ul>
+     *   <li>Доменные исключения, брошенные {@code loader}, пробрасываются «как есть». Метод намеренно не
+     *   заворачивает их в {@code Cache.ValueRetrievalException}.</li>
+     *   <li>Ошибки чтения из кэша (не совпал тип, внутренний рантайм) не приводят к падению: запись просто
+     *   считается промахом (лог на уровне warn/debug) и значение будет догружено.</li>
+     * </ul>
+     *
+     * <h3>Потоки</h3>
+     * <ul>
+     *   <li>С {@link CaffeineCache} для одиночного ключа обеспечивается single-flight.</li>
+     *   <li>Для мульти-ключевого пути атомарность на уровне кэша зависит от провайдера. При необходимости
+     *   используйте нативные API конкретной реализации или внешний коалесинг.</li>
+     * </ul>
+     *
+     * @param cacheName    имя кэша в {@link CacheManager}
+     * @param keys         список ключей (может содержать {@code null}/пустые строки — они будут отброшены)
+     * @param loader       функция-загрузчик, принимающая список промахов и возвращающая загруженные элементы
+     * @param keyExtractor функция, извлекающая ключ кэша из элемента результата
+     * @param type         ожидаемый тип значения в кэше (для типобезопасного {@code cache.get})
+     * @param <T>          тип элемента результата
+     * @return список найденных/загруженных элементов в порядке исходных ключей; невозможные/отсутствующие ключи будут опущены
+     * @throws RuntimeException любое доменное исключение, брошенное {@code loader} (не перехватывается намеренно)
      */
     @NonNull
     public <T> List<T> fetchBatch(
@@ -56,7 +101,18 @@ public class BatchCacheSupport {
 
     /* ========================= helpers ========================= */
 
-    /** Одиночный ключ: Caffeine → атомарная вычислялка, иначе фолбэк. */
+    /**
+     * Получение одного элемента по ключу: если кэш — {@link CaffeineCache}, используется нативный single-flight,
+     * иначе — фолбэк через «прочитать → при промахе загрузить → положить».
+     *
+     * @param cache   кэш (может быть {@code null}, тогда кэширующая часть будет пропущена)
+     * @param key     ключ
+     * @param loader  загрузчик одного элемента (будет вызван с {@code List.of(key)})
+     * @param type    ожидаемый тип значения
+     * @param <T>     тип результата
+     * @return список из одного элемента или пустой список, если элемента нет
+     * @throws RuntimeException доменное исключение из {@code loader}
+     */
     @NonNull
     private <T> List<T> fetchSingle(
             @Nullable Cache cache,
@@ -70,7 +126,20 @@ public class BatchCacheSupport {
         return fetchSingleFallback(cache, key, loader, type);
     }
 
-    /** Single-flight для Caffeine (native computeIfAbsent), исключения не оборачиваются. */
+    /**
+     * Одиночная загрузка для {@link CaffeineCache} с гарантиями single-flight.
+     * <p>
+     * Используется {@code nativeCache.get(key, mappingFn)} — вычисление и помещение значения выполняются атомарно,
+     * параллельные запросы по тому же ключу ждут готовый результат. Исключения из {@code loader} пробрасываются
+     * «как есть».
+     *
+     * @param caffeine экземпляр {@link CaffeineCache}
+     * @param key      ключ
+     * @param loader   загрузчик (будет вызван с {@code List.of(key)})
+     * @param <T>      тип результата
+     * @return список из одного элемента или пустой список, если элемента нет
+     * @throws RuntimeException доменное исключение из {@code loader}
+     */
     @NonNull
     @SuppressWarnings("unchecked")
     private <T> List<T> fetchSingleWithCaffeine(
@@ -84,7 +153,20 @@ public class BatchCacheSupport {
         return (one == null) ? List.of() : List.of(one);
     }
 
-    /** Фолбэк для других провайдеров: read-through → miss → прямой loader → put. */
+    /**
+     * Одиночная загрузка для прочих провайдеров кэша.
+     * <p>
+     * Алгоритм: попытаться прочитать → при промахе вызвать {@code loader} → при успехе положить в кэш → вернуть.
+     * Ошибки чтения из кэша не приводят к падению и трактуются как промах (с логированием).
+     *
+     * @param cache  кэш (может быть {@code null})
+     * @param key    ключ
+     * @param loader загрузчик (будет вызван с {@code List.of(key)})
+     * @param type   ожидаемый тип значения
+     * @param <T>    тип результата
+     * @return список из одного элемента или пустой список, если элемента нет
+     * @throws RuntimeException доменное исключение из {@code loader}
+     */
     @NonNull
     private <T> List<T> fetchSingleFallback(
             @Nullable Cache cache,
@@ -97,13 +179,24 @@ public class BatchCacheSupport {
             one = safeFirst(loader.apply(List.of(key)));
             if (cache != null && one != null) {
                 cache.put(key, one);
-                // при желании можно проверить наличие putIfAbsent у конкретного кэша
+                // при необходимости можно заменить на putIfAbsent у конкретной реализации
             }
         }
         return (one == null) ? List.of() : List.of(one);
     }
 
-    /** Сбор хитов и промахов для мульти-кейса. */
+    /**
+     * Разделяет исходные ключи на «хиты» (нашлись в кэше) и «промахи» (нужно загрузить).
+     * <p>
+     * Ошибки чтения из кэша не вызывают падение: ключ рассматривается как промах (с логированием).
+     *
+     * @param cache   кэш (может быть {@code null})
+     * @param keys    нормализованный список ключей
+     * @param type    ожидаемый тип значения
+     * @param hitsOut мапа для записи найденных значений (ключ → значение)
+     * @param missOut список ключей-промахов
+     * @param <T>     тип значения
+     */
     private <T> void collectHitsAndMisses(
             @Nullable Cache cache,
             @NonNull List<String> keys,
@@ -121,7 +214,16 @@ public class BatchCacheSupport {
         }
     }
 
-    /** Кладём загруженные элементы в кэш. */
+    /**
+     * Кладёт загруженные элементы в кэш, если он присутствует, используя {@code keyExtractor}.
+     * <p>
+     * Если {@code keyExtractor} вернул {@code null}, элемент пропускается.
+     *
+     * @param cache        кэш (может быть {@code null})
+     * @param loaded       список загруженных элементов
+     * @param keyExtractor функция получения ключа из элемента
+     * @param <T>          тип элемента
+     */
     private <T> void putLoadedToCache(
             @Nullable Cache cache,
             @NonNull List<T> loaded,
@@ -134,7 +236,19 @@ public class BatchCacheSupport {
         }
     }
 
-    /** Собираем ответ в порядке исходных ключей из хитов + загруженных. */
+    /**
+     * Собирает итоговый список результатов в порядке исходных ключей.
+     * <p>
+     * Приоритет элементов из «хитов» сохраняется, загруженные дополняют мапу по ключу.
+     * Ключи, для которых значение отсутствует, опускаются.
+     *
+     * @param originalKeys исходный нормализованный порядок ключей
+     * @param hits         найденные в кэше значения (ключ → значение)
+     * @param loaded       элементы, загруженные из {@code loader}
+     * @param keyExtractor функция получения ключа из элемента
+     * @param <T>          тип элемента
+     * @return список элементов в порядке {@code originalKeys} без {@code null}
+     */
     @NonNull
     private <T> List<T> orderByOriginal(
             @NonNull List<String> originalKeys,
@@ -153,7 +267,22 @@ public class BatchCacheSupport {
                 .toList();
     }
 
-    /** Мягкое чтение из кэша: типобезопасно, с логом, без выброса исключений. */
+    /**
+     * Безопасное чтение из кэша с типобезопасной десериализацией и «мягкой» обработкой ошибок.
+     * <p>
+     * Возвращает {@code null} в случаях:
+     * <ul>
+     *   <li>кэш отсутствует ({@code cache == null});</li>
+     *   <li>тип сохранённого значения не совпадает с {@code type} (ключ будет удалён через {@code evict});</li>
+     *   <li>кэш бросил рантайм-исключение (событие залогировано, но не прерывает поток выполнения).</li>
+     * </ul>
+     *
+     * @param cache кэш (может быть {@code null})
+     * @param key   ключ
+     * @param type  ожидаемый тип значения
+     * @param <T>   тип результата
+     * @return значение из кэша или {@code null}, если прочитать не удалось
+     */
     @Nullable
     private static <T> T safeGet(@Nullable Cache cache, @NonNull String key, @NonNull Class<T> type) {
         if (cache == null) return null;
@@ -171,7 +300,18 @@ public class BatchCacheSupport {
         }
     }
 
-    /** Нормализация ключей: trim, drop null/empty, distinct c сохранением порядка. */
+    /**
+     * Нормализует входные ключи:
+     * <ul>
+     *   <li>отбрасывает {@code null};</li>
+     *   <li>{@code trim()};</li>
+     *   <li>отбрасывает пустые строки после {@code trim};</li>
+     *   <li>удаляет дубликаты, сохраняя порядок первого вхождения.</li>
+     * </ul>
+     *
+     * @param keys исходный список ключей
+     * @return нормализованный список ключей
+     */
     @NonNull
     private List<String> normalize(@NonNull List<String> keys) {
         return keys.stream()
@@ -182,7 +322,13 @@ public class BatchCacheSupport {
                 .collect(Collectors.toCollection(ArrayList::new));
     }
 
-    /** Первый элемент списка или null. */
+    /**
+     * Возвращает первый элемент списка или {@code null}, если список пустой или равен {@code null}.
+     *
+     * @param list список
+     * @param <T>  тип элемента
+     * @return первый элемент или {@code null}
+     */
     @Nullable
     private static <T> T safeFirst(@Nullable List<T> list) {
         return (list == null || list.isEmpty()) ? null : list.get(0);
