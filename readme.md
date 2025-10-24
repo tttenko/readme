@@ -195,9 +195,71 @@ class BaseCacheDataServiceTest {
         .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
 
     final var stats = statsOf(TerBankService_2.TB_ALL);
+
+    
     assertEquals(1, stats.missCount(), "One compute for all concurrent callers");
     assertEquals(threads - 1, stats.hitCount(), "Rest should hit the cache");
   }
 }
+
+/**
+ * Сервис работы с ТерБанками с кешированием на Spring Cache (Caffeine).
+ *
+ * <p>Поддерживаемые ключи кеша:
+ * <ul>
+ *   <li>{@value #TB_BY_CODE} — банки по кодам tbCode;</li>
+ *   <li>{@value #TB_ALL} — все банки;</li>
+ *   <li>{@value #TB_REQ_BY_CODE} — банки с реквизитами по кодам;</li>
+ *   <li>{@value #TB_REQ_ALL} — все банки с реквизитами.</li>
+ * </ul>
+ *
+ * <p>Публичные методы сохраняют прежние сигнатуры для совместимости с контроллером.</p>
+ */
+
+ /**
+     * Возвращает список ТерБанков.
+     *
+     * <p>Если {@code tbCodes} {@code null} или пуст, возвращает все банки (кеш {@value #TB_ALL}).
+     * Иначе выполняет пакетную дозагрузку по указанным кодам с использованием кеша
+     * по ключу {@value #TB_BY_CODE}.</p>
+     *
+     * @param tbCodes список кодов TB; может быть {@code null} или пустым
+     * @return успешный результат со списком {@link TerBankDto}
+     */
+
+     /**
+     * Возвращает список ТерБанков с реквизитами.
+     *
+     * <p>Если {@code tbCodes} {@code null} или пуст, возвращает все банки с реквизитами
+     * (кеш {@value #TB_REQ_ALL}). Иначе выполняет пакетную дозагрузку по кодам
+     * с использованием кеша по ключу {@value #TB_REQ_BY_CODE}.</p>
+     *
+     * @param tbCodes список кодов TB; может быть {@code null} или пустым
+     * @return успешный результат со списком {@link TerBankWithRequisiteDto}
+     */
+
+     /**
+     * Загружает данные банков по кодам из мастер-данных (без реквизитов).
+     *
+     * <p>Формирует запрос к master-data с атрибутом {@code properties.getSlugValueForTerBank()}
+     * в контексте {@code SearchRequestProperties.Context.BOOK} и маппит ответ через
+     * {@link TerBankMapper}.</p>
+     *
+     * @param codes список кодов TB; не {@code null}
+     * @return список {@link TerBankDto} по найденным кодам
+     */
+
+     /**
+     * Загружает данные банков с реквизитами по кодам из мастер-данных.
+     *
+     * <p>Формирует запрос к master-data с атрибутом {@code properties.getSlugValueForTerBank()}
+     * в контексте {@code SearchRequestProperties.Context.BOOK} и маппит ответ через
+     * {@link TerBankWithRequisiteMapper}.</p>
+     *
+     * @param codes список кодов TB; не {@code null}
+     * @return список {@link TerBankWithRequisiteDto} по найденным кодам
+     */
+
+     
 
 ```
