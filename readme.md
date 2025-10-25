@@ -1,224 +1,154 @@
 ```java
 
-package com.example.service;
+@TestConfiguration
+@EnableCaching
+public class TestCacheConfig {
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-
-import com.github.benmanes.caffeine.cache.stats.CacheStats;
-import java.time.Duration;
-import java.util.List;
-import java.util.concurrent.*;
-import org.junit.jupiter.api.*;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mockito;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.cache.Cache;
-import org.springframework.cache.CacheManager;
-import org.springframework.cache.caffeine.CaffeineCache;
-import org.springframework.test.annotation.DirtiesContext;
-import org.springframework.test.context.ContextConfiguration;
-import org.springframework.test.context.junit.jupiter.SpringExtension;
-
-/**
- * Тесты проверяют:
- *  - промах → хит,
- *  - sync=true при конкурентных вызовах,
- *  - независимость кешей,
- *  - ручную инвалидацию,
- *  - (если включено recordStats) статистику хитов/промахов.
- *
- * Контекст поднимается заново на каждый тест, чтобы статистика и состояние кешей не "перетекали".
- */
-@ExtendWith(SpringExtension.class)
-@ContextConfiguration(classes = { CacheTestConfig.class, BaseCacheDataService.class })
-@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
-class BaseCacheDataServiceTest {
-
-  @Autowired
-  private BaseCacheDataService service;
-
-  @Autowired
-  private CacheManager cacheManager;
-
-  @MockBean
-  private TerBankMapper terBankMapper;
-
-  @MockBean
-  private TerBankWithRequisiteMapper terBankWithRequisiteMapper;
-
-  @MockBean
-  private BaseMasterDataRequestService baseMasterDataRequestService;
-
-  private SearchRequestProperties props;
-
-  @BeforeEach
-  void setUp() {
-    // Мокаем properties, чтобы сервис мог построить запрос
-    props = Mockito.mock(SearchRequestProperties.class);
-    when(props.getSlugValueForTerBank()).thenReturn("terbank-slug");
-    when(baseMasterDataRequestService.getProperties()).thenReturn(props);
-
-    // Возвращаем "пустой, но валидный" ответ — createResult вернёт пустой список (и это ок для теста кеша)
-    when(baseMasterDataRequestService.requestDataWithAttribute(
-            eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK)))
-        .thenReturn(new GetItemsSearchResponse());
-
-    // Для метода с реквизитами используем тот же заглушечный ответ
-    when(baseMasterDataRequestService.requestDataWithAttribute(
-            eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK)))
-        .thenReturn(new GetItemsSearchResponse());
-  }
-
-  // ---------- Вспомогательно ----------
-
-  private CacheStats statsOf(String cacheName) {
-    final Cache cache = cacheManager.getCache(cacheName);
-    assertNotNull(cache, "Cache " + cacheName + " not found");
-    if (cache instanceof CaffeineCache cc) {
-      return cc.getNativeCache().stats();
-    }
-    // Если провайдер будет не Caffeine, просто возвращаем пустую статистику
-    return com.github.benmanes.caffeine.cache.stats.StatsCounter.disabledStats().snapshot();
-  }
-
-  private void clear(String cacheName) {
-    final Cache cache = cacheManager.getCache(cacheName);
-    assertNotNull(cache);
-    cache.clear();
-  }
-
-  // ---------- Тесты ----------
-
-  @Test
-  void getAllBanks_shouldCacheByKeyALL() {
-    final var first = service.getAllBanks();
-    final var second = service.getAllBanks();
-
-    // backend дернули ровно один раз
-    verify(baseMasterDataRequestService, times(1))
-        .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
-
-    // второй вызов — тот же объект (из кеша)
-    assertSame(first, second, "Second call must return cached instance");
-
-    // статистика Caffeine: 1 miss, 1 hit
-    final var stats = statsOf(TerBankService_2.TB_ALL);
-    assertEquals(1, stats.missCount(), "missCount");
-    assertEquals(1, stats.hitCount(), "hitCount");
-  }
-
-  @Test
-  void getAllBanksWithRequisite_shouldCacheByKeyALL() {
-    final var first = service.getAllBanksWithRequisite();
-    final var second = service.getAllBanksWithRequisite();
-
-    verify(baseMasterDataRequestService, times(1))
-        .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
-
-    assertSame(first, second);
-
-    final var stats = statsOf(TerBankService_2.TB_REQ_ALL);
-    assertEquals(1, stats.missCount(), "missCount");
-    assertEquals(1, stats.hitCount(), "hitCount");
-  }
-
-  @Test
-  void cachesShouldBeIndependent() {
-    // 1) tb_all
-    service.getAllBanks();
-    service.getAllBanks();
-
-    // 2) tb_req_all
-    service.getAllBanksWithRequisite();
-    service.getAllBanksWithRequisite();
-
-    // backend — два разных обращения (по одному на каждый кеш)
-    verify(baseMasterDataRequestService, times(2))
-        .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
-
-    // независимая статистика по кешам
-    assertEquals(1, statsOf(TerBankService_2.TB_ALL).missCount());
-    assertEquals(1, statsOf(TerBankService_2.TB_ALL).hitCount());
-    assertEquals(1, statsOf(TerBankService_2.TB_REQ_ALL).missCount());
-    assertEquals(1, statsOf(TerBankService_2.TB_REQ_ALL).hitCount());
-  }
-
-  @Test
-  void clearShouldEvict_thenNextCallLoadsAgain() {
-    service.getAllBanks();     // miss → load
-    clear(TerBankService_2.TB_ALL);
-
-    service.getAllBanks();     // miss → load again
-
-    verify(baseMasterDataRequestService, times(2))
-        .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
-  }
-
-  @Test
-  void concurrentCallsWithSameKey_shouldTriggerSingleBackendCall_dueToSyncTrue() throws Exception {
-    final int threads = 6;
-    final ExecutorService pool = Executors.newFixedThreadPool(threads);
-    final CountDownLatch ready = new CountDownLatch(threads);
-    final CountDownLatch start = new CountDownLatch(1);
-
-    // Эмулируем "долгий" backend и запускаем все потоки одновременно
-    when(baseMasterDataRequestService.requestDataWithAttribute(
-            eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK)))
-        .thenAnswer(inv -> {
-          ready.countDown();
-          // ждём, пока все дойдут до бэкэнда
-          start.await(5, TimeUnit.SECONDS);
-          Thread.sleep(150);
-          return new GetItemsSearchResponse();
-        });
-
-    List<Future<List<TerBankDto>>> futures = new CopyOnWriteArrayList<>();
-    for (int i = 0; i < threads; i++) {
-      futures.add(pool.submit(() -> service.getAllBanks()));
-    }
-
-    // когда все вызовы "подвесились" в лоадере — отпускаем
-    assertTrue(ready.await(5, TimeUnit.SECONDS), "threads not ready");
-    start.countDown();
-
-    for (Future<?> f : futures) {
-      assertNotNull(f.get(3, TimeUnit.SECONDS));
-    }
-
-    pool.shutdownNow();
-
-    // backend должен выполниться единожды
-    verify(baseMasterDataRequestService, times(1))
-        .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
-
-    final var stats = statsOf(TerBankService_2.TB_ALL);
-
-    
-    assertEquals(1, stats.missCount(), "One compute for all concurrent callers");
-    assertEquals(threads - 1, stats.hitCount(), "Rest should hit the cache");
+  @Bean
+  @Primary
+  public CacheManager cacheManager() {
+    // объявляем кеши, которые будем проверять
+    ConcurrentMapCacheManager manager = new ConcurrentMapCacheManager(
+        TerBankService_2.TB_ALL,
+        TerBankService_2.TB_REQ_ALL
+    );
+    manager.setAllowNullValues(true); // можно включить, не мешает твоему сценарию
+    return manager;
   }
 }
 
-/**
- * Утилита для «батчевой» работы с кэшем.
- *
- * <p>
- *
- * Основная идея: для набора ключей берём хиты из кэша, а промахи загружаем
- * одним вызовом переданного загрузчика (batch loader). После загрузки
- * результаты кладутся в кэш и возвращаются в порядке исходных ключей.
- *
- * <p>
- *
- * Особый случай для одиночного ключа и {@link CaffeineCache}: используется
- * нативная атомарная вычислялка (single-flight) через
- * {@code nativeCache.get(key, mappingFn)} — это исключает параллельные
- * дубль-вызовы загрузчика по одному и тому же ключу и не заворачивает
- * доменные исключения в {@code Cache.ValueRetrievalException}.
- */
-     
+public final class CacheIntrospection {
+  private CacheIntrospection() {}
+
+  public static Set<?> keys(CacheManager cacheManager, String cacheName) {
+    return nativeMap(cacheManager, cacheName).keySet();
+  }
+
+  public static Object rawValue(CacheManager cacheManager, String cacheName, Object key) {
+    return nativeMap(cacheManager, cacheName).get(key);
+  }
+
+  private static ConcurrentMap<?, ?> nativeMap(CacheManager cacheManager, String cacheName) {
+    Cache cache = cacheManager.getCache(cacheName);
+    if (!(cache instanceof ConcurrentMapCache)) {
+      throw new IllegalStateException("Expected ConcurrentMapCache for " + cacheName);
+    }
+    return (ConcurrentMap<?, ?>) ((ConcurrentMapCache) cache).getNativeCache();
+  }
+}
+
+@ExtendWith(SpringExtension.class)
+@ContextConfiguration(classes = { TestCacheConfig.class, TerBankCacheOps.class })
+class TerBankCacheOpsTest {
+
+  @Autowired private TerBankCacheOps terBankCacheOps;
+  @Autowired private CacheManager cacheManager;
+
+  @MockBean private TerBankMapper terBankMapper;
+  @MockBean private TerBankWithRequisiteMapper terBankWithRequisiteMapper;
+  @MockBean private BaseMasterDataRequestService baseMasterDataRequestService;
+
+  private SearchRequestProperties searchRequestProperties;
+
+  @BeforeEach
+  void setUp() {
+    searchRequestProperties = Mockito.mock(SearchRequestProperties.class);
+    when(searchRequestProperties.getSlugValueForTerBank()).thenReturn("terbank-slug");
+    when(baseMasterDataRequestService.getProperties()).thenReturn(searchRequestProperties);
+
+    // детерминированный ответ внешнего сервиса
+    GetItemsSearchResponse response = new GetItemsSearchResponse();
+    when(baseMasterDataRequestService.requestDataWithAttribute(
+        eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK)))
+      .thenReturn(response);
+
+    // мапперы возвращают конкретные списки — мы ими и проверим «все данные попали в кеш»
+    List<TerBankDto> allBanks = List.of(new TerBankDto(), new TerBankDto());
+    when(terBankMapper.map(response)).thenReturn(allBanks);
+
+    List<TerBankWithRequisiteDto> allReq = List.of(new TerBankWithRequisiteDto());
+    when(terBankWithRequisiteMapper.map(response)).thenReturn(allReq);
+  }
+
+  @Test
+  void givenTbAll_whenCalledTwice_thenBackendCalledOnce_andCachedUnderKeyALL() {
+    List<TerBankDto> firstCall = terBankCacheOps.getAllBanks();
+    List<TerBankDto> secondCall = terBankCacheOps.getAllBanks();
+
+    // внешний сервис дернули один раз
+    verify(baseMasterDataRequestService, times(1))
+        .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
+
+    // нужное имя кеша и ключ
+    Set<?> keys = CacheIntrospection.keys(cacheManager, TerBankService_2.TB_ALL);
+    assertTrue(keys.contains("ALL"), "cache must contain key 'ALL'");
+
+    // в кеше лежит именно тот список, который вернул маппер (и возвращается тот же инстанс)
+    Object raw = CacheIntrospection.rawValue(cacheManager, TerBankService_2.TB_ALL, "ALL");
+    assertNotNull(raw);
+    assertTrue(raw instanceof List, "cached value must be List");
+    assertSame(firstCall, raw);
+    assertSame(firstCall, secondCall);
+    assertEquals(2, firstCall.size(), "expect all mapped items cached");
+  }
+
+  @Test
+  void givenTbReqAll_whenCalledTwice_thenBackendCalledOnce_andCachedUnderKeyALL() {
+    List<TerBankWithRequisiteDto> firstCall = terBankCacheOps.getAllBanksWithRequisite();
+    List<TerBankWithRequisiteDto> secondCall = terBankCacheOps.getAllBanksWithRequisite();
+
+    verify(baseMasterDataRequestService, times(1))
+        .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
+
+    Set<?> keys = CacheIntrospection.keys(cacheManager, TerBankService_2.TB_REQ_ALL);
+    assertTrue(keys.contains("ALL"));
+
+    Object raw = CacheIntrospection.rawValue(cacheManager, TerBankService_2.TB_REQ_ALL, "ALL");
+    assertNotNull(raw);
+    assertTrue(raw instanceof List);
+    assertSame(firstCall, raw);
+    assertSame(firstCall, secondCall);
+    assertEquals(1, firstCall.size(), "expect all mapped items cached");
+  }
+
+  @Test
+  void givenBothCaches_whenLoadedSeparately_thenTheyAreIndependent() {
+    terBankCacheOps.getAllBanks();
+    terBankCacheOps.getAllBanksWithRequisite();
+
+    // два разных кеша — два отдельных ключевых пространства
+    assertTrue(CacheIntrospection.keys(cacheManager, TerBankService_2.TB_ALL).contains("ALL"));
+    assertTrue(CacheIntrospection.keys(cacheManager, TerBankService_2.TB_REQ_ALL).contains("ALL"));
+  }
+
+  @Test
+  void givenConcurrentCalls_whenSyncTrue_thenSingleBackendLoad() throws Exception {
+    when(baseMasterDataRequestService.requestDataWithAttribute(
+        eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK)))
+      .thenAnswer(invocation -> { Thread.sleep(150); return new GetItemsSearchResponse(); });
+
+    ExecutorService pool = Executors.newFixedThreadPool(6);
+    try {
+      for (Future<List<TerBankDto>> future :
+          pool.invokeAll(List.of(
+              () -> terBankCacheOps.getAllBanks(),
+              () -> terBankCacheOps.getAllBanks(),
+              () -> terBankCacheOps.getAllBanks(),
+              () -> terBankCacheOps.getAllBanks(),
+              () -> terBankCacheOps.getAllBanks(),
+              () -> terBankCacheOps.getAllBanks()
+          ), 3, TimeUnit.SECONDS)) {
+        assertNotNull(future.get(), "each caller must receive a result");
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+
+    // из-за sync=true лоадер должен выполниться один раз
+    verify(baseMasterDataRequestService, times(1))
+        .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
+  }
+}
+
 
 ```
