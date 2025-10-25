@@ -205,45 +205,44 @@ class BaseCacheDataServiceTest {
 /**
  * Cache-операции для справочника ТерБанков.
  *
- * Назначение: централизовать кэширование «полных» выборок (все ТБ и все ТБ с реквизитами)
- * через Spring Cache (реализация Caffeine). Вынесено в отдельный бин, чтобы вызовы
- * шли через прокси и аннотации {@code @Cacheable} гарантированно срабатывали.
+ * <p>Цель — централизовать кэширование «полных» выборок (все ТБ и все ТБ с реквизитами)
+ * через Spring Cache (Caffeine). Вынесено в отдельный бин, чтобы вызовы шли через
+ * прокси и аннотации {@code @Cacheable} гарантированно срабатывали.</p>
  *
- * Кэши:
- *  - {@link TerBankService2#TB_ALL}     — ключ {@code 'ALL'}, значение {@code List<TerBankDto>}
- *  - {@link TerBankService2#TB_REQ_ALL} — ключ {@code 'ALL'}, значение {@code List<TerBankWithRequisiteDto>}
+ * <h2>Кэши</h2>
+ * <ul>
+ *   <li>{@link TerBankService2#TB_ALL} — ключ {@code 'ALL'}, значение {@code List<TerBankDto>}</li>
+ *   <li>{@link TerBankService2#TB_REQ_ALL} — ключ {@code 'ALL'}, значение {@code List<TerBankWithRequisiteDto>}</li>
+ * </ul>
  *
- * Параметры кэша:
- *  - {@code sync=true} — коалессация промахов: при одновременных запросах к источнику
- *    идёт один сетевой вызов, остальные потоки ждут результат.
+ * @implNote На методах используется {@code sync = true} для коалессации промахов:
+ * при одновременных запросах выполняется один сетевой вызов, остальные ждут результат.
  *
- * В классе нет бизнес-логики — только обращение к источнику и маппинг DTO.
- */
+ * @see TerBankService2
+ *
 
  /**
  * Возвращает «все ТБ» и кэширует результат.
  *
- * Кэш:
- *  - cacheName: TerBankService2.TB_ALL
- *  - key      : 'ALL'
- *  - sync     : true (one-flight при промахе)
+ * <p><b>Кэш:</b>
+ * cacheName = {@link TerBankService2#TB_ALL}, key = {@code 'ALL'}, {@code sync = true}.</p>
  *
- * Загрузка идёт из мастер-данных, затем маппинг в DTO.
+ * <p>Данные загружаются из мастер-данных и маппятся в {@link TerBankDto}.</p>
  *
- * @return неизменяемый список всех ТерБанков
+ * @return неизменяемый список всех территориальных банков
+ * @see TerBankService2#TB_ALL
  */
 
  /**
  * Возвращает «все ТБ с реквизитами» и кэширует результат.
  *
- * Кэш:
- *  - cacheName: TerBankService2.TB_REQ_ALL
- *  - key      : 'ALL'
- *  - sync     : true (one-flight при промахе)
+ * <p><b>Кэш:</b>
+ * cacheName = {@link TerBankService2#TB_REQ_ALL}, key = {@code 'ALL'}, {@code sync = true}.</p>
  *
- * Загрузка идёт из мастер-данных, затем маппинг в DTO с реквизитами.
+ * <p>Данные загружаются из мастер-данных и маппятся в {@link TerBankWithRequisiteDto}.</p>
  *
- * @return неизменяемый список всех ТерБанков с реквизитами
+ * @return неизменяемый список всех территориальных банков с реквизитами
+ * @see TerBankService2#TB_REQ_ALL
  */
      
 
