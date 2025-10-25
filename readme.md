@@ -39,13 +39,12 @@ public final class CacheIntrospection {
 
 package com.example.service;
 
+
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -56,6 +55,11 @@ import org.springframework.cache.CacheManager;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 
+/**
+ * Интеграционный тест кеша для TerBankCacheOps.
+ * Проверяет, что данные из BaseMasterDataRequestService загружаются 1 раз,
+ * маппятся в DTO и помещаются в правильный кеш с ключом "ALL".
+ */
 @ExtendWith(SpringExtension.class)
 @ContextConfiguration(classes = { TestCacheConfig.class, TerBankCacheOps.class })
 class TerBankCacheOpsTest {
@@ -75,13 +79,13 @@ class TerBankCacheOpsTest {
     when(baseMasterDataRequestService.getProperties()).thenReturn(searchRequestProperties);
     when(searchRequestProperties.getSlugValueForTerBank()).thenReturn("terbank-slug");
 
-    // имитация данных, получаемых от внешнего сервиса
+    // имитация данных из внешнего источника
     GetItemsSearchResponse response = new GetItemsSearchResponse();
     when(baseMasterDataRequestService.requestDataWithAttribute(
         eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK)))
-      .thenReturn(response);
+        .thenReturn(response);
 
-    // мапперы возвращают осмысленные DTO
+    // mock для обычного маппера (без реквизитов)
     when(terBankMapper.mapValuesToDto(anyMap()))
         .thenAnswer(inv -> {
           Map<String, String> values = inv.getArgument(0);
@@ -91,49 +95,57 @@ class TerBankCacheOpsTest {
           return dto;
         });
 
-    when(terBankWithRequisiteMapper.mapValuesToDto(anyMap()))
+    // mock для маппера с реквизитами (две карты)
+    when(terBankWithRequisiteMapper.mapValuesToDto(anyMap(), anyMap()))
         .thenAnswer(inv -> {
+          Map<String, Object> values = inv.getArgument(0);
+          Map<String, Map<String, Object>> attrs = inv.getArgument(1);
           TerBankWithRequisiteDto dto = new TerBankWithRequisiteDto();
-          dto.setTbCode("REQ-TEST-CODE");
-          dto.setTbName("Req Bank");
+          dto.setTbCode(String.valueOf(values.getOrDefault("slug", "REQ-CODE")));
+          dto.setTbName(String.valueOf(values.getOrDefault("name", "Req Bank")));
+          dto.setInn("1234567890");
+          dto.setKpp("987654321");
+          dto.setAddress("Moscow");
+          dto.setRegionName("Region-Name");
+          dto.setRegionCode("77");
           return dto;
         });
   }
 
-  // ---- Тест 1 ----
+  // ---------- TESTS ----------
+
   @Test
   void givenTbAll_whenCalledTwice_thenBackendCalledOnce_andCachedUnderKeyALL() {
     // when
     List<TerBankDto> firstCall = terBankCacheOps.getAllBanks();
     List<TerBankDto> secondCall = terBankCacheOps.getAllBanks();
 
-    // then: внешний сервис вызван 1 раз
+    // then
     verify(baseMasterDataRequestService, times(1))
         .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
 
-    // и данные закешированы под ключом "ALL"
+    // cache name / key verification
     Set<?> keys = CacheIntrospection.keys(cacheManager, TerBankService_2.TB_ALL);
     assertTrue(keys.contains("ALL"), "cache must contain key 'ALL'");
 
-    // тип и содержимое кеша
     Object raw = CacheIntrospection.rawValue(cacheManager, TerBankService_2.TB_ALL, "ALL");
     assertNotNull(raw);
     assertTrue(raw instanceof List<?>);
-    assertSame(firstCall, raw, "cached value must be the same instance as method result");
-    assertSame(firstCall, secondCall, "second call must hit cache");
+    assertSame(firstCall, raw);
+    assertSame(firstCall, secondCall);
   }
 
-  // ---- Тест 2 ----
   @Test
   void givenTbReqAll_whenCalledTwice_thenBackendCalledOnce_andCachedUnderKeyALL() {
     // when
     List<TerBankWithRequisiteDto> firstCall = terBankCacheOps.getAllBanksWithRequisite();
     List<TerBankWithRequisiteDto> secondCall = terBankCacheOps.getAllBanksWithRequisite();
 
-    // then: бэкенд вызван 1 раз
+    // then
     verify(baseMasterDataRequestService, times(1))
         .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
 
+    // cache name / key verification
     Set<?> keys = CacheIntrospection.keys(cacheManager, TerBankService_2.TB_REQ_ALL);
     assertTrue(keys.contains("ALL"));
 
@@ -144,7 +156,6 @@ class TerBankCacheOpsTest {
     assertSame(firstCall, secondCall);
   }
 
-  // ---- Тест 3 ----
   @Test
   void givenBothCaches_whenLoadedSeparately_thenTheyAreIndependent() {
     terBankCacheOps.getAllBanks();
@@ -155,21 +166,21 @@ class TerBankCacheOpsTest {
 
     assertTrue(tbAllKeys.contains("ALL"));
     assertTrue(tbReqAllKeys.contains("ALL"));
-    assertNotSame(
-        CacheIntrospection.rawValue(cacheManager, TerBankService_2.TB_ALL, "ALL"),
-        CacheIntrospection.rawValue(cacheManager, TerBankService_2.TB_REQ_ALL, "ALL"),
-        "different caches must store different objects");
+
+    Object tbAll = CacheIntrospection.rawValue(cacheManager, TerBankService_2.TB_ALL, "ALL");
+    Object tbReqAll = CacheIntrospection.rawValue(cacheManager, TerBankService_2.TB_REQ_ALL, "ALL");
+
+    assertNotSame(tbAll, tbReqAll, "different caches must store different objects");
   }
 
-  // ---- Тест 4 ----
   @Test
   void givenConcurrentCalls_whenSyncTrue_thenSingleBackendCall() throws Exception {
     when(baseMasterDataRequestService.requestDataWithAttribute(
         eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK)))
-      .thenAnswer(inv -> {
-        Thread.sleep(150);
-        return new GetItemsSearchResponse();
-      });
+        .thenAnswer(inv -> {
+          Thread.sleep(200);
+          return new GetItemsSearchResponse();
+        });
 
     ExecutorService pool = Executors.newFixedThreadPool(4);
     try {
@@ -180,7 +191,7 @@ class TerBankCacheOpsTest {
           () -> terBankCacheOps.getAllBanks()
       );
       for (Future<List<TerBankDto>> future : pool.invokeAll(tasks, 3, TimeUnit.SECONDS)) {
-        assertNotNull(future.get(), "each call must return a result");
+        assertNotNull(future.get());
       }
     } finally {
       pool.shutdownNow();
