@@ -79,46 +79,47 @@ void setUp() {
     when(baseMasterDataRequestService.getProperties()).thenReturn(searchRequestProperties);
     when(searchRequestProperties.getSlugValueForTerBank()).thenReturn("terbank-slug");
 
-    // --- успешный ответ без атрибутов (для getAllBanks) ---
+    // ----- успеховое сообщение (semantic == SUCCESS, у вас это, как правило, "S")
+    ResponseMessage ok = new ResponseMessage()
+        .semantic("S")          // <-- если у вас SUCCESS ≠ "S", подставь реальное значение
+        .message("OK")
+        .description("OK");
+
+    // ---------- Ответ БЕЗ атрибутов (для getAllBanks -> requestData)
     GetItemsSearchResponse okNoAttr = new GetItemsSearchResponse();
-    // messages: [ { semantic: "S", code: "0", description: "OK" } ]
-    ResponseMessage okMsg = new ResponseMessage();
-    okMsg.setSemantic("S");
-    okMsg.setCode("0");
-    okMsg.setDescription("OK");
-    okNoAttr.setMessages(List.of(okMsg));
-    Map<String, String> item1 = new HashMap<>();
-    item1.put("slug", "TB001");
-    item1.put("name", "Test Bank 1");
+    okNoAttr.setMessages(List.of(ok));
+
+    Map<String, Object> itemNoAttr = new HashMap<>();
+    itemNoAttr.put("slug", "TB001");
+    itemNoAttr.put("name", "Test Bank 1");
     Map<String, Object> pageNoAttr = new HashMap<>();
-    pageNoAttr.put("items", List.of(item1));
+    pageNoAttr.put("items", List.of(itemNoAttr));
     okNoAttr.setData(List.of(pageNoAttr));
 
     when(baseMasterDataRequestService.requestData(
             eq("terbank-slug"),
-            isNull(), // у тебя семантика "null => все"
+            isNull(),                                   // по вашей семантике null => "все"
             eq(SearchRequestProperties.Context.BOOK)))
         .thenReturn(okNoAttr);
 
-    // --- успешный ответ с атрибутами (для getAllBanksWithRequisite) ---
+    // ---------- Ответ С атрибутами (для getAllBanksWithRequisite -> requestDataWithAttribute)
     GetItemsSearchResponse okWithAttr = new GetItemsSearchResponse();
-    okWithAttr.setMessages(List.of(okMsg));
+    okWithAttr.setMessages(List.of(ok));
 
-    Map<String, Object> itemNode = new HashMap<>();
-    Map<String, Object> item = new HashMap<>();
-    item.put("slug", "TB001");
-    item.put("name", "Req Bank 1");
-    itemNode.put("item", item);
+    Map<String, Object> itemValues = new HashMap<>();
+    itemValues.put("slug", "TB001");
+    itemValues.put("name", "Req Bank 1");
 
     Map<String, Object> attrInn = new HashMap<>();
-    Map<String, Object> attrMeta = new HashMap<>();
-    attrMeta.put("slug", "inn");           // ATTRIBUTE.slug
-    attrInn.put("attribute", attrMeta);
-    attrInn.put("value", "1234567890");    // значение атрибута
+    attrInn.put("attribute", Map.of("slug", "inn"));
+    attrInn.put("value", "1234567890");
 
-    itemNode.put("values", List.of(attrInn));
+    Map<String, Object> itemWithAttr = new HashMap<>();
+    itemWithAttr.put("item", itemValues);
+    itemWithAttr.put("values", List.of(attrInn));
+
     Map<String, Object> pageWithAttr = new HashMap<>();
-    pageWithAttr.put("items", List.of(itemNode));
+    pageWithAttr.put("items", List.of(itemWithAttr));
     okWithAttr.setData(List.of(pageWithAttr));
 
     when(baseMasterDataRequestService.requestDataWithAttribute(
@@ -127,7 +128,7 @@ void setUp() {
             eq(SearchRequestProperties.Context.BOOK)))
         .thenReturn(okWithAttr);
 
-    // --- моки мапперов ---
+    // ---------- моки мапперов
     when(terBankMapper.mapValuesToDto(anyMap()))
         .thenAnswer(invocation -> {
             Map<String, String> values = invocation.getArgument(0);
@@ -140,14 +141,15 @@ void setUp() {
     when(terBankWithRequisiteMapper.mapValuesToDto(anyMap(), anyMap()))
         .thenAnswer(invocation -> {
             Map<String, Object> values = invocation.getArgument(0);
-            Map<String, Map<String, Object>> attrs = invocation.getArgument(1);
+            Map<String, Map<String, Object>> attributes = invocation.getArgument(1);
             TerBankWithRequisiteDto dto = new TerBankWithRequisiteDto();
             dto.setTbCode(String.valueOf(values.get("slug")));
             dto.setTbName(String.valueOf(values.get("name")));
-            dto.setInn(String.valueOf(attrs.get("inn").get("value")));
+            dto.setInn(String.valueOf(attributes.getOrDefault("inn", Map.of()).get("value")));
             return dto;
         });
 }
+
 
 
   // ---------- TESTS ----------
