@@ -74,43 +74,81 @@ class TerBankCacheOpsTest {
   private SearchRequestProperties searchRequestProperties;
 
   @BeforeEach
-  void setUp() {
+void setUp() {
     searchRequestProperties = Mockito.mock(SearchRequestProperties.class);
     when(baseMasterDataRequestService.getProperties()).thenReturn(searchRequestProperties);
     when(searchRequestProperties.getSlugValueForTerBank()).thenReturn("terbank-slug");
 
-    // имитация данных из внешнего источника
-    GetItemsSearchResponse response = new GetItemsSearchResponse();
+    // --- успешный ответ без атрибутов (для getAllBanks) ---
+    GetItemsSearchResponse okNoAttr = new GetItemsSearchResponse();
+    // messages: [ { semantic: "S", code: "0", description: "OK" } ]
+    ResponseMessage okMsg = new ResponseMessage();
+    okMsg.setSemantic("S");
+    okMsg.setCode("0");
+    okMsg.setDescription("OK");
+    okNoAttr.setMessages(List.of(okMsg));
+    Map<String, String> item1 = new HashMap<>();
+    item1.put("slug", "TB001");
+    item1.put("name", "Test Bank 1");
+    Map<String, Object> pageNoAttr = new HashMap<>();
+    pageNoAttr.put("items", List.of(item1));
+    okNoAttr.setData(List.of(pageNoAttr));
+
+    when(baseMasterDataRequestService.requestData(
+            eq("terbank-slug"),
+            isNull(), // у тебя семантика "null => все"
+            eq(SearchRequestProperties.Context.BOOK)))
+        .thenReturn(okNoAttr);
+
+    // --- успешный ответ с атрибутами (для getAllBanksWithRequisite) ---
+    GetItemsSearchResponse okWithAttr = new GetItemsSearchResponse();
+    okWithAttr.setMessages(List.of(okMsg));
+
+    Map<String, Object> itemNode = new HashMap<>();
+    Map<String, Object> item = new HashMap<>();
+    item.put("slug", "TB001");
+    item.put("name", "Req Bank 1");
+    itemNode.put("item", item);
+
+    Map<String, Object> attrInn = new HashMap<>();
+    Map<String, Object> attrMeta = new HashMap<>();
+    attrMeta.put("slug", "inn");           // ATTRIBUTE.slug
+    attrInn.put("attribute", attrMeta);
+    attrInn.put("value", "1234567890");    // значение атрибута
+
+    itemNode.put("values", List.of(attrInn));
+    Map<String, Object> pageWithAttr = new HashMap<>();
+    pageWithAttr.put("items", List.of(itemNode));
+    okWithAttr.setData(List.of(pageWithAttr));
+
     when(baseMasterDataRequestService.requestDataWithAttribute(
-        eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK)))
-        .thenReturn(response);
+            eq("terbank-slug"),
+            isNull(),
+            eq(SearchRequestProperties.Context.BOOK)))
+        .thenReturn(okWithAttr);
 
-    // mock для обычного маппера (без реквизитов)
+    // --- моки мапперов ---
     when(terBankMapper.mapValuesToDto(anyMap()))
-        .thenAnswer(inv -> {
-          Map<String, String> values = inv.getArgument(0);
-          TerBankDto dto = new TerBankDto();
-          dto.setTbCode(values.getOrDefault("slug", "TEST-CODE"));
-          dto.setTbName(values.getOrDefault("name", "Test Bank"));
-          return dto;
+        .thenAnswer(invocation -> {
+            Map<String, String> values = invocation.getArgument(0);
+            TerBankDto dto = new TerBankDto();
+            dto.setTbCode(values.get("slug"));
+            dto.setTbName(values.get("name"));
+            return dto;
         });
 
-    // mock для маппера с реквизитами (две карты)
     when(terBankWithRequisiteMapper.mapValuesToDto(anyMap(), anyMap()))
-        .thenAnswer(inv -> {
-          Map<String, Object> values = inv.getArgument(0);
-          Map<String, Map<String, Object>> attrs = inv.getArgument(1);
-          TerBankWithRequisiteDto dto = new TerBankWithRequisiteDto();
-          dto.setTbCode(String.valueOf(values.getOrDefault("slug", "REQ-CODE")));
-          dto.setTbName(String.valueOf(values.getOrDefault("name", "Req Bank")));
-          dto.setInn("1234567890");
-          dto.setKpp("987654321");
-          dto.setAddress("Moscow");
-          dto.setRegionName("Region-Name");
-          dto.setRegionCode("77");
-          return dto;
+        .thenAnswer(invocation -> {
+            Map<String, Object> values = invocation.getArgument(0);
+            Map<String, Map<String, Object>> attrs = invocation.getArgument(1);
+            TerBankWithRequisiteDto dto = new TerBankWithRequisiteDto();
+            dto.setTbCode(String.valueOf(values.get("slug")));
+            dto.setTbName(String.valueOf(values.get("name")));
+            dto.setInn(String.valueOf(attrs.get("inn").get("value")));
+            return dto;
         });
-  }
+}
+
 
   // ---------- TESTS ----------
 
