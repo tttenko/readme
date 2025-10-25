@@ -242,5 +242,13 @@ void setUp() {
   }
 }
 
+cacheManager.getCache(TerBankService_2.TB_ALL).clear();
 
+    Object afterClearTbAll =
+        CacheIntrospection.rawValue(cacheManager, TerBankService_2.TB_ALL, "ALL");
+    Object stillInTbReqAll =
+        CacheIntrospection.rawValue(cacheManager, TerBankService_2.TB_REQ_ALL, "ALL");
+
+    assertNull(afterClearTbAll, "TB_ALL must be empty after clear()");
+    assertNotNull(stillInTbReqAll, "TB_REQ_ALL must remain intact");
 ```
