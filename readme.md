@@ -1,93 +1,98 @@
 ```java
 
 /**
- * GIVEN кэш TB_ALL пуст,
- * WHEN вызываем getAllBanks() дважды подряд,
- * THEN бэкенд (BaseMasterDataRequestService#requestData) дергается ровно один раз,
- *      результат попадает в кэш TerBankService2.TB_ALL под ключом "ALL",
- *      последующий вызов берёт данные из кэша.
+ * <p><b>GIVEN</b> кэш <code>TB_ALL</code> пуст;<br>
+ * <b>WHEN</b> вызываем <code>getAllBanks()</code> дважды;<br>
+ * <b>THEN</b> бэкенд дергается ровно один раз, результат кэшируется
+ * в <code>TerBankService2.TB_ALL</code> под ключом <code>"ALL"</code>, второй вызов читает из кэша.</p>
  *
- * Проверяется:
- *  - имя кэша: {@code TerBankService2.TB_ALL};
- *  - ключ: {@code "ALL"};
- *  - отсутствие вызовов requestDataWithAttribute(...).
+ * <ul>
+ *   <li>Проверяется имя кэша: <code>TerBankService2.TB_ALL</code>.</li>
+ *   <li>Проверяется ключ кэша: <code>"ALL"</code>.</li>
+ *   <li>Проверяется отсутствие вызовов <code>requestDataWithAttribute(...)</code>.</li>
+ * </ul>
  */
 
- /**
- * GIVEN кэш TB_REQ_ALL пуст,
- * WHEN вызываем getAllBanksWithRequisite() дважды подряд,
- * THEN бэкенд (BaseMasterDataRequestService#requestDataWithAttribute) дергается ровно один раз,
- *      результат попадает в кэш TerBankService2.TB_REQ_ALL под ключом "ALL",
- *      последующий вызов берёт данные из кэша.
+/**
+ * <p><b>GIVEN</b> кэш <code>TB_REQ_ALL</code> пуст;<br>
+ * <b>WHEN</b> вызываем <code>getAllBanksWithRequisite()</code> дважды;<br>
+ * <b>THEN</b> бэкенд дергается ровно один раз, результат кэшируется
+ * в <code>TerBankService2.TB_REQ_ALL</code> под ключом <code>"ALL"</code>, второй вызов читает из кэша.</p>
  *
- * Проверяется:
- *  - имя кэша: {@code TerBankService2.TB_REQ_ALL};
- *  - ключ: {@code "ALL"};
- *  - отсутствие вызовов requestData(...).
+ * <ul>
+ *   <li>Проверяется имя кэша: <code>TerBankService2.TB_REQ_ALL</code>.</li>
+ *   <li>Проверяется ключ кэша: <code>"ALL"</code>.</li>
+ *   <li>Проверяется отсутствие вызовов <code>requestData(...)</code>.</li>
+ * </ul>
  */
 
- /**
- * Проверяет независимость двух кэшей.
+/**
+ * <p>Проверяет <b>независимость</b> кэшей <code>TB_ALL</code> и <code>TB_REQ_ALL</code>.</p>
  *
- * GIVEN по разу прогреты TB_ALL и TB_REQ_ALL,
- * WHEN очищаем только TB_ALL,
- * THEN содержимое TB_REQ_ALL остаётся нетронутым, а TB_ALL становится пустым.
+ * <p><b>GIVEN</b> оба кэша прогреты;<br>
+ * <b>WHEN</b> очищаем только <code>TB_ALL</code>;<br>
+ * <b>THEN</b> <code>TB_REQ_ALL</code> остаётся нетронутым, а <code>TB_ALL</code> пуст.</p>
  *
- * Дополнительно убеждаемся, что native-карты разных кэшей — разные инстансы.
+ * <p>Дополнительно убеждаемся, что underlying <code>ConcurrentMap</code> у кэшей — разные инстансы.</p>
  */
 
- /**
- * Конкурентные вызовы для "без атрибутов" сходятся в один backend-запрос.
+/**
+ * <p>Конкурентные вызовы <code>getAllBanks()</code> при <code>sync=true</code>
+ * сходятся в <b>один</b> вызов <code>BaseMasterDataRequestService#requestData(...)</code>.</p>
  *
- * GIVEN несколько параллельных вызовов getAllBanks(),
- * WHEN включён sync=true и первый запрос к бэкенду выполняется с задержкой,
- * THEN BaseMasterDataRequestService#requestData(...) вызывается ровно один раз,
- *      остальные потоки получают тот же результат (после прогрева — из кэша TB_ALL/"ALL").
+ * <p><b>GIVEN</b> несколько параллельных вызовов и искусственная задержка первого бэкенд-ответа;<br>
+ * <b>THEN</b> бэкенд вызывается один раз, дальнейшие чтения идут из кэша <code>TB_ALL/"ALL"</code>.</p>
  */
 
- /**
- * Конкурентные вызовы для "с атрибутами" сходятся в один backend-запрос.
+/**
+ * <p>Конкурентные вызовы <code>getAllBanksWithRequisite()</code> при <code>sync=true</code>
+ * сходятся в <b>один</b> вызов <code>BaseMasterDataRequestService#requestDataWithAttribute(...)</code>.</p>
  *
- * GIVEN несколько параллельных вызовов getAllBanksWithRequisite(),
- * WHEN включён sync=true и первый запрос к бэкенду выполняется с задержкой,
- * THEN BaseMasterDataRequestService#requestDataWithAttribute(...) вызывается ровно один раз,
- *      остальные потоки получают тот же результат (после прогрева — из кэша TB_REQ_ALL/"ALL").
+ * <p><b>GIVEN</b> несколько параллельных вызовов и искусственная задержка первого бэкенд-ответа;<br>
+ * <b>THEN</b> бэкенд вызывается один раз, дальнейшие чтения идут из кэша <code>TB_REQ_ALL/"ALL"</code>.</p>
  */
 
- /**
- * Универсальный ассерт «fan-in в один backend-вызов» для конкурентных сценариев.
+/**
+ * <p>Универсальная проверка «fan-in в один backend-вызов» для конкурентных сценариев.</p>
  *
- * <p>Последовательность:
+ * <p><b>Алгоритм</b>:</p>
  * <ol>
- *   <li>Выполняется заглушка бэкенда (обычно with Thread.sleep внутри thenAnswer).</li>
- *   <li>Параллельно запускаются N одинаковых вызовов «метода под тестом».</li>
- *   <li>Проверяем контракт: валидацию взаимодействий с бэкендом и наличие ключа в ожидаемом кэше.</li>
+ *   <li>Выполнить заглушку бэкенда (эмуляция задержки/ответа).</li>
+ *   <li>Параллельно запустить N вызовов тестируемого метода.</li>
+ *   <li>Проверить ожидаемые взаимодействия с бэкендом и наличие ключа <code>"ALL"</code> в нужном кэше.</li>
  * </ol>
  *
- * @param <T>                       тип возвращаемого значения callUnderTest (например, List<TerBankDto>)
- * @param stubBackend               раннер, который настраивает mock-ответ бэкенда (thenAnswer/thenReturn)
- * @param callUnderTest             Callable, выполняющий метод SUT (например, terBankCacheOps::getAllBanks)
- * @param verifyBackendInteractions проверка, что бэкенд вызван ровно один раз и альтернативные методы не дергались
- * @param assertCacheName           имя кэша, в котором должен появиться ключ "ALL"
- * @throws Exception пробрасывается, если один из потоков или проверок завершился с ошибкой
+ * @param <T> тип результата <code>callUnderTest</code> (например, <code>List&lt;TerBankDto&gt;</code>)
+ * @param stubBackend код, настраивающий мок бэкенда (обычно <em>thenAnswer</em> с задержкой)
+ * @param callUnderTest вызов SUT (например, <code>terBankCacheOps::getAllBanks</code>)
+ * @param verifyBackendInteractions валидация, что дернулся только ожидаемый метод бэкенда
+ * @param assertCacheName имя кэша, где должен появиться ключ <code>"ALL"</code>
+ * @throws Exception если любой из потоков или проверок завершился ошибкой
  * @see CacheIntrospection
  */
 
- /**
- * Подготавливает окружение теста:
- *  - мокает SearchRequestProperties и BaseMasterDataRequestService#getProperties();
- *  - задаёт успешные ответы (OK) для requestData(...) и requestDataWithAttribute(...);
- *  - настраивает мапперы terBankMapper и terBankWithRequisiteMapper.
+/**
+ * <p>Подготавливает окружение теста.</p>
+ * <ul>
+ *   <li>Мокает <code>SearchRequestProperties</code> и <code>BaseMasterDataRequestService#getProperties()</code>.</li>
+ *   <li>Задаёт успешные ответы (OK) для <code>requestData(...)</code> и <code>requestDataWithAttribute(...)</code>
+ *       через фикстуры <code>MasterDataFixtures</code>.</li>
+ *   <li>Настраивает мапперы <code>terBankMapper</code> и <code>terBankWithRequisiteMapper</code>.</li>
+ * </ul>
  *
- * Использует фикстуры из MasterDataFixtures и вспомогательные стабы:
- * {@code stubRequestDataOk(...)} и {@code stubRequestDataWithAttrOk(...)}.
+ * @implNote использует вспомогательные стабы:
+ * <code>stubRequestDataOk(...)</code> и <code>stubRequestDataWithAttrOk(...)</code>.
  */
 
- /**
- * Сброс тестового состояния между кейсами.
- * Очищает кэши TB_ALL и TB_REQ_ALL и обнуляет историю вызовов Mockito-моков.
+/**
+ * <p>Сбрасывает состояние перед каждым тестом.</p>
+ * <ul>
+ *   <li>Очищает кэши <code>TB_ALL</code> и <code>TB_REQ_ALL</code>.</li>
+ *   <li>Сбрасывает историю вызовов у Mockito-моков.</li>
+ * </ul>
  *
- * Гарантирует, что каждый тест стартует «с чистого листа».
+ * <p>Гарантирует запуск каждого теста «с чистого листа».</p>
  */
+
 
 ```
