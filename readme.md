@@ -48,6 +48,26 @@
      * @throws IllegalStateException если кеш не является {@link org.springframework.cache.concurrent.ConcurrentMapCache}
      */
 
-     
+     /** Корневой ключ страницы: массив объектов, напр. [{ "items": [ ... ] }]. */
+private static final String KEY_ITEMS = "items";
+
+/** Узел элемента внутри страницы: { "item": { ... } }. */
+private static final String KEY_ITEM = "item";
+
+/** Массив атрибутов элемента: { "values": [ ... ] }. */
+private static final String KEY_VALUES = "values";
+
+/** Узел атрибута: { "attribute": { "slug": "...", ... } }. */
+private static final String KEY_ATTRIBUTE = "attribute";
+
+/** Код/идентификатор сущности (банк, атрибут и т.п.). */
+private static final String KEY_SLUG = "slug";
+
+/** Значение атрибута (строковое). */
+private static final String KEY_VALUE = "value";
+
+/** Человекочитаемое имя сущности. */
+private static final String KEY_NAME = "name";
+
 
 ```
