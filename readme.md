@@ -1,54 +1,118 @@
 ```java
 
-CountDownLatch startBarrier = new CountDownLatch(1);   // чтобы оба лоадера стартовали одновременно
-  CountDownLatch workBarrier  = new CountDownLatch(1);   // вместо Thread.sleep: «имитация работы»
+/**
+ * Given: кеш пуст, запрошен один ключ {@code A}.
+ * When: loader возвращает ровно один элемент.
+ * Then: fallback кладёт элемент в кеш и возвращает singleton.
+ */
+@Test
+void givenSingleKeyMiss_whenLoaderReturnsOne_thenItemCachedAndReturned() {
+  CacheIntrospection.nativeMap(cacheManager, CACHE_NAME).clear();
 
-  AtomicInteger loaderCalls = new AtomicInteger(0);
+  List<String> requested = List.of("A");
 
-  Function<List<String>, List<Tb>> loader = keys -> {
-    loaderCalls.incrementAndGet();
-    try {
-      // дождаться разрешения на старт от теста
-      startBarrier.await(1, TimeUnit.SECONDS);
-      // «поработать», ожидая сигнала от теста (не sleep)
-      workBarrier.await(250, TimeUnit.MILLISECONDS);
-    } catch (InterruptedException ignored) { }
-    List<Tb> out = new ArrayList<>();
-    for (String k : keys) {
-      out.add(new Tb(k, "Name " + k));
-    }
-    return out;
-  };
+  @SuppressWarnings("unchecked")
+  Function<List<String>, List<Tb>> loader =
+      (Function<List<String>, List<Tb>>) Mockito.mock(Function.class);
+  Mockito.when(loader.apply(Mockito.anyList()))
+      .thenReturn(List.of(new Tb("A", "Bank A")));
 
-  ExecutorService pool = Executors.newFixedThreadPool(2);
-  try {
-    Callable<List<Tb>> task1 = () -> batch.fetchBatch(
-        CACHE_NAME, Arrays.asList("A", "B", "C"), loader, Tb::getCode, Tb.class);
-    Callable<List<Tb>> task2 = () -> batch.fetchBatch(
-        CACHE_NAME, Arrays.asList("B", "C", "D"), loader, Tb::getCode, Tb.class);
+  List<Tb> result = batch.fetchBatch(
+      CACHE_NAME, requested, loader, Tb::getCode, Tb.class
+  );
 
-    Future<List<Tb>> f1 = pool.submit(task1);
-    Future<List<Tb>> f2 = pool.submit(task2);
+  ArgumentCaptor<List<String>> captor =
+      (ArgumentCaptor<List<String>>) (ArgumentCaptor<?>) ArgumentCaptor.forClass(List.class);
+  Mockito.verify(loader, Mockito.times(1)).apply(captor.capture());
+  assertEquals(List.of("A"), captor.getValue());
 
-    // одновременно запускаем лоадеры
-    startBarrier.countDown();
-    // даём им «поработать» (ожидание на workBarrier), после чего разрешаем завершиться
-    workBarrier.countDown();
+  assertEquals(1, result.size());
+  assertEquals("A", result.get(0).getCode());
+  assertTrue(CacheIntrospection.keys(cacheManager, CACHE_NAME).contains("A"));
+  assertNotNull(CacheIntrospection.rawValue(cacheManager, CACHE_NAME, "A"));
+}
 
-    List<Tb> r1 = f1.get(2, TimeUnit.SECONDS);
-    List<Tb> r2 = f2.get(2, TimeUnit.SECONDS);
 
-    assertEquals(3, r1.size());
-    assertEquals(3, r2.size());
+/**
+ * Given: в кеше уже лежит {@code A}, запрошен один ключ {@code A}.
+ * Then: чистый hit в fallback-ветке — loader не вызывается.
+ */
+@Test
+void givenSingleKeyHit_whenFetchBatch_thenLoaderNotCalled_andReturnsFromCache() {
+  Cache cache = cacheManager.getCache(CACHE_NAME);
+  assertNotNull(cache);
+  cache.put("A", new Tb("A", "Bank A"));
 
-    Set<?> keys = CacheIntrospection.keys(cacheManager, CACHE_NAME);
-    assertEquals(Set.of("A", "B", "C", "D"), keys);
+  @SuppressWarnings("unchecked")
+  Function<List<String>, List<Tb>> loader =
+      (Function<List<String>, List<Tb>>) Mockito.mock(Function.class);
 
-    // допускаем максимум 2 batch-вызова (по числу конкурентных запросов), точно не по одному на ключ
-    assertTrue(loaderCalls.get() <= 2, "Loader must not be called per-key (no N+1)");
-  } finally {
-    pool.shutdownNow();
-  }
+  List<Tb> result = batch.fetchBatch(
+      CACHE_NAME, List.of("A"), loader, Tb::getCode, Tb.class
+  );
+
+  Mockito.verify(loader, Mockito.never()).apply(Mockito.anyList());
+  assertEquals(1, result.size());
+  assertEquals("A", result.get(0).getCode());
+}
+
+
+/**
+ * Given: кеш пуст, запрошен один ключ {@code B}.
+ * When: loader возвращает пустой список.
+ * Then: fallback возвращает пустой список и не пишет в кеш.
+ */
+@Test
+void givenSingleKeyMiss_whenLoaderReturnsEmpty_thenEmptyResult_andNoCachePut() {
+  List<String> requested = List.of("B");
+
+  @SuppressWarnings("unchecked")
+  Function<List<String>, List<Tb>> loader =
+      (Function<List<String>, List<Tb>>) Mockito.mock(Function.class);
+  Mockito.when(loader.apply(Mockito.anyList())).thenReturn(List.of());
+
+  List<Tb> result = batch.fetchBatch(
+      CACHE_NAME, requested, loader, Tb::getCode, Tb.class
+  );
+
+  ArgumentCaptor<List<String>> captor =
+      (ArgumentCaptor<List<String>>) (ArgumentCaptor<?>) ArgumentCaptor.forClass(List.class);
+  Mockito.verify(loader, Mockito.times(1)).apply(captor.capture());
+  assertEquals(List.of("B"), captor.getValue());
+
+  assertTrue(result.isEmpty());
+  assertFalse(CacheIntrospection.keys(cacheManager, CACHE_NAME).contains("B"));
+}
+
+
+/**
+ * Given: кеш пуст, запрошен один ключ {@code N1}.
+ * When: loader возвращает список, содержащий {@code null}.
+ * Then: fallback игнорирует {@code null}, кеш остаётся пустым, результат — пустой.
+ */
+@Test
+void givenSingleKeyMiss_whenLoaderReturnsNullItem_thenEmptyResult_andNoCachePut() {
+  List<String> requested = List.of("N1");
+
+  @SuppressWarnings("unchecked")
+  Function<List<String>, List<Tb>> loader =
+      (Function<List<String>, List<Tb>>) Mockito.mock(Function.class);
+  Mockito.when(loader.apply(Mockito.anyList()))
+      .thenReturn(Arrays.asList((Tb) null));
+
+  List<Tb> result = batch.fetchBatch(
+      CACHE_NAME, requested, loader, Tb::getCode, Tb.class
+  );
+
+  ArgumentCaptor<List<String>> captor =
+      (ArgumentCaptor<List<String>>) (ArgumentCaptor<?>) ArgumentCaptor.forClass(List.class);
+  Mockito.verify(loader, Mockito.times(1)).apply(captor.capture());
+  assertEquals(List.of("N1"), captor.getValue());
+
+  assertTrue(result.isEmpty());
+  assertFalse(CacheIntrospection.keys(cacheManager, CACHE_NAME).contains("N1"));
+}
+
 
 
 ```
