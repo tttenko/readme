@@ -220,4 +220,54 @@ class BatchCacheSupportTest {
 }
 
 
+
+@Test
+void givenSomeKeysCached_whenFetchBatch_thenOnlyMissesLoaded_andNoDuplicatesInCache() {
+  // A уже в кеше
+  Cache cache = cacheManager.getCache(CACHE_NAME);
+  assertNotNull(cache);
+  cache.put("A", new Tb("A", "Bank A"));
+
+  List<String> requested = Arrays.asList("A", "B", "C");
+
+  @SuppressWarnings("unchecked")
+  Function<List<String>, List<Tb>> loader =
+      (Function<List<String>, List<Tb>>) Mockito.mock(Function.class);
+
+  Mockito.when(loader.apply(Mockito.anyList()))
+      .thenReturn(Arrays.asList(new Tb("B", "Bank B"), new Tb("C", "Bank C")));
+
+  // действие
+  List<Tb> result = batch.fetchBatch(
+      CACHE_NAME,
+      requested,
+      loader,
+      Tb::getCode,
+      Tb.class
+  );
+
+  // лоадер вызван 1 раз и только по отсутствующим ["B","C"]
+  @SuppressWarnings("unchecked")
+  ArgumentCaptor<List<String>> captor =
+      (ArgumentCaptor<List<String>>) (ArgumentCaptor<?>) ArgumentCaptor.forClass(List.class);
+
+  Mockito.verify(loader, Mockito.times(1)).apply(captor.capture());
+  List<String> actuallyLoaded = captor.getValue();
+  assertEquals(new LinkedHashSet<>(Arrays.asList("B", "C")),
+               new LinkedHashSet<>(actuallyLoaded));
+
+  // в кеше три уникальных ключа без дублей
+  Set<?> keys = CacheIntrospection.keys(cacheManager, CACHE_NAME);
+  assertEquals(Set.of("A", "B", "C"), keys);
+
+  // значения реально лежат в кеше
+  assertNotNull(CacheIntrospection.rawValue(cacheManager, CACHE_NAME, "A"));
+  assertNotNull(CacheIntrospection.rawValue(cacheManager, CACHE_NAME, "B"));
+  assertNotNull(CacheIntrospection.rawValue(cacheManager, CACHE_NAME, "C"));
+
+  // итоговая выборка из метода — 3 элемента
+  assertEquals(3, result.size());
+}
+
+
 ```
