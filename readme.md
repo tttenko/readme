@@ -1,37 +1,48 @@
 ```java
 
-// com.example.supplier.SupplierService.java
 package com.example.supplier;
 
-import jakarta.annotation.Nullable;
 import jakarta.annotation.Nonnull;
-import jakarta.validation.constraints.NotNull;
-import java.util.*;
+import jakarta.annotation.Nullable;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import com.example.cache.BatchCacheSupport;
+import com.example.masterdata.BaseMasterDataRequestService;
+import com.example.masterdata.GetItemsSearchResponse;
+import com.example.masterdata.SearchRequestProperties;
+import com.example.masterdata.dto.BankDto;
+import com.example.masterdata.dto.CounterpartyDto;
+import com.example.masterdata.dto.ResultObj;
+import com.example.masterdata.mapper.SupplierMapper;
+import com.example.masterdata.mapper.SupplierRequisiteMapper;
+
+import static com.example.masterdata.BaseMasterDataRequestService.createResultWithAttribute;
+import static com.example.masterdata.BaseMasterDataRequestService.getSuccessResponse;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class SupplierService extends BaseMasterDataRequestService {
+public class SupplierService {
 
-  // Имя полей фильтров в мастер-данных (как в старом коде)
-  private static final String SUPPLIER_ID = "SupplierId";
-  private static final String INN_KPP = "Inn+Kpp";
-
-  // Имена кэшей (как в TerBankService2 — явные константы)
+  // Имена кэшей
   public static final String SUPPLIER_REQ_BY_SUPPLIER_ID = "supplier_req_by_supplier_id";
   public static final String SUPPLIER_BY_ID = "supplier_by_id";
   public static final String SUPPLIER_BY_INN_KPP = "supplier_by_inn_kpp";
 
+  private final BatchCacheSupport batchLoad;
   private final SupplierRequisiteMapper supplierRequisiteMapper;
   private final SupplierMapper supplierMapper;
-  private final BatchCacheSupport batchLoad;
 
-  // --- API ---
+  // Внедряем вместо наследования
+  private final BaseMasterDataRequestService base;
+  private final SearchRequestProperties properties;
 
   /** Поиск реквизитов поставщика по списку идентификаторов. */
   @Nonnull
@@ -39,30 +50,28 @@ public class SupplierService extends BaseMasterDataRequestService {
     final var list = batchLoad.fetchBatch(
         SUPPLIER_REQ_BY_SUPPLIER_ID,
         ids,
-        this::loadRequisitesBySupplierIds,         // batch-loader из MD
-        BankDto::getSupplierId                     // keyExtractor => SupplierId
+        this::loadRequisitesBySupplierIds,
+        BankDto::getSupplierId
     );
     return getSuccessResponse(list);
   }
 
-  /** Поиск контрагентов по INN/KPP. Кэш — только если есть оба параметра (уникальный ключ). */
+  /** Поиск контрагентов по INN/KPP. Кэш включаем только при наличии обоих параметров. */
   @Nonnull
   public ResultObj<List<CounterpartyDto>> searchCounterpartiesByCriteria(@Nullable final String inn,
                                                                          @Nullable final String kpp) {
     final var criteria = buildCriteriaMap(inn, kpp);
 
-    // если неуникально (только INN или только KPP) — без кэша, оставляем прежнюю семантику
+    // Неуникальные запросы (только INN или только KPP) — без кэша, как и раньше
     if (criteria.size() != 2) {
       return getSupplierByCriteria(criteria);
     }
 
     final String key = buildInnKppKey(inn, kpp);
-
-    // батч-кэш на ключ inn:kpp, загрузчик игнорирует список ключей и дергает MD по criteria
-    final List<CounterpartyDto> list = batchLoad.fetchBatch(
+    final var list = batchLoad.fetchBatch(
         SUPPLIER_BY_INN_KPP,
         List.of(key),
-        missed -> loadSuppliersByCriteria(criteria), // вернёт 0..1 элемента
+        missed -> loadSuppliersByCriteria(criteria),
         dto -> buildInnKppKey(dto.getInn(), dto.getKpp())
     );
     return getSuccessResponse(list);
@@ -80,44 +89,47 @@ public class SupplierService extends BaseMasterDataRequestService {
     return getSuccessResponse(list);
   }
 
-  // --- Вспомогательные методы загрузки из мастер-данных (оставлена прежняя логика маппинга) ---
+  // ----------------------- Загрузчики из мастер-данных -----------------------
 
   @Nonnull
   private List<BankDto> loadRequisitesBySupplierIds(@Nonnull final List<String> ids) {
-    final GetItemsSearchResponse response = requestDataWithRefItemSlug2(
-        properties.getSlugValueForSupplierRequisite(),               // словарь реквизитов
-        properties.getAttributeIdForSupplierRequisite(),             // refItemSlug
+    final GetItemsSearchResponse resp = base.requestDataWithRefItemSlug2(
+        properties.getSlugValueForSupplierRequisite(),
+        properties.getAttributeIdForSupplierRequisite(),
         ids
     );
-    return createResultWithAttribute(response, supplierRequisiteMapper);
+    return BaseMasterDataRequestService.createWithAttribute(resp, supplierRequisiteMapper);
   }
 
   @Nonnull
   private List<CounterpartyDto> loadSuppliersByIds(@Nonnull final List<String> ids) {
-    final GetItemsSearchResponse response = requestDataWithAttribute(
+    final GetItemsSearchResponse resp = base.requestDataWithAttribute(
         properties.getSlugValueForCounterparty(),
         ids,
         SearchRequestProperties.Context.BOOK
     );
-    return createResultWithAttribute(response, supplierMapper);
+    return BaseMasterDataRequestService.createWithAttribute(resp, supplierMapper);
   }
 
   @Nonnull
   private List<CounterpartyDto> loadSuppliersByCriteria(@Nonnull final Map<String, List<String>> criteria) {
-    final GetItemsSearchResponse response = requestDataWithAttribute(
+    final GetItemsSearchResponse resp = base.requestDataWithAttribute(
         properties.getSlugValueForCounterparty(),
         criteria
     );
-    return createResultWithAttribute(response, supplierMapper);
+    return BaseMasterDataRequestService.createWithAttribute(resp, supplierMapper);
   }
 
   @Nonnull
   private ResultObj<List<CounterpartyDto>> getSupplierByCriteria(@Nonnull final Map<String, List<String>> criteria) {
-    final var list = loadSuppliersByCriteria(criteria);
-    return getSuccessResponse(list);
+    return BaseMasterDataRequestService.createResultObjWithAttribute(
+        base.requestDataWithAttribute(properties.getSlugValueForCounterparty(), criteria),
+        supplierMapper
+    );
   }
 
-  // построение карты критериев (как раньше)
+  // ----------------------- Утилиты -----------------------
+
   @Nonnull
   private Map<String, List<String>> buildCriteriaMap(@Nullable final String inn, @Nullable final String kpp) {
     final Map<String, List<String>> criteria = new HashMap<>(2);
@@ -125,17 +137,8 @@ public class SupplierService extends BaseMasterDataRequestService {
       criteria.put(properties.getAttributeForInn(), List.of(inn));
     }
     if (kpp != null && !kpp.isBlank()) {
-      criteria.put(properties.getAttributeForKpp(), List.of(kpp));
-    }
-    return criteria;
-  }
+      criteria.put(properties.
 
-  // единый формат ключа кэша
-  @Nonnull
-  private static String buildInnKppKey(@Nullable final String inn, @Nullable final String kpp) {
-    return String.format("inn:%s:kpp:%s", String.valueOf(inn), String.valueOf(kpp));
-  }
-}
 
 
 ```
