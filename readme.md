@@ -137,7 +137,15 @@ public class SupplierService {
       criteria.put(properties.getAttributeForInn(), List.of(inn));
     }
     if (kpp != null && !kpp.isBlank()) {
-      criteria.put(properties.
+      criteria.put(properties.getAttributeForKpp(), List.of(kpp));
+    }
+    return criteria;
+  }
+
+  @Nonnull
+  private static String buildInnKppKey(@Nullable final String inn, @Nullable final String kpp) {
+    return String.format("inn:%s:kpp:%s", String.valueOf(inn), String.valueOf(kpp));
+  }
 
 
 
