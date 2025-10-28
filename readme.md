@@ -1,112 +1,105 @@
 ```java
 
-// imports для этих тестов:
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
+private <T> void assertConcurrentFanInToSingleBackendCall(
+        int threads,
+        Callable<T> callUnderTest,
+        CountDownLatch backendEntered,
+        CountDownLatch releaseBackend,
+        Runnable verifyBackendInteractions,
+        String assertCacheName
+) throws Exception {
 
-import java.util.List;
-import java.util.function.Function;
-import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Mockito;
-import org.springframework.cache.Cache;
-import org.springframework.cache.CacheManager;
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    try {
+        // запускаем N конкурентных вызовов
+        List<Future<T>> futures = java.util.stream.IntStream.range(0, threads)
+                .mapToObj(i -> pool.submit(callUnderTest))
+                .toList();
 
-/**
- * <b>Given</b> CacheManager не знает кеш с заданным именем (возвращает {@code null}).<br>
- * <b>When</b> запрашиваем один ключ через {@code fetchBatch}.<br>
- * <b>Then</b> ветка {@code cache == null}: loader вызывается один раз, элемент возвращается,
- * запись в кеш не производится.
- */
-@Test
-void givenUnknownCacheName_whenFetchSingle_thenLoaderCalled_andResultReturned() {
-  CacheManager manager = Mockito.mock(CacheManager.class);
-  when(manager.getCache("missing")).thenReturn(null);
+        // гарантируем, что хотя бы один поток дошёл до мокнутого бэкенда
+        org.junit.jupiter.api.Assertions.assertTrue(
+                backendEntered.await(1, java.util.concurrent.TimeUnit.SECONDS),
+                "backend must be entered"
+        );
 
-  BatchCacheSupport localBatch = new BatchCacheSupport(manager);
+        // отпускаем бэкенд — все вызовы схлопнутся в один
+        releaseBackend.countDown();
 
-  @SuppressWarnings("unchecked")
-  Function<List<String>, List<Tb>> loader =
-      (Function<List<String>, List<Tb>>) Mockito.mock(Function.class);
-  when(loader.apply(Mockito.anyList())).thenReturn(List.of(new Tb("A", "Bank A")));
+        // убеждаемся, что все получили результат
+        for (Future<T> f : futures) {
+            org.junit.jupiter.api.Assertions.assertNotNull(f.get());
+        }
+    } finally {
+        pool.shutdownNow();
+    }
 
-  List<Tb> result = localBatch.fetchBatch(
-      "missing", List.of("A"), loader, Tb::getCode, Tb.class
-  );
-
-  ArgumentCaptor<List<String>> captor =
-      (ArgumentCaptor<List<String>>) (ArgumentCaptor<?>) ArgumentCaptor.forClass(List.class);
-  verify(loader, times(1)).apply(captor.capture());
-  assertEquals(List.of("A"), captor.getValue());
-
-  assertEquals(1, result.size());
-  assertEquals("A", result.get(0).getCode());
+    // проверяем взаимодействия и ключ в кеше
+    verifyBackendInteractions.run();
+    org.junit.jupiter.api.Assertions.assertTrue(
+            CacheIntrospection.keys(cacheManager, assertCacheName).contains("ALL")
+    );
 }
 
-/**
- * <b>Given</b> кеш существует, но {@code cache.get(key, type)} кидает {@link ClassCastException}.<br>
- * <b>When</b> запрашиваем один ключ.<br>
- * <b>Then</b> ветка type-mismatch: выполняется {@code cache.evict(key)}, вызывается loader,
- * загруженный элемент кладётся в кеш и возвращается.
- */
+
 @Test
-void givenCacheGetThrowsClassCast_whenFetchSingle_thenEvicted_loaded_andCached() {
-  Cache cache = Mockito.mock(Cache.class);
-  when(cache.get("A", Tb.class)).thenThrow(new ClassCastException("wrong type"));
+void givenConcurrentCalls_getAllBanks_thenFanInToSingle_requestData_call() throws Exception {
+    CountDownLatch entered  = new CountDownLatch(1);
+    CountDownLatch release  = new CountDownLatch(1);
 
-  CacheManager manager = Mockito.mock(CacheManager.class);
-  when(manager.getCache("tb_by_code")).thenReturn(cache);
+    GetItemsSearchResponse ok =
+            MasterDataFixtures.okNoAttrResponse("TB001", "Test Bank 1");
 
-  BatchCacheSupport localBatch = new BatchCacheSupport(manager);
+    when(baseMasterDataRequestService.requestData(
+            eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK)))
+        .thenAnswer(inv -> { entered.countDown(); release.await(2, TimeUnit.SECONDS); return ok; });
 
-  @SuppressWarnings("unchecked")
-  Function<List<String>, List<Tb>> loader =
-      (Function<List<String>, List<Tb>>) Mockito.mock(Function.class);
-  when(loader.apply(Mockito.anyList())).thenReturn(List.of(new Tb("A", "Bank A")));
+    Callable<List<TerBankDto>> call = terBankCacheOps::getAllBanks;
 
-  List<Tb> result = localBatch.fetchBatch(
-      "tb_by_code", List.of("A"), loader, Tb::getCode, Tb.class
-  );
+    Runnable verify = () -> {
+        verify(baseMasterDataRequestService, times(1))
+                .requestData(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
+        verify(baseMasterDataRequestService, never()).requestDataWithAttribute(anyString(), any(), any());
+    };
 
-  // cache.evict(key) должен быть вызван при ClassCastException
-  verify(cache, times(1)).evict("A");
-  // загруженное значение положили в кеш
-  verify(cache, times(1)).put(eq("A"), any(Tb.class));
-
-  assertEquals(1, result.size());
-  assertEquals("A", result.get(0).getCode());
+    assertConcurrentFanInToSingleBackendCall(
+            4,                // threads
+            call,
+            entered,
+            release,
+            verify,
+            TerBankService2.TB_ALL
+    );
 }
 
-/**
- * <b>Given</b> кеш существует, но {@code cache.get(key, type)} кидает произвольный {@link RuntimeException}.<br>
- * <b>When</b> запрашиваем один ключ.<br>
- * <b>Then</b> vetka runtime-failure: loader вызывается, а {@code cache.evict(key)} <i>не</i> вызывается,
- * загруженный элемент кладётся в кеш и возвращается.
- */
+
 @Test
-void givenCacheGetThrowsRuntime_whenFetchSingle_thenNoEvict_loaded_andCached() {
-  Cache cache = Mockito.mock(Cache.class);
-  when(cache.get("A", Tb.class)).thenThrow(new IllegalStateException("boom"));
+void givenConcurrentCalls_getAllBanksWithRequisite_thenFanInToSingle_requestDataWithAttribute_call() throws Exception {
+    CountDownLatch entered  = new CountDownLatch(1);
+    CountDownLatch release  = new CountDownLatch(1);
 
-  CacheManager manager = Mockito.mock(CacheManager.class);
-  when(manager.getCache("tb_by_code")).thenReturn(cache);
+    GetItemsSearchResponse ok =
+            MasterDataFixtures.okWithAttrResponse("TB001", "Req Bank 1", Map.of("inn", "1234567890"));
 
-  BatchCacheSupport localBatch = new BatchCacheSupport(manager);
+    when(baseMasterDataRequestService.requestDataWithAttribute(
+            eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK)))
+        .thenAnswer(inv -> { entered.countDown(); release.await(2, TimeUnit.SECONDS); return ok; });
 
-  @SuppressWarnings("unchecked")
-  Function<List<String>, List<Tb>> loader =
-      (Function<List<String>, List<Tb>>) Mockito.mock(Function.class);
-  when(loader.apply(Mockito.anyList())).thenReturn(List.of(new Tb("A", "Bank A")));
+    Callable<List<TerBankWithRequisiteDto>> call = terBankCacheOps::getAllBanksWithRequisite;
 
-  List<Tb> result = localBatch.fetchBatch(
-      "tb_by_code", List.of("A"), loader, Tb::getCode, Tb.class
-  );
+    Runnable verify = () -> {
+        verify(baseMasterDataRequestService, times(1))
+                .requestDataWithAttribute(eq("terbank-slug"), isNull(), eq(SearchRequestProperties.Context.BOOK));
+        verify(baseMasterDataRequestService, never()).requestData(anyString(), any(), any());
+    };
 
-  verify(cache, never()).evict("A");          // при RuntimeException не эвиктим
-  verify(cache, times(1)).put(eq("A"), any()); // загруженное — положили
-
-  assertEquals(1, result.size());
-  assertEquals("A", result.get(0).getCode());
+    assertConcurrentFanInToSingleBackendCall(
+            4,
+            call,
+            entered,
+            release,
+            verify,
+            TerBankService2.TB_REQ_ALL
+    );
 }
 
 ```
