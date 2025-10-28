@@ -102,4 +102,17 @@ void givenConcurrentCalls_getAllBanksWithRequisite_thenFanInToSingle_requestData
     );
 }
 
+/**
+ * Проверяет, что несколько конкурентных вызовов схлопываются
+ * в один фактический запрос к backend'у, а результат кэшируется.
+ *
+ * @param threads                 количество потоков, выполняющих параллельные вызовы
+ * @param callUnderTest           операция, вызываемая конкурентно
+ * @param backendEntered          latch, сигнализирующий о входе в backend
+ * @param releaseBackend          latch, разрешающий выход из backend
+ * @param verifyBackendInteractions проверка количества обращений к backend
+ * @param assertCacheName         имя кэша, в котором ожидается сохранённый результат
+ * @param <T>                     тип возвращаемого значения операции
+ * @throws Exception              если выполнение потоков или проверок завершилось с ошибкой
+ */
 ```
