@@ -119,6 +119,10 @@ public class SupplierService {
 
 
 
+/**
+ * Вспомогательный сервис для пакетной выборки данных с использованием Spring Cache.
+ * Позволяет получать элементы по набору ключей, использовать кэш и догружать промахи батчем.
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -126,6 +130,17 @@ public class BatchCacheSupport {
 
     private final CacheManager cacheManager;
 
+    /**
+     * Получает данные по набору ключей из кэша. Для отсутствующих элементов вызывает загрузчик и обновляет кэш.
+     *
+     * @param cacheName   имя кэша
+     * @param keys        список ключей для выборки
+     * @param loader      функция загрузки отсутствующих элементов
+     * @param keyExtractor функция для получения ключа из загруженного объекта
+     * @param type        тип элементов
+     * @param <T>         тип данных
+     * @return список элементов в порядке исходных ключей
+     */
     @NonNull
     public <T> List<T> fetchBatch(
             @NonNull final String cacheName,
@@ -150,6 +165,14 @@ public class BatchCacheSupport {
         return orderByOriginal(keys, hits, loaded, keyExtractor);
     }
 
+    /**
+     * Безопасно вызывает загрузчик, возвращая пустой список при исключениях.
+     *
+     * @param loader функция загрузки
+     * @param miss   список недостающих ключей
+     * @param <T>    тип данных
+     * @return загруженные элементы или пустой список при ошибке
+     */
     private static <T> List<T> safeLoadBatch(
             @NonNull final Function<List<String>, List<T>> loader,
             @NonNull final List<String> miss) {
@@ -161,6 +184,16 @@ public class BatchCacheSupport {
         }
     }
 
+    /**
+     * Делит ключи на хиты (нашлись в кэше) и промахи (требуют загрузки).
+     *
+     * @param cache   кэш
+     * @param keys    ключи для выборки
+     * @param type    тип элементов
+     * @param hitsOut карта найденных элементов
+     * @param missOut список отсутствующих ключей
+     * @param <T>     тип данных
+     */
     private <T> void collectHitsAndMisses(
             @Nullable final Cache cache,
             @NonNull final List<String> keys,
@@ -186,6 +219,14 @@ public class BatchCacheSupport {
         }
     }
 
+    /**
+     * Добавляет загруженные элементы в кэш, пропуская элементы с некорректными ключами.
+     *
+     * @param cache        кэш для обновления
+     * @param loaded       список загруженных элементов
+     * @param keyExtractor функция получения ключа из объекта
+     * @param <T>          тип данных
+     */
     private <T> void putLoadedToCache(
             @Nullable final Cache cache,
             @NonNull final List<T> loaded,
@@ -211,6 +252,16 @@ public class BatchCacheSupport {
         }
     }
 
+    /**
+     * Собирает итоговый список элементов в порядке исходных ключей.
+     *
+     * @param originalKeys исходные ключи
+     * @param hits         элементы, найденные в кэше
+     * @param loaded       загруженные элементы
+     * @param keyExtractor функция получения ключа из объекта
+     * @param <T>          тип данных
+     * @return итоговый список элементов в порядке входных ключей
+     */
     @NonNull
     private <T> List<T> orderByOriginal(
             @NonNull final List<String> originalKeys,
