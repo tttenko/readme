@@ -290,5 +290,34 @@ public class BatchCacheSupport {
                 .filter(Objects::nonNull)
                 .toList();
     }
-}
+} 
+
+@Test
+  void fetchBatch_skipsNullAndBlankKeys_andLoadsOnlyValidOnes() {
+    // given: вход содержит мусорные ключи
+    List<String> keys = Arrays.asList(null, "", "   ", "A");
+
+    // перехватим, какие ключи реально ушли в лоадер
+    AtomicReference<List<String>> capturedMiss = new AtomicReference<>();
+
+    // when
+    List<String> result = support.fetchBatch(
+        "test",
+        keys,
+        miss -> { // лоадер должен получить только ["A"]
+          capturedMiss.set(miss);
+          return List.of("A"); // вернём объект с ключом "A"
+        },
+        Function.identity(),     // keyExtractor: T -> key
+        String.class
+    );
+
+    // then: в лоадер ушёл только валидный ключ
+    assertEquals(List.of("A"), capturedMiss.get());
+    // результат корректный и из кэша после догрузки
+    assertEquals(List.of("A"), result);
+    assertEquals("A", cacheManager.getCache("test").get("A", String.class));
+    // а мусорных ключей в кэше нет
+    assertNull(cacheManager.getCache("test").get("", String.class));
+  }
 ```
