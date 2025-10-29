@@ -293,31 +293,36 @@ public class BatchCacheSupport {
 } 
 
 @Test
-  void fetchBatch_skipsNullAndBlankKeys_andLoadsOnlyValidOnes() {
-    // given: вход содержит мусорные ключи
-    List<String> keys = Arrays.asList(null, "", "   ", "A");
-
-    // перехватим, какие ключи реально ушли в лоадер
-    AtomicReference<List<String>> capturedMiss = new AtomicReference<>();
+@DisplayName("fetchBatch: пропускает null/blank ключи и грузит только валидные")
+void fetchBatch_skipsNullAndBlankKeys_andLoadsOnlyValidOnes() {
+    // given: вход содержит мусорные ключи + один валидный
+    final List<String> keys = Arrays.asList(null, "", "   ", "A");
+    final AtomicReference<List<String>> capturedMiss = new AtomicReference<>();
 
     // when
-    List<String> result = support.fetchBatch(
-        "test",
+    final List<Tb> result = batch.fetchBatch(
+        CACHE_NAME,
         keys,
         miss -> { // лоадер должен получить только ["A"]
-          capturedMiss.set(miss);
-          return List.of("A"); // вернём объект с ключом "A"
+            capturedMiss.set(miss);
+            return List.of(new Tb("A", "A-bank"));
         },
-        Function.identity(),     // keyExtractor: T -> key
-        String.class
+        Tb::getCode,   // keyExtractor
+        Tb.class       // type
     );
 
-    // then: в лоадер ушёл только валидный ключ
+    // then: в лоадер ушёл ровно один валидный ключ
     assertEquals(List.of("A"), capturedMiss.get());
-    // результат корректный и из кэша после догрузки
-    assertEquals(List.of("A"), result);
-    assertEquals("A", cacheManager.getCache("test").get("A", String.class));
-    // а мусорных ключей в кэше нет
-    assertNull(cacheManager.getCache("test").get("", String.class));
-  }
+
+    // результат — один элемент с кодом "A"
+    assertEquals(1, result.size());
+    assertEquals("A", result.get(0).getCode());
+
+    // в кэше есть запись по ключу "A", мусорных ключей нет
+    var cache = cacheManager.getCache(CACHE_NAME);
+    assertNotNull(cache.get("A", Tb.class));
+    assertNull(cache.get("", Tb.class));
+    assertNull(cache.get("   ", Tb.class));
+}
+
 ```
