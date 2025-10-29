@@ -267,6 +267,4 @@ public class BatchCacheSupport {
     }
 }
 
-
-
 ```
