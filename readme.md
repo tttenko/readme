@@ -3,9 +3,12 @@
 /**
  * Unit-тесты для {@link SupplierService2}.
  * <p>
- * Проверяют корректную оркестрацию сервисного слоя: выбор стратегии загрузки данных,
- * использование {@link BatchCacheSupport}, взаимодействие с {@link SupplierCacheOps}
- * и работу с кэшем через {@link org.springframework.cache.CacheManager}.
+ * Проверяют бизнес-логику и оркестрацию сервисного слоя:
+ * корректность выбора стратегии загрузки данных, интеграцию с {@link BatchCacheSupport},
+ * взаимодействие с {@link SupplierCacheOps} и работу с {@link org.springframework.cache.CacheManager}.
+ * <p>
+ * Цель тестов — убедиться, что сервис правильно использует кэширование и не обращается
+ * к мастер-данным (MDM) при наличии валидных данных в кэше.
  *
  * @author Твой_ник
  */
@@ -13,51 +16,74 @@
 class SupplierService2Test {
 
     /**
-     * Проверяет, что при наличии и INN, и KPP
-     * сервис использует {@link BatchCacheSupport} и не выполняет фолбэк в мастер-данные.
-     *
-     * @see SupplierService2#searchCounterpartiesByCriteria(String, String)
+     * Проверяет поведение метода {@link SupplierService2#searchCounterpartiesByCriteria(String, String)}
+     * при наличии обоих параметров — INN и KPP.
+     * <p>
+     * Ожидается, что сервис:
+     * <ul>
+     *   <li>использует {@link BatchCacheSupport#fetchBatch} для получения данных из кэша;</li>
+     *   <li>не вызывает фолбэк-загрузку из мастер-данных;</li>
+     *   <li>формирует корректный ключ кэша вида {@code "inn:<inn>:kpp:<kpp>"}.</li>
+     * </ul>
      */
     @Test
     void searchCounterpartiesByCriteria_innAndKpp_hitsBatch_noFallback() { ... }
 
     /**
-     * Проверяет, что при задании только INN
-     * сервис пропускает батч-кэш и вызывает прямую загрузку из мастер-данных.
-     *
-     * @see SupplierService2#searchCounterpartiesByCriteria(String, String)
+     * Проверяет поведение метода {@link SupplierService2#searchCounterpartiesByCriteria(String, String)}
+     * при задании только INN без KPP.
+     * <p>
+     * Ожидается, что:
+     * <ul>
+     *   <li>батч-кэш не используется;</li>
+     *   <li>сервис вызывает прямой запрос к мастер-данным через {@link BaseMasterDataRequestService};</li>
+     *   <li>кэш {@link SupplierService2#SUPPLIER_BY_INN_KPP} остаётся пустым.</li>
+     * </ul>
      */
     @Test
     void searchCounterpartiesByCriteria_innOnly_bypassBatch_callsDirect() { ... }
 
     /**
-     * Проверяет сценарий промаха батч-кэша (INN+KPP):
-     * происходит загрузка из мастер-данных и ручная запись результата в кэш.
-     *
-     * @see SupplierService2#searchCounterpartiesByCriteria(String, String)
+     * Проверяет сценарий промаха батч-кэша в методе
+     * {@link SupplierService2#searchCounterpartiesByCriteria(String, String)} при поиске по INN+KPP.
+     * <p>
+     * Ожидается, что:
+     * <ul>
+     *   <li>сначала происходит неудачная попытка загрузки из кэша (промах);</li>
+     *   <li>далее выполняется загрузка из мастер-данных через {@link BaseMasterDataRequestService};</li>
+     *   <li>результат сохраняется в кэш вручную через {@link CacheManager}.</li>
+     * </ul>
      */
     @Test
     void searchCounterpartiesByCriteria_innAndKpp_batchMiss_fallbackAndCachePut() { ... }
 
     /**
-     * Проверяет, что при поиске по списку идентификаторов
-     * используется батч-загрузка через {@link BatchCacheSupport}.
-     *
-     * @see SupplierService2#getCounterpartiesById(List)
+     * Проверяет метод {@link SupplierService2#getCounterpartiesById(List)}.
+     * <p>
+     * Ожидается, что:
+     * <ul>
+     *   <li>для указанного списка идентификаторов вызывается {@link BatchCacheSupport#fetchBatch};</li>
+     *   <li>прямая загрузка из мастер-данных не выполняется;</li>
+     *   <li>результат возвращается в виде {@code ResultObj<List<CounterpartyDto>>}.</li>
+     * </ul>
      */
     @Test
     void getCounterpartiesById_usesBatchLoad() { ... }
 
     /**
-     * Проверяет, что при поиске реквизитов по supplierId
-     * сервис фильтрует пустые идентификаторы и вызывает {@link SupplierCacheOps}.
-     *
-     * @see SupplierService2#searchSupplierRequisite(List)
+     * Проверяет метод {@link SupplierService2#searchSupplierRequisite(List)}.
+     * <p>
+     * Ожидается, что:
+     * <ul>
+     *   <li>сервис корректно фильтрует {@code null}, пустые и пробельные идентификаторы поставщиков;</li>
+     *   <li>батч-кэш не используется;</li>
+     *   <li>для валидных идентификаторов вызывается {@link SupplierCacheOps#loadBySupplierId(String)};</li>
+     *   <li>все результаты объединяются и возвращаются в виде {@code ResultObj<List<BankDto>>}.</li>
+     * </ul>
      */
     @Test
     void searchSupplierRequisite_filtersBlanks_usesSupplierCacheOps() { ... }
 }
 
-}
 
 ```
