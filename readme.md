@@ -1,11 +1,9 @@
 ```java
 
-// Если в BaseMasterDataRequestService утилиты статические:
-import org.mockito.MockedStatic;
-
 @ExtendWith(MockitoExtension.class)
 class SupplierService2Test {
 
+  // --- зависимости ---
   @Mock private SupplierCacheOps supplierCache;
   @Mock private BatchCacheSupport batchLoad;
   @Mock private SupplierRequisiteMapper supplierRequisiteMapper;
@@ -13,40 +11,36 @@ class SupplierService2Test {
   @Mock private BaseMasterDataRequestService baseMasterDataRequestService;
   @Mock private SearchRequestProperties properties;
 
-  private CacheManager cacheManager;
+  // реальный CacheManager, чтобы крутился кэш как в проде
+  @Spy private CaffeineCacheManager cacheManager =
+      new CaffeineCacheManager(
+          SupplierService2.SUPPLIER_REQ_BY_SUPPLIER_ID,
+          SupplierService2.SUPPLIER_BY_ID,
+          SupplierService2.SUPPLIER_BY_INN_KPP
+      );
 
-  private SupplierService2 service;
+  // сервис — инжектится конструктором автоматически (порядок полей не важен)
+  @InjectMocks private SupplierService2 service;
 
   @BeforeEach
   void setUp() {
-    final var mgr = new CaffeineCacheManager(
-        SupplierService2.SUPPLIER_REQ_BY_SUPPLIER_ID,
-        SupplierService2.SUPPLIER_BY_ID,
-        SupplierService2.SUPPLIER_BY_INN_KPP
+    // настроим Caffeine для CacheManager
+    cacheManager.setCaffeine(
+        Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(Duration.ofMinutes(10))
+            .recordStats()
     );
-    mgr.setCaffeine(Caffeine.newBuilder()
-        .maximumSize(10_000)
-        .expireAfterWrite(Duration.ofMinutes(10))
-        .recordStats());
-    this.cacheManager = mgr;
 
-    // Часто сервису нужны эти значения:
+    // частые стабы свойств, чтобы не дублировать в тестах
     when(properties.getAttributeIdForInn()).thenReturn("innAttr");
     when(properties.getAttributeIdForKpp()).thenReturn("kppAttr");
     when(properties.getSlugValueForCounterparty()).thenReturn("counterpartyDic");
     when(properties.getSlugValueForSupplierRequisite()).thenReturn("supplierRequisite");
     when(properties.getAttributeIdForSupplierRequisite()).thenReturn("SupplierId");
-
-    this.service = new SupplierService2(
-        supplierCache,
-        batchLoad,
-        supplierRequisiteMapper,
-        supplierMapper,
-        baseMasterDataRequestService,
-        properties,
-        cacheManager
-    );
   }
+}
+
 
   // --- INN+KPP: основной путь через батч ---
   @Test
