@@ -1,172 +1,197 @@
 ```java
-package com.example.nds;
+package your.package.nds;
 
-import com.example.common.BaseMasterDataRequestService;
-import com.example.common.SearchRequestProperties;
-import com.example.common.requests.ItemsSearchCriteriaRequest;
-import com.example.common.requests.RequestFactory;
-import com.example.common.responses.GetItemsSearchResponse;
-import com.example.nds.dto.NdsDto;
-import com.example.nds.dto.NdsFullDto;
-import com.example.nds.mapper.NdsMapper;
-import com.example.web.ResultObj;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.tuple.Pair;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 
-import java.io.Serializable;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArraySet;
-
-import static java.util.Objects.nonNull;
+import java.util.stream.Stream;
 
 /**
- * NdsService — использует Spring Cache (Caffeine) и BatchCacheSupport для батч-загрузки
- * и кэширования значений НДС по ключам rate (и специальный ключ "__ALL__" при пустом запросе rate).
+ * Сервис НДС: Spring Cache (Caffeine) + BatchCacheSupport.
+ * - Данные грузим из МД одной батч-операцией без фильтра по rate.
+ * - В кэше храним «корзины» по ключу (rate или "__ALL__").
+ * - Фильтрация по дате/rate/code — как в старой реализации.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class NdsService {
 
-  public static final String CACHE_NDS_BY_RATE = "nds_by_rate";
-  private static final String ALL_KEY = "__ALL__";
-  private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mmXXX");
+    public static final String CACHE_NDS_BY_RATE = "nds_by_rate";
+    private static final String ALL_KEY = "__ALL__";
+    private static final DateTimeFormatter DATE_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mmXXX");
 
-  private static final List<String> BASIC_RATE_TYPE = List.of("1");
-  private static final List<String> ACTIVE_RATE = List.of("true");
+    private static final List<String> BASIC_RATE_TYPE = List.of("1");
+    private static final List<String> ACTIVE_RATE = List.of("true");
 
-  private final NdsMapper ndsMapper;
-  private final BatchCacheSupport batchLoad;
-  private final BaseMasterDataRequestService baseMasterDataRequestService;
-  private final SearchRequestProperties properties;
+    private final NdsMapper ndsMapper;
+    private final BatchCacheSupport batchLoad;
+    private final BaseMasterDataRequestService baseMasterDataRequestService;
+    private final SearchRequestProperties properties;
 
-  // record для кешируемых «корзин»: ключ (rate | "__ALL__") + набор элементов
-  private record RateBucket(@Nonnull String key, @Nonnull Set<NdsFullDto> items) {}
+    /** Элемент кэша: «корзина» по ключу (ставка или "__ALL__") */
+    private record RateBucket(@Nonnull String key, @Nonnull Set<NdsFullDto> items) {}
 
-  /** Публичный API — аналог старого getBasicVatRate, поведение сохранено. */
-  @Nonnull
-  public ResultObj<List<NdsDto>> getBasicVatRate(@Nullable final ZonedDateTime date,
-                                                 @Nullable final List<String> code,
-                                                 @Nullable final List<String> rate) {
-    final ZonedDateTime targetDate = date != null ? date : ZonedDateTime.now();
+    /**
+     * Публичный API — поведение идентично старому:
+     * 1) пытаемся прочитать из кэша; 2) промахи — батч-догрузка; 3) фильтр по дате/кодам/ставкам; 4) DTO.
+     */
+    @Nonnull
+    public ResultObj<List<NdsDto>> getBasicVatRate(@Nullable final ZonedDateTime date,
+                                                   @Nullable final List<String> code,
+                                                   @Nullable final List<String> rate) {
+        final ZonedDateTime targetDate = (date != null) ? date : ZonedDateTime.now();
 
-    // 1) какие ключи нужны из кеша?
-    final List<String> keys = (CollectionUtils.isEmpty(rate) ? List.of(ALL_KEY) : new ArrayList<>(rate));
+        // какие ключи нужны из кэша?
+        final List<String> keys = CollectionUtils.isEmpty(rate) ? List.of(ALL_KEY) : new ArrayList<>(rate);
 
-    // 2) батч-чтение/догрузка промахов (одна поездка в МД для всех miss)
-    final List<RateBucket> buckets = batchLoad.fetchBatch(
-        CACHE_NDS_BY_RATE,
-        keys,
-        miss -> loadAllFromMdAndPartition(targetDate, miss),
-        RateBucket::key,
-        RateBucket.class
-    );
+        // батч-чтение/догрузка промахов (один вызов загрузчика на весь miss)
+        final List<RateBucket> buckets = batchLoad.fetchBatch(
+                CACHE_NDS_BY_RATE,
+                keys,
+                miss -> loadAllFromMdAndPartition(targetDate, miss),
+                RateBucket::key,
+                RateBucket.class
+        );
 
-    // 3) собираем результирующий список и фильтруем (даты/коды — идентично прежнему)
-    final List<NdsFullDto> flat = buckets.stream()
-        .filter(Objects::nonNull)
-        .flatMap(b -> b.items().stream())
-        .toList();
+        // stream → filters → map → collect
+        final var dto = toDto(
+                        applyFilters(
+                            asStream(buckets),
+                            targetDate, rate, code
+                        ))
+                .toList();
 
-    final List<NdsFullDto> filtered = flat.stream()
-        .filter(e -> isBefore(targetDate, e) && isAfter(targetDate, e))
-        .filter(e -> CollectionUtils.isEmpty(rate) || rate.contains(e.getRate()))
-        .filter(e -> CollectionUtils.isEmpty(code) || code.contains(e.getCode()))
-        .toList();
-
-    final var dto = filtered.stream()
-        .map(e -> NdsDto.builder()
-            .name(e.getName())
-            .rate(e.getRate())
-            .id(e.getId())
-            .code(e.getCode())
-            .name(e.getName())
-            .build())
-        .toList();
-
-    return getSuccessResponse(dto);
-  }
-
-  /**
-   * Загрузка ИЗ МД ОДИН РАЗ для всего miss-набора, без фильтра по rate
-   * → распил по корзинам (miss содержит либо список rate, либо "__ALL__").
-   */
-  @Nonnull
-  private List<RateBucket> loadAllFromMdAndPartition(@Nonnull final ZonedDateTime date,
-                                                     @Nonnull final List<String> missKeys) {
-    final String dateString = date.format(DATE_TIME_FORMATTER);
-
-    final GetItemsSearchResponse response = baseMasterDataRequestService.requestData(
-        buildRequest(dateString),
-        SearchRequestProperties.Context.BOOK);
-
-    final List<NdsFullDto> all = baseMasterDataRequestService.createResultWithAttribute(response, ndsMapper);
-
-    // группируем по rate
-    final Map<String, Set<NdsFullDto>> byRate = new HashMap<>();
-    for (NdsFullDto e : all) {
-      byRate.computeIfAbsent(e.getRate(), r -> new CopyOnWriteArraySet<>()).add(e);
+        // используем готовый статический хелпер проекта
+        return BaseMasterDataRequestService.getSuccessResponse(dto);
     }
 
-    final List<RateBucket> out = new ArrayList<>(missKeys.size());
-    for (String miss : missKeys) {
-      if (ALL_KEY.equals(miss)) {
-        // полная корзина
-        out.add(new RateBucket(ALL_KEY, new CopyOnWriteArraySet<>(all)));
-      } else {
-        final Set<NdsFullDto> set = byRate.getOrDefault(miss, Set.of());
-        out.add(new RateBucket(miss, new CopyOnWriteArraySet<>(set)));
-      }
+    /* -----------------------------------------------------------
+     *               Приватные шаги (stream/filters/map)
+     * ----------------------------------------------------------- */
+
+    /** 1) плоский поток доменных элементов из корзин */
+    @Nonnull
+    private Stream<NdsFullDto> asStream(@Nonnull final List<RateBucket> buckets) {
+        return buckets.stream()
+                .filter(Objects::nonNull)
+                .flatMap(b -> b.items().stream());
     }
-    return out;
-  }
 
-  // --- Очистка кеша (нужна тестам/операциям поддержки) ---
-  @CacheEvict(cacheNames = CACHE_NDS_BY_RATE, allEntries = true)
-  public void cleanCache() {
-    log.info("NDS cache cleared");
-  }
+    /** 2) фильтрация по дате + (опц.) по rate и code */
+    @Nonnull
+    private Stream<NdsFullDto> applyFilters(@Nonnull final Stream<NdsFullDto> source,
+                                            @Nonnull final ZonedDateTime date,
+                                            @Nullable final List<String> rate,
+                                            @Nullable final List<String> code) {
+        Stream<NdsFullDto> s = source
+                .filter(e -> isBefore(date, e) && isAfter(date, e));
+        if (!CollectionUtils.isEmpty(rate)) s = s.filter(e -> rate.contains(e.getRate()));
+        if (!CollectionUtils.isEmpty(code)) s = s.filter(e -> code.contains(e.getCode()));
+        return s;
+    }
 
-  // --- Опционально: статус кеша для отладки/админки ---
-  @Nonnull
-  public Map<String, Serializable> getCacheStatus() {
-    // количество ключей (rate + "__ALL__") — оценка «внешнего размера»
-    // (через CacheManager напрямую доставать map значений Caffeine нельзя — даём безопасный ответ)
-    return Map.of("Кол-во записей", -1); // если нужна фактическая статистика — используйте метрики Caffeine/Actuator
-  }
+    /** 3) маппинг в DTO */
+    @Nonnull
+    private Stream<NdsDto> toDto(@Nonnull final Stream<NdsFullDto> source) {
+        return source.map(e -> NdsDto.builder()
+                .name(e.getName())
+                .rate(e.getRate())
+                .id(e.getId())
+                .code(e.getCode())
+                .name(e.getName())
+                .build());
+    }
 
-  // --- фильтры (перенос из старого кода) ---
-  private static boolean isAfter(@Nonnull final ZonedDateTime date, @Nonnull final NdsFullDto e) {
-    return !nonNull(e.getRateDateEndZoned()) || e.getRateDateEndZoned().isAfter(date);
-  }
-  private static boolean isBefore(@Nonnull final ZonedDateTime date, @Nonnull final NdsFullDto e) {
-    return nonNull(e.getRateDateStartZoned()) && e.getRateDateStartZoned().isBefore(date);
-  }
+    /* -----------------------------------------------------------
+     *                   Загрузка и разбиение
+     * ----------------------------------------------------------- */
 
-  // --- построение запроса в МД (без фильтра по rate — как раньше) ---
-  @Nonnull
-  private ItemsSearchCriteriaRequest buildRequest(@Nonnull final String dateString) {
-    return RequestFactory.getByAttrValuesBuilder()
-        .dictionaryName(properties.getSlugValueForVat())
-        .addAttributesAndRefItemSlug(properties.getAttributeIdForTaxRateType(), BASIC_RATE_TYPE)
-        .addAttributesAndValue(properties.getAttributeIdForTaxRateActive(), ACTIVE_RATE)
-        .addAttributesAndValue(properties.getAttributeIdForTaxRateEndDate(), List.of(dateString), RequestFactory.MORE_OPERATION)
-        .addAttributesAndValue(properties.getAttributeIdForTaxRateStartDate(), List.of(dateString), RequestFactory.LESS_OPERATION)
-        .build();
-  }
+    /**
+     * Загружаем из МД один раз (без фильтра по rate), затем делим данные на корзины:
+     * - если среди miss есть "__ALL__", создаём корзину "__ALL__" со всеми элементами;
+     * - для остальных ключей создаём корзины по ставке.
+     */
+    @Nonnull
+    private List<RateBucket> loadAllFromMdAndPartition(@Nonnull final ZonedDateTime date,
+                                                       @Nonnull final List<String> missKeys) {
+        final String dateString = date.format(DATE_TIME_FORMATTER);
 
-  // обёртка, чтобы вернуть ResultObj как в старом сервисе
-  @Nonnull
-  private <T> ResultObj<List<T>> getSuccessResponse(@Nonnull final List<T> data) {
-    return ResultObj.<List<T>>builder().data(data).success(true).build();
-  }
+        final var response = baseMasterDataRequestService.requestData(
+                buildRequest(dateString),
+                SearchRequestProperties.Context.BOOK
+        );
+
+        final List<NdsFullDto> all = baseMasterDataRequestService
+                .createResultWithAttribute(response, ndsMapper);
+
+        // группировка по rate
+        final Map<String, Set<NdsFullDto>> byRate = new HashMap<>();
+        for (NdsFullDto e : all) {
+            byRate.computeIfAbsent(e.getRate(), r -> new CopyOnWriteArraySet<>()).add(e);
+        }
+
+        final List<RateBucket> out = new ArrayList<>(missKeys.size());
+        for (String miss : missKeys) {
+            if (ALL_KEY.equals(miss)) {
+                out.add(new RateBucket(ALL_KEY, new CopyOnWriteArraySet<>(all)));
+            } else {
+                out.add(new RateBucket(miss,
+                        new CopyOnWriteArraySet<>(byRate.getOrDefault(miss, Set.of()))));
+            }
+        }
+        return out;
+    }
+
+    /* -----------------------------------------------------------
+     *                 Построение запроса в МД
+     * ----------------------------------------------------------- */
+
+    @Nonnull
+    private ItemsSearchCriteriaRequest buildRequest(@Nonnull final String dateString) {
+        return RequestFactory.getByAttrValuesBuilder()
+                .dictionaryName(properties.getSlugValueForVat())
+                .addAttributesAndRefItemSlug(properties.getAttributeIdForTaxRateType(), BASIC_RATE_TYPE)
+                .addAttributesAndValue(
+                        properties.getAttributeIdForTaxRateActive(),
+                        Pair.of(ACTIVE_RATE, RequestFactory.BOOLEAN_OPERATION))
+                .addAttributesAndValue(
+                        properties.getAttributeIdForTaxRateEndDate(),
+                        Pair.of(List.of(dateString), RequestFactory.MORE_OPERATION))
+                .addAttributesAndValue(
+                        properties.getAttributeIdForTaxRateStartDate(),
+                        Pair.of(List.of(dateString), RequestFactory.LESS_OPERATION))
+                .build();
+    }
+
+    /* -----------------------------------------------------------
+     *                   Вспомогательные утилиты
+     * ----------------------------------------------------------- */
+
+    private static boolean isAfter(@Nonnull final ZonedDateTime date, @Nonnull final NdsFullDto e) {
+        return e.getRateDateEndZoned() == null || e.getRateDateEndZoned().isAfter(date);
+    }
+
+    private static boolean isBefore(@Nonnull final ZonedDateTime date, @Nonnull final NdsFullDto e) {
+        return e.getRateDateStartZoned() != null && e.getRateDateStartZoned().isBefore(date);
+    }
+
+    /** Очистка кеша (для оперподдержки/тестов). */
+    @CacheEvict(cacheNames = CACHE_NDS_BY_RATE, allEntries = true)
+    public void cleanCache() {
+        log.info("NDS cache cleared");
+    }
 }
 
 
