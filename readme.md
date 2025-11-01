@@ -319,7 +319,7 @@ public final class CacheAssertions {
     BatchCacheSupport.class,
     NdsService2.class
 })
-class NdsService2CacheIT {
+class NdsService2CacheTest {
 
   @TestConfiguration
   @EnableCaching
@@ -460,7 +460,7 @@ class NdsService2CacheIT {
 }
 
 @ExtendWith(MockitoExtension.class)
-class NdsService2UnitTest {
+class NdsService2Test {
 
   @Mock private NdsMapper ndsMapper;
   @Mock private BatchCacheSupport batchLoad;
