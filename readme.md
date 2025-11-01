@@ -314,9 +314,47 @@ public final class CacheAssertions {
   }
 }
 
+package ru.sber.cs.supplier.portal.masterdata.services.impl.nds;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static ru.sber.cs.supplier.portal.masterdata.services.impl.nds.NdsService2.CACHE_NDS_BY_RATE;
+import static ru.sber.cs.supplier.portal.masterdata.services.support.CacheAssertions.assertBucketContainsIds;
+import static ru.sber.cs.supplier.portal.masterdata.services.support.CacheAssertions.assertBucketSize;
+import static ru.sber.cs.supplier.portal.masterdata.services.support.CacheAssertions.assertCacheEmpty;
+import static ru.sber.cs.supplier.portal.masterdata.services.support.CacheAssertions.assertCacheHasKeys;
+
+import com.github.benmanes.caffeine.cache.Caffeine;
+import java.time.Duration;
+import java.time.ZonedDateTime;
+import java.util.List;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.cache.CacheManager;
+import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.cache.caffeine.CaffeineCacheManager;
+import org.springframework.context.annotation.Bean;
+import ru.sber.cs.supplier.portal.masterdata.models.adapter.dto.NdsDto;
+import ru.sber.cs.supplier.portal.masterdata.models.adapter.dto.NdsFullDto;
+import ru.sber.cs.supplier.portal.masterdata.request.ItemsSearchCriteriaRequest;
+import ru.sber.cs.supplier.portal.masterdata.services.BaseMasterDataRequestService;
+import ru.sber.cs.supplier.portal.masterdata.services.GetItemsSearchResponse;
+import ru.sber.cs.supplier.portal.masterdata.services.impl.support.BatchCacheSupport;
+import ru.sber.cs.supplier.portal.masterdata.services.mapper.NdsMapper;
+import ru.sber.cs.supplier.portal.masterdata.settings.SearchRequestProperties;
+import ru.sber.cs.supplier.portal.masterdata.settings.SearchRequestProperties.Context;
+
 @SpringBootTest(classes = {
-    NdsService2CacheIT.TestCacheConfig.class,
-    BatchCacheSupport.class,
+    NdsService2CacheTest.TestCacheConfig.class,
     NdsService2.class
 })
 class NdsService2CacheTest {
@@ -324,16 +362,24 @@ class NdsService2CacheTest {
   @TestConfiguration
   @EnableCaching
   static class TestCacheConfig {
-    @Bean Caffeine<Object, Object> caffeine() {
+    @Bean
+    Caffeine<Object, Object> caffeine() {
       return Caffeine.newBuilder()
           .maximumSize(100)
           .expireAfterWrite(Duration.ofMinutes(10))
           .recordStats();
     }
-    @Bean CacheManager cacheManager(Caffeine<Object, Object> caffeine) {
-      var mgr = new CaffeineCacheManager(CACHE_NDS_BY_RATE);
+
+    @Bean
+    CacheManager cacheManager(final Caffeine<Object, Object> caffeine) {
+      final var mgr = new CaffeineCacheManager(CACHE_NDS_BY_RATE);
       mgr.setCaffeine(caffeine);
       return mgr;
+    }
+
+    @Bean
+    BatchCacheSupport batchCacheSupport(final CacheManager cm) {
+      return new BatchCacheSupport(cm);
     }
   }
 
@@ -341,7 +387,7 @@ class NdsService2CacheTest {
   @Autowired private CacheManager cacheManager;
 
   @MockBean private BaseMasterDataRequestService baseService;
-  @MockBean private NdsMapper ndsMapper;
+  @MockBean private NdsMapper ndsMapper; // не используется напрямую, но нужен для конструктора
   @MockBean private SearchRequestProperties properties;
 
   private void stubProps() {
@@ -356,9 +402,9 @@ class NdsService2CacheTest {
   @DisplayName("Warm-up → ключ появляется; повторный вызов — hit; cleanCache очищает")
   void warmup_hit_evict() {
     stubProps();
-    var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
+    final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
 
-    var items = List.of(
+    final var items = List.of(
         NdsFullDto.builder()
             .id("1").name("N1").rate("5").code("A")
             .rateDateStartZoned(date.minusDays(1))
@@ -380,7 +426,7 @@ class NdsService2CacheTest {
       assertBucketSize(cacheManager, CACHE_NDS_BY_RATE, "5", 1);
       verify(baseService, times(1)).requestData(any(), eq(Context.BOOK));
 
-      // повторный вызов по тому же rate — hit (без нового похода в МД)
+      // повторный вызов по тому же rate — hit
       service.getBasicVatRate(date, null, List.of("5"));
       verify(baseService, times(1)).requestData(any(), eq(Context.BOOK));
 
@@ -400,9 +446,9 @@ class NdsService2CacheTest {
   @DisplayName("Без rate создаётся только бакет '__ALL__'")
   void no_rate_creates_all_bucket() {
     stubProps();
-    var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
+    final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
 
-    var items = List.of(
+    final var items = List.of(
         NdsFullDto.builder().id("1").name("N1").rate("5").code("A")
             .rateDateStartZoned(date.minusDays(5)).build(),
         NdsFullDto.builder().id("2").name("N2").rate("10").code("B")
@@ -428,13 +474,13 @@ class NdsService2CacheTest {
   @DisplayName("Новый rate → добавляется новый бакет в кеше")
   void new_rate_adds_new_bucket() {
     stubProps();
-    var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
+    final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
 
-    var items5 = List.of(
+    final var items5 = List.of(
         NdsFullDto.builder().id("1").name("N1").rate("5").code("A")
             .rateDateStartZoned(date.minusDays(5)).build()
     );
-    var items10 = List.of(
+    final var items10 = List.of(
         NdsFullDto.builder().id("2").name("N2").rate("10").code("B")
             .rateDateStartZoned(date.minusDays(5)).build()
     );
@@ -458,6 +504,7 @@ class NdsService2CacheTest {
     }
   }
 }
+
 
 @ExtendWith(MockitoExtension.class)
 class NdsService2Test {
