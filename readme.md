@@ -145,143 +145,135 @@ public class NdsService2 {
 @RequiredArgsConstructor
 public class NdsService2 {
 
-  public static final String CACHE_NDS_BY_RATE = "nds_by_rate";
-  private static final String ALL_KEY = "__ALL__";
-  private static final DateTimeFormatter DATE_TIME_FORMATTER =
-      DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mmXXX");
+    public static final String CACHE_NDS_BY_RATE = "nds_by_rate";
+    private static final String ALL_KEY = "_ALL_";
+    private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mmXXX");
 
-  private static final List<String> BASIC_RATE_TYPE = List.of("1");
-  private static final List<String> ACTIVE_RATE = List.of("true");
+    private static final List<String> BASIC_RATE_TYPE = List.of("1");
+    private static final List<String> ACTIVE_RATE = List.of("true");
 
-  private final NdsMapper ndsMapper;
-  private final BatchCacheSupport batchLoad;
-  private final BaseMasterDataRequestService baseMasterDataRequestService;
-  private final SearchRequestProperties properties;
+    private final NdsMapper ndsMapper;
+    private final BatchCacheSupport batchLoad;
+    private final BaseMasterDataRequestService baseMasterDataRequestService;
+    private final SearchRequestProperties properties;
 
-  /** Носитель порции данных в кеше (один ключ — один набор элементов). */
-  private record RateBucket(@Nonnull String key, @Nonnull Set<NdsFullDto> items) {}
+    private record RateBucket(@Nonnull String key, @Nonnull Set<NdsFullDto> items) {}
 
-  // ---------------------- API ----------------------
+    @Nonnull
+    public ResultObj<List<NdsDto>> getBasicVatRate(@Nullable final ZonedDateTime date,
+                                                   @Nullable final List<String> code,
+                                                   @Nullable final List<String> rate) {
+        final ZonedDateTime targetDate = (date != null) ? date : ZonedDateTime.now();
 
-  @Nonnull
-  public ResultObj<List<NdsDto>> getBasicVatRate(@Nullable final ZonedDateTime date,
-                                                 @Nullable final List<String> code,
-                                                 @Nullable final List<String> rate) {
-    final ZonedDateTime targetDate = (date != null) ? date : ZonedDateTime.now();
+        final List<String> keys = (rate == null || rate.isEmpty())
+                ? List.of(ALL_KEY)
+                : List.copyOf(rate);
 
-    // какие ключи нужны из кеша
-    final List<String> keys = (rate == null || rate.isEmpty())
-        ? List.of(ALL_KEY)
-        : List.copyOf(rate);
+        final List<RateBucket> buckets = batchLoad.fetchBatch(
+                CACHE_NDS_BY_RATE,
+                keys,
+                miss -> partitionByRate(loadAllFromMd(targetDate), miss),
+                RateBucket::key,
+                RateBucket.class
+        );
 
-    // батч-чтение/догрузка miss (один вызов загрузчика на весь miss)
-    final List<RateBucket> buckets = batchLoad.fetchBatch(
-        CACHE_NDS_BY_RATE,
-        keys,
-        miss -> partitionByRate(loadAllFromMd(targetDate), miss),
-        RateBucket::key,
-        RateBucket.class
-    );
+        final List<NdsDto> dto = mapBucketsToDtoList(buckets, targetDate, rate, code);
 
-    final List<NdsDto> dto = buckets.stream()
-        .flatMap(b -> b.items().stream())
-        .filter(matches(targetDate, rate, code))
-        .map(this::toDto)
-        .toList();
+        return getSuccessResponse(dto);
+    }
 
-    return BaseMasterDataRequestService.getSuccessResponse(dto);
-  }
+    @Nonnull
+    private List<NdsFullDto> loadAllFromMd(@Nonnull final ZonedDateTime date) {
+        final String dateString = date.format(DATE_TIME_FORMATTER);
+        final var response = baseMasterDataRequestService.requestData(
+                buildRequest(dateString),
+                SearchRequestProperties.Context.BOOK
+        );
+        return createResultWithAttribute(response, ndsMapper);
+    }
 
-  // -------------------- Загрузка и разбиение --------------------
+    @Nonnull
+    private List<RateBucket> partitionByRate(@Nonnull final List<NdsFullDto> all,
+                                             @Nonnull final List<String> missKeys) {
+        final Map<String, Set<NdsFullDto>> byRate = all.stream()
+                .collect(Collectors.groupingBy(
+                        NdsFullDto::getRate,
+                        Collectors.toCollection(LinkedHashSet::new)));
 
-  /** Разовый запрос в МД без фильтра по rate (как и в старой логике). */
-  @Nonnull
-  private List<NdsFullDto> loadAllFromMd(@Nonnull final ZonedDateTime date) {
-    final String dateString = date.format(DATE_TIME_FORMATTER);
-    final var response = baseMasterDataRequestService.requestData(
-        buildRequest(dateString),
-        Context.BOOK
-    );
-    return BaseMasterDataRequestService.createResultWithAttribute(response, ndsMapper);
-  }
+        final Set<NdsFullDto> union = Set.copyOf(all);
 
-  /** Группировка по rate и формирование бакетов для всех miss-ключей. */
-  @Nonnull
-  private List<RateBucket> partitionByRate(@Nonnull final List<NdsFullDto> all,
-                                           @Nonnull final List<String> missKeys) {
-    final Map<String, Set<NdsFullDto>> byRate = all.stream()
-        .collect(Collectors.groupingBy(
-            NdsFullDto::getRate,
-            Collectors.toCollection(LinkedHashSet::new)));
+        return missKeys.stream()
+                .map(k -> new RateBucket(
+                        k,
+                        Set.copyOf(ALL_KEY.equals(k) ? union : byRate.getOrDefault(k, Set.of()))
+                ))
+                .toList();
+    }
 
-    final Set<NdsFullDto> union = Set.copyOf(all);
+    @Nonnull
+    private List<NdsDto> mapBucketsToDtoList(@Nonnull final List<RateBucket> buckets,
+                                             @Nonnull final ZonedDateTime dateTime,
+                                             @Nullable final List<String> rate,
+                                             @Nullable final List<String> code) {
+        return buckets.stream()
+                .flatMap(b -> b.items().stream())
+                .filter(matches(dateTime, rate, code))
+                .map(this::toDto)
+                .toList();
+    }
 
-    return missKeys.stream()
-        .map(k -> new RateBucket(
-            k,
-            Set.copyOf(ALL_KEY.equals(k) ? union : byRate.getOrDefault(k, Set.of()))
-        ))
-        .toList();
-  }
+    @Nonnull
+    private Predicate<NdsFullDto> matches(@Nonnull final ZonedDateTime date,
+                                          @Nullable final List<String> rate,
+                                          @Nullable final List<String> code) {
+        final boolean hasRate = rate != null && !rate.isEmpty();
+        final boolean hasCode = code != null && !code.isEmpty();
 
-  // -------------------- Фильтрация и маппинг --------------------
+        return e -> isBefore(date, e) && isAfter(date, e)
+                && (!hasRate || rate.contains(e.getRate()))
+                && (!hasCode || code.contains(e.getCode()));
+    }
 
-  @Nonnull
-  private Predicate<NdsFullDto> matches(@Nonnull final ZonedDateTime date,
-                                        @Nullable final List<String> rate,
-                                        @Nullable final List<String> code) {
-    final boolean hasRate = rate != null && !rate.isEmpty();
-    final boolean hasCode = code != null && !code.isEmpty();
-    return e -> isBefore(date, e) && isAfter(date, e)
-        && (!hasRate || rate.contains(e.getRate()))
-        && (!hasCode || code.contains(e.getCode()));
-  }
+    @Nonnull
+    private NdsDto toDto(@Nonnull final NdsFullDto e) {
+        return NdsDto.builder()
+                .name(e.getName())
+                .rate(e.getRate())
+                .id(e.getId())
+                .code(e.getCode())
+                .build();
+    }
 
-  @Nonnull
-  private NdsDto toDto(@Nonnull final NdsFullDto e) {
-    return NdsDto.builder()
-        .name(e.getName())
-        .rate(e.getRate())
-        .id(e.getId())
-        .code(e.getCode())
-        .build();
-  }
+    @Nonnull
+    private ItemsSearchCriteriaRequest buildRequest(@Nonnull final String dateString) {
+        return RequestFactory.getByAttrValuesBuilder()
+                .dictionaryName(properties.getSlugValueForVat())
+                .addAttributesAndRefItemSlug(properties.getAttributeIdForTaxRateType(), BASIC_RATE_TYPE)
+                .addAttributesAndValue(
+                        properties.getAttributeIdForTaxRateActive(),
+                        Pair.of(ACTIVE_RATE, RequestFactory.BOOLEAN_OPERATION))
+                .addAttributesAndValue(
+                        properties.getAttributeIdForTaxRateEndDate(),
+                        Pair.of(List.of(dateString), RequestFactory.MORE_OPERATION))
+                .addAttributesAndValue(
+                        properties.getAttributeIdForTaxRateStartDate(),
+                        Pair.of(List.of(dateString), RequestFactory.LESS_OPERATION))
+                .build();
+    }
 
-  // -------------------- Построение запроса в МД --------------------
+    private static boolean isAfter(@Nonnull final ZonedDateTime date, @Nonnull final NdsFullDto e) {
+        return e.getRateDateEndZoned() == null || e.getRateDateEndZoned().isAfter(date);
+    }
 
-  @Nonnull
-  private ItemsSearchCriteriaRequest buildRequest(@Nonnull final String dateString) {
-    return RequestFactory.getByAttrValuesBuilder()
-        .dictionaryName(properties.getSlugValueForVat())
-        .addAttributesAndRefItemSlug(properties.getAttributeIdForTaxRateType(), BASIC_RATE_TYPE)
-        .addAttributesAndValue(
-            properties.getAttributeIdForTaxRateActive(),
-            Pair.of(ACTIVE_RATE, RequestFactory.BOOLEAN_OPERATION))
-        .addAttributesAndValue(
-            properties.getAttributeIdForTaxRateEndDate(),
-            Pair.of(List.of(dateString), RequestFactory.MORE_OPERATION))
-        .addAttributesAndValue(
-            properties.getAttributeIdForTaxRateStartDate(),
-            Pair.of(List.of(dateString), RequestFactory.LESS_OPERATION))
-        .build();
-  }
+    private static boolean isBefore(@Nonnull final ZonedDateTime date, @Nonnull final NdsFullDto e) {
+        return e.getRateDateStartZoned() != null && e.getRateDateStartZoned().isBefore(date);
+    }
 
-  // -------------------- Вспомогательные условия --------------------
-
-  private static boolean isAfter(@Nonnull final ZonedDateTime date, @Nonnull final NdsFullDto e) {
-    return e.getRateDateEndZoned() == null || e.getRateDateEndZoned().isAfter(date);
-  }
-
-  private static boolean isBefore(@Nonnull final ZonedDateTime date, @Nonnull final NdsFullDto e) {
-    return e.getRateDateStartZoned() != null && e.getRateDateStartZoned().isBefore(date);
-  }
-
-  // -------------------- Инвалидация кеша --------------------
-
-  @CacheEvict(cacheNames = CACHE_NDS_BY_RATE, allEntries = true)
-  public void cleanCache() {
-    log.info("NDS cache cleared");
-  }
+    @CacheEvict(cacheNames = CACHE_NDS_BY_RATE, allEntries = true)
+    public void cleanCache() {
+        log.info("NDS cache cleared");
+    }
 }
+
 
 ```
