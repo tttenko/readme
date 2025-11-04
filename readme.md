@@ -673,224 +673,183 @@ class NdsService2Test {
 
 
 =====================================
-/package ru.sber.cs.supplier.portal.masterdata.services.impl.nds;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-import static ru.sber.cs.supplier.portal.masterdata.services.impl.nds.NdsService2.CACHE_NDS_BY_RATE;
-import static ru.sber.cs.supplier.portal.masterdata.services.impl.nds.CacheAssertions.*;
-
-import com.github.benmanes.caffeine.cache.Caffeine;
-import java.time.Duration;
-import java.time.ZonedDateTime;
-import java.util.List;
-import java.util.function.Function;
-
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-import org.mockito.MockedStatic;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Mockito;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cache.CacheManager;
-import org.springframework.cache.caffeine.CaffeineCacheManager;
-import org.springframework.context.annotation.Bean;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.cache.annotation.EnableCaching;
-
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
-
-import ru.sber.cs.supplier.portal.masterdata.models.adapter.dto.NdsFullDto;
-import ru.sber.cs.supplier.portal.masterdata.services.BaseMasterDataRequestService;
-import ru.sber.cs.supplier.portal.masterdata.services.BaseMasterDataRequestService.Context;
-import ru.sber.cs.supplier.portal.masterdata.services.support.BatchCacheSupport;
-import ru.sber.cs.supplier.portal.masterdata.models.adapter.request.ItemsSearchCriteriaRequest;
-import ru.sber.cs.supplier.portal.masterdata.models.adapter.response.GetItemsSearchResponse;
-import ru.sber.cs.supplier.portal.masterdata.mappers.NdsMapper;
-import ru.sber.cs.supplier.portal.masterdata.properties.SearchRequestProperties;
-
-/**
- * Интеграционный тест кеширования NdsService2 с Caffeine и BatchCacheSupport.
- */
-@SpringBootTest(classes = {
-    NdsService2CacheTest.TestCacheConfig.class,
-    NdsService2.class
-})
 class NdsService2CacheTest {
 
   @TestConfiguration
   @EnableCaching
   static class TestCacheConfig {
-    @Bean
-    CacheManager cacheManager() {
+    @Bean CacheManager cacheManager() {
       final var mgr = new CaffeineCacheManager(CACHE_NDS_BY_RATE);
-      mgr.setCaffeine(Caffeine.newBuilder().maximumSize(100));
+      mgr.setCaffeine(Caffeine.newBuilder()
+          .maximumSize(100)
+          .expireAfterWrite(Duration.ofMinutes(10))
+          .recordStats());
       return mgr;
     }
-    @Bean
-    BatchCacheSupport batchCacheSupport(final CacheManager cm) {
+    @Bean BatchCacheSupport batchCacheSupport(CacheManager cm) {
       return new BatchCacheSupport(cm);
     }
   }
 
-  @Autowired private NdsService2 service;
-  @Autowired private CacheManager cacheManager;
+  @SpringBootTest(classes = { TestCacheConfig.class, NdsService2.class })
+  static class Suite {
 
-  @MockitoBean  private BaseMasterDataRequestService baseService;
-  @MockitoBean  private NdsMapper ndsMapper;                  // нужен для ctor
-  @MockitoBean  private SearchRequestProperties properties;
+    @Autowired private NdsService2 service;
+    @Autowired private CacheManager cacheManager;
+    @Autowired private BatchCacheSupport batchCacheSupport;
 
-  // ВАЖНО: настоящий бин, но "под наблюдением"
-  @MockitoSpyBean private BatchCacheSupport batchCacheSupport;
+    @MockBean private BaseMasterDataRequestService baseService;
+    @MockBean private NdsMapper ndsMapper;              // нужен для конструктора
+    @MockBean private SearchRequestProperties properties;
 
-  private void stubProps() {
-    when(properties.getSlugValueForVat()).thenReturn("vat");
-    when(properties.getAttributeIdForTaxRateType()).thenReturn("type");
-    when(properties.getAttributeIdForTaxRateActive()).thenReturn("active");
-    when(properties.getAttributeIdForTaxRateEndDate()).thenReturn("end");
-    when(properties.getAttributeIdForTaxRateStartDate()).thenReturn("start");
-  }
-
-  @Test
-  @DisplayName("Warm-up → ключ появляется; повторный вызов — hit; cleanCache очищает")
-  void warmup_hit_evict() {
-    stubProps();
-    final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
-
-    final var items = List.of(
-        NdsFullDto.builder()
-            .id("1").name("N1").rate("5").code("A")
-            .rateDateStartZoned(date.minusDays(1))
-            .rateDateEndZoned(null)
-            .build()
-    );
-
-    // Захват ключей, с которыми вызвали батч
-    final var keysCap = ArgumentCaptor.forClass(List.class);
-    doCallRealMethod().when(batchCacheSupport)
-        .fetchBatch(eq(CACHE_NDS_BY_RATE), keysCap.capture(), any(), any(), eq(RateBucket.class));
-
-    try (MockedStatic<BaseMasterDataRequestService> st =
-             Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
-
-      when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
-          .thenReturn(new GetItemsSearchResponse());
-      st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
-          .thenReturn(items);
-
-      // прогрев кеша
-      service.getBasicVatRate(date, null, List.of("5"));
-
-      // батч действительно вызывался и с ожидаемым ключом
-      verify(batchCacheSupport, atLeastOnce()).fetchBatch(
-          eq(CACHE_NDS_BY_RATE), anyList(), any(), any(), eq(RateBucket.class));
-      assertThat(keysCap.getAllValues().get(0)).containsExactly("5");
-
-      assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "5");
-      assertBucketSize(cacheManager, CACHE_NDS_BY_RATE, "5", 1);
-      verify(baseService, times(1)).requestData(any(), eq(Context.BOOK));
-
-      // повторный вызов по тому же rate — hit (без нового похода)
-      service.getBasicVatRate(date, null, List.of("5"));
-      verify(baseService, times(1)).requestData(any(), eq(Context.BOOK));
-
-      // очистка кеша
-      service.cleanCache();
-      assertCacheEmpty(cacheManager, CACHE_NDS_BY_RATE);
-
-      // снова прогрев → второй поход в МД
-      st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
-          .thenReturn(items);
-      service.getBasicVatRate(date, null, List.of("5"));
-      verify(baseService, times(2)).requestData(any(), eq(Context.BOOK));
+    private void stubProps() {
+      when(properties.getSlugValueForVat()).thenReturn("vat");
+      when(properties.getAttributeIdForTaxRateType()).thenReturn("type");
+      when(properties.getAttributeIdForTaxRateActive()).thenReturn("active");
+      when(properties.getAttributeIdForTaxRateEndDate()).thenReturn("end");
+      when(properties.getAttributeIdForTaxRateStartDate()).thenReturn("start");
     }
-  }
 
-  @Test
-  @DisplayName("Без rate создаётся только бакет '__ALL__'")
-  void no_rate_creates_all_bucket() {
-    stubProps();
-    final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
+    @Test
+    @DisplayName("Warm-up → ключ появляется; hit; cleanCache очищает")
+    void warmup_hit_evict() {
+      stubProps();
+      final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
 
-    final var items = List.of(
-        NdsFullDto.builder().id("1").name("N1").rate("5").code("A")
-            .rateDateStartZoned(date.minusDays(5)).build(),
-        NdsFullDto.builder().id("2").name("N2").rate("10").code("B")
-            .rateDateStartZoned(date.minusDays(5)).build()
-    );
+      // sanity: это тот же CacheManager, что внутри BatchCacheSupport
+      Object cmInside = ReflectionTestUtils.getField(batchCacheSupport, "cacheManager");
+      assertThat(cmInside).isSameAs(cacheManager);
 
-    final var keysCap = ArgumentCaptor.forClass(List.class);
-    doCallRealMethod().when(batchCacheSupport)
-        .fetchBatch(eq(CACHE_NDS_BY_RATE), keysCap.capture(), any(), any(), eq(RateBucket.class));
+      final var items = List.of(
+          NdsFullDto.builder()
+              .id("1").name("N1").rate("5").code("A")
+              .rateDateStartZoned(date.minusDays(1))
+              .rateDateEndZoned(null)
+              .build()
+      );
 
-    try (MockedStatic<BaseMasterDataRequestService> st =
-             Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
+      try (MockedStatic<BaseMasterDataRequestService> st =
+               Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
 
-      when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
-          .thenReturn(new GetItemsSearchResponse());
-      st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
-          .thenReturn(items);
+        when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
+            .thenReturn(new GetItemsSearchResponse());
+        st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
+            .thenReturn(items);
 
-      service.getBasicVatRate(date, null, null);
+        // вызов
+        service.getBasicVatRate(date, null, List.of("5"));
 
-      verify(batchCacheSupport, atLeastOnce()).fetchBatch(
-          eq(CACHE_NDS_BY_RATE), anyList(), any(), any(), eq(RateBucket.class));
-      assertThat(keysCap.getAllValues().get(0)).containsExactly("__ALL__");
+        // прямая проверка нативной map Caffeine (если что-то с ассертом)
+        Cache springCache = cacheManager.getCache(CACHE_NDS_BY_RATE);
+        assertThat(springCache).isNotNull();
+        var nativeMap = ((CaffeineCache) springCache).getNativeCache().asMap();
+        assertThat(nativeMap.keySet()).contains("5");
 
-      assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "__ALL__");
-      assertBucketContainsIds(cacheManager, CACHE_NDS_BY_RATE, "__ALL__", "1", "2");
+        // наши удобные проверки
+        CacheAssertions.assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "5");
+        CacheAssertions.assertBucketSize(cacheManager, CACHE_NDS_BY_RATE, "5", 1);
+
+        verify(baseService, times(1)).requestData(any(), eq(Context.BOOK));
+
+        // повторный вызов — без нового похода
+        service.getBasicVatRate(date, null, List.of("5"));
+        verify(baseService, times(1)).requestData(any(), eq(Context.BOOK));
+
+        // очистка
+        service.cleanCache();
+        CacheAssertions.assertCacheEmpty(cacheManager, CACHE_NDS_BY_RATE);
+
+        // снова прогрев → второй поход
+        st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
+            .thenReturn(items);
+        service.getBasicVatRate(date, null, List.of("5"));
+        verify(baseService, times(2)).requestData(any(), eq(Context.BOOK));
+      }
     }
-  }
 
-  @Test
-  @DisplayName("Новый rate → добавляется новый бакет в кеше")
-  void new_rate_adds_new_bucket() {
-    stubProps();
-    final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
+    @Test
+    @DisplayName("Без rate создаётся только бакет '__ALL__' (+перехват miss-ключей)")
+    void no_rate_creates_all_bucket() {
+      stubProps();
+      final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
 
-    final var items5 = List.of(
-        NdsFullDto.builder().id("1").name("N1").rate("5").code("A")
-            .rateDateStartZoned(date.minusDays(5)).build()
-    );
-    final var items10 = List.of(
-        NdsFullDto.builder().id("2").name("N2").rate("10").code("B")
-            .rateDateStartZoned(date.minusDays(5)).build()
-    );
+      final var items = List.of(
+          NdsFullDto.builder().id("1").name("N1").rate("5").code("A")
+              .rateDateStartZoned(date.minusDays(5)).build(),
+          NdsFullDto.builder().id("2").name("N2").rate("10").code("B")
+              .rateDateStartZoned(date.minusDays(5)).build()
+      );
 
-    final var keysCap = ArgumentCaptor.forClass(List.class);
-    doCallRealMethod().when(batchCacheSupport)
-        .fetchBatch(eq(CACHE_NDS_BY_RATE), keysCap.capture(), any(), any(), eq(RateBucket.class));
+      // перехват списка miss-ключей, с которыми шёл fetchBatch
+      var keysCap = ArgumentCaptor.forClass(List.class);
+      var spy = Mockito.spy(batchCacheSupport);
+      ReflectionTestUtils.setField(service, "batchLoad", spy); // заменить внутри сервиса
+      doCallRealMethod().when(spy)
+          .fetchBatch(eq(CACHE_NDS_BY_RATE), keysCap.capture(), any(), any(), eq(RateBucket.class));
 
-    try (MockedStatic<BaseMasterDataRequestService> st =
-             Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
+      try (MockedStatic<BaseMasterDataRequestService> st =
+               Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
 
-      when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
-          .thenReturn(new GetItemsSearchResponse());
+        when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
+            .thenReturn(new GetItemsSearchResponse());
+        st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
+            .thenReturn(items);
 
-      // rate=5
-      st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
-          .thenReturn(items5);
-      service.getBasicVatRate(date, null, List.of("5"));
-      assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "5");
+        service.getBasicVatRate(date, null, null);
 
-      // rate=10
-      st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
-          .thenReturn(items10);
-      service.getBasicVatRate(date, null, List.of("10"));
+        // убеждаемся, что miss был ровно "__ALL__"
+        assertThat(keysCap.getAllValues()).hasSize(1);
+        assertThat((List<?>) keysCap.getAllValues().get(0)).containsExactly("__ALL__");
 
-      // две фиксации keys: ["5"], ["10"]
-      final var allKeysCaptured = keysCap.getAllValues();
-      assertThat(allKeysCaptured).hasSizeGreaterThanOrEqualTo(2);
-      assertThat(allKeysCaptured.get(0)).containsExactly("5");
-      assertThat(allKeysCaptured.get(1)).containsExactly("10");
+        // прямой просмотр нативной map
+        var nativeMap = ((CaffeineCache) cacheManager.getCache(CACHE_NDS_BY_RATE))
+            .getNativeCache().asMap();
+        assertThat(nativeMap.keySet()).contains("__ALL__");
 
-      assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "5", "10");
-      assertBucketContainsIds(cacheManager, CACHE_NDS_BY_RATE, "10", "2");
+        // удобные проверки
+        CacheAssertions.assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "__ALL__");
+        CacheAssertions.assertBucketContainsIds(cacheManager, CACHE_NDS_BY_RATE, "__ALL__", "1", "2");
+      }
+    }
+
+    @Test
+    @DisplayName("Новый rate → появляется новый бакет")
+    void new_rate_adds_new_bucket() {
+      stubProps();
+      final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
+
+      final var items5 = List.of(
+          NdsFullDto.builder().id("1").name("N1").rate("5").code("A")
+              .rateDateStartZoned(date.minusDays(5)).build()
+      );
+      final var items10 = List.of(
+          NdsFullDto.builder().id("2").name("N2").rate("10").code("B")
+              .rateDateStartZoned(date.minusDays(5)).build()
+      );
+
+      try (MockedStatic<BaseMasterDataRequestService> st =
+               Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
+        when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
+            .thenReturn(new GetItemsSearchResponse());
+
+        st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
+            .thenReturn(items5);
+        service.getBasicVatRate(date, null, List.of("5"));
+        CacheAssertions.assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "5");
+
+        st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
+            .thenReturn(items10);
+        service.getBasicVatRate(date, null, List.of("10"));
+
+        // ключи «5» и «10» должны быть оба
+        var nativeMap = ((CaffeineCache) cacheManager.getCache(CACHE_NDS_BY_RATE))
+            .getNativeCache().asMap();
+        assertThat(nativeMap.keySet()).contains("5", "10");
+
+        CacheAssertions.assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "5", "10");
+        CacheAssertions.assertBucketContainsIds(cacheManager, CACHE_NDS_BY_RATE, "10", "2");
+      }
     }
   }
 }
-
 ```
