@@ -712,4 +712,18 @@ public ResultObj<List<NdsDto>> getBasicVatRate(@Nullable final ZonedDateTime dat
   final var dto = mapBucketsToDtoList(buckets, targetDate, rate, code);
   return getSuccessResponse(dto);
 }
+
+private static final String TYPE_ID  = "00000000-0000-0000-0000-000000000001";
+private static final String ACTIVE_ID= "00000000-0000-0000-0000-000000000002";
+private static final String END_ID   = "00000000-0000-0000-0000-000000000003";
+private static final String START_ID = "00000000-0000-0000-0000-000000000004";
+
+private void stubProps() {
+  when(properties.getSlugValueForVat()).thenReturn("vat");
+  when(properties.getAttributeIdForTaxRateType()).thenReturn(TYPE_ID);
+  when(properties.getAttributeIdForTaxRateActive()).thenReturn(ACTIVE_ID);
+  when(properties.getAttributeIdForTaxRateEndDate()).thenReturn(END_ID);
+  when(properties.getAttributeIdForTaxRateStartDate()).thenReturn(START_ID);
+}
+
 ```
