@@ -852,4 +852,9 @@ class NdsService2CacheTest {
     }
   }
 }
+
+assertThat(keysCap.getAllValues()).hasSize(1);
+assertThat(keysCap.getAllValues().get(0))
+    .asInstanceOf(InstanceOfAssertFactories.LIST.of(String.class))
+    .containsExactly("__ALL__");
 ```
