@@ -671,4 +671,21 @@ class NdsService2Test {
   }
 }
 
+
+=====================================
+// Захватываем keys, с которыми вызвали батч
+ArgumentCaptor<java.util.List<String>> keysCap = ArgumentCaptor.forClass(List.class);
+
+// Позволяем real-методу выполняться, но ключи — перехватим
+doCallRealMethod().when(batchCacheSupport)
+    .fetchBatch(eq(CACHE_NDS_BY_RATE), keysCap.capture(), any(), any(), eq(RateBucket.class));
+
+// >>> ТУТ вызываешь целевой метод
+service.getBasicVatRate(date, null, List.of("5"));
+
+// Проверяем, что батч реально вызвался и с какими ключами
+verify(batchCacheSupport, atLeastOnce()).fetchBatch(
+    eq(CACHE_NDS_BY_RATE), anyList(), any(), any(), eq(RateBucket.class)
+);
+assertThat(keysCap.getValue()).containsExactly("5"); // или "__ALL__" во втором тесте
 ```
