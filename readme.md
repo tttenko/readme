@@ -673,188 +673,43 @@ class NdsService2Test {
 
 
 =====================================
-class NdsService2CacheTest {
+@Nonnull
+public ResultObj<List<NdsDto>> getBasicVatRate(@Nullable final ZonedDateTime date,
+                                               @Nullable final List<String> code,
+                                               @Nullable final List<String> rate) {
+  final ZonedDateTime targetDate = (date != null) ? date : ZonedDateTime.now();
+  final List<String> keys = (rate == null || rate.isEmpty()) ? List.of(ALL_KEY) : List.copyOf(rate);
 
-  @TestConfiguration
-  @EnableCaching
-  static class TestCacheConfig {
-    @Bean CacheManager cacheManager() {
-      final var mgr = new CaffeineCacheManager(CACHE_NDS_BY_RATE);
-      mgr.setCaffeine(Caffeine.newBuilder()
-          .maximumSize(100)
-          .expireAfterWrite(Duration.ofMinutes(10))
-          .recordStats());
-      return mgr;
-    }
-    @Bean BatchCacheSupport batchCacheSupport(CacheManager cm) {
-      return new BatchCacheSupport(cm);
-    }
+  // 1) читаем ТОЛЬКО хиты из кеша
+  final List<RateBucket> hits = batchLoad.fetchBatch(
+      CACHE_NDS_BY_RATE,
+      keys,
+      miss -> List.of(),                // ничего не грузим здесь
+      RateBucket::key,
+      RateBucket.class
+  );
+
+  // 2) считаем miss-ключи
+  final var hitKeys = hits.stream().map(RateBucket::key).collect(java.util.stream.Collectors.toSet());
+  final var missKeys = keys.stream().filter(k -> !hitKeys.contains(k)).toList();
+
+  // 3) если есть miss — 1 раз грузим из МД, режем по ключам и КЛАДЁМ в кеш
+  final List<RateBucket> loaded;
+  if (missKeys.isEmpty()) {
+    loaded = List.of();
+  } else {
+    final var all = loadAllFromMd(targetDate);                    // один поход в МД
+    loaded = partitionByRate(all, missKeys);                      // бакеты по ключам miss
+    final var cache = java.util.Objects.requireNonNull(
+        cacheManager.getCache(CACHE_NDS_BY_RATE),
+        () -> "Cache '%s' not configured".formatted(CACHE_NDS_BY_RATE)
+    );
+    loaded.forEach(b -> cache.put(b.key(), b));                   // ЯВНО кладём
   }
 
-  @SpringBootTest(classes = { TestCacheConfig.class, NdsService2.class })
-  static class Suite {
-
-    @Autowired private NdsService2 service;
-    @Autowired private CacheManager cacheManager;
-    @Autowired private BatchCacheSupport batchCacheSupport;
-
-    @MockBean private BaseMasterDataRequestService baseService;
-    @MockBean private NdsMapper ndsMapper;              // нужен для конструктора
-    @MockBean private SearchRequestProperties properties;
-
-    private void stubProps() {
-      when(properties.getSlugValueForVat()).thenReturn("vat");
-      when(properties.getAttributeIdForTaxRateType()).thenReturn("type");
-      when(properties.getAttributeIdForTaxRateActive()).thenReturn("active");
-      when(properties.getAttributeIdForTaxRateEndDate()).thenReturn("end");
-      when(properties.getAttributeIdForTaxRateStartDate()).thenReturn("start");
-    }
-
-    @Test
-    @DisplayName("Warm-up → ключ появляется; hit; cleanCache очищает")
-    void warmup_hit_evict() {
-      stubProps();
-      final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
-
-      // sanity: это тот же CacheManager, что внутри BatchCacheSupport
-      Object cmInside = ReflectionTestUtils.getField(batchCacheSupport, "cacheManager");
-      assertThat(cmInside).isSameAs(cacheManager);
-
-      final var items = List.of(
-          NdsFullDto.builder()
-              .id("1").name("N1").rate("5").code("A")
-              .rateDateStartZoned(date.minusDays(1))
-              .rateDateEndZoned(null)
-              .build()
-      );
-
-      try (MockedStatic<BaseMasterDataRequestService> st =
-               Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
-
-        when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
-            .thenReturn(new GetItemsSearchResponse());
-        st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
-            .thenReturn(items);
-
-        // вызов
-        service.getBasicVatRate(date, null, List.of("5"));
-
-        // прямая проверка нативной map Caffeine (если что-то с ассертом)
-        Cache springCache = cacheManager.getCache(CACHE_NDS_BY_RATE);
-        assertThat(springCache).isNotNull();
-        var nativeMap = ((CaffeineCache) springCache).getNativeCache().asMap();
-        assertThat(nativeMap.keySet()).contains("5");
-
-        // наши удобные проверки
-        CacheAssertions.assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "5");
-        CacheAssertions.assertBucketSize(cacheManager, CACHE_NDS_BY_RATE, "5", 1);
-
-        verify(baseService, times(1)).requestData(any(), eq(Context.BOOK));
-
-        // повторный вызов — без нового похода
-        service.getBasicVatRate(date, null, List.of("5"));
-        verify(baseService, times(1)).requestData(any(), eq(Context.BOOK));
-
-        // очистка
-        service.cleanCache();
-        CacheAssertions.assertCacheEmpty(cacheManager, CACHE_NDS_BY_RATE);
-
-        // снова прогрев → второй поход
-        st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
-            .thenReturn(items);
-        service.getBasicVatRate(date, null, List.of("5"));
-        verify(baseService, times(2)).requestData(any(), eq(Context.BOOK));
-      }
-    }
-
-    @Test
-    @DisplayName("Без rate создаётся только бакет '__ALL__' (+перехват miss-ключей)")
-    void no_rate_creates_all_bucket() {
-      stubProps();
-      final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
-
-      final var items = List.of(
-          NdsFullDto.builder().id("1").name("N1").rate("5").code("A")
-              .rateDateStartZoned(date.minusDays(5)).build(),
-          NdsFullDto.builder().id("2").name("N2").rate("10").code("B")
-              .rateDateStartZoned(date.minusDays(5)).build()
-      );
-
-      // перехват списка miss-ключей, с которыми шёл fetchBatch
-      var keysCap = ArgumentCaptor.forClass(List.class);
-      var spy = Mockito.spy(batchCacheSupport);
-      ReflectionTestUtils.setField(service, "batchLoad", spy); // заменить внутри сервиса
-      doCallRealMethod().when(spy)
-          .fetchBatch(eq(CACHE_NDS_BY_RATE), keysCap.capture(), any(), any(), eq(RateBucket.class));
-
-      try (MockedStatic<BaseMasterDataRequestService> st =
-               Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
-
-        when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
-            .thenReturn(new GetItemsSearchResponse());
-        st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
-            .thenReturn(items);
-
-        service.getBasicVatRate(date, null, null);
-
-        // убеждаемся, что miss был ровно "__ALL__"
-        assertThat(keysCap.getAllValues()).hasSize(1);
-        assertThat((List<?>) keysCap.getAllValues().get(0)).containsExactly("__ALL__");
-
-        // прямой просмотр нативной map
-        var nativeMap = ((CaffeineCache) cacheManager.getCache(CACHE_NDS_BY_RATE))
-            .getNativeCache().asMap();
-        assertThat(nativeMap.keySet()).contains("__ALL__");
-
-        // удобные проверки
-        CacheAssertions.assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "__ALL__");
-        CacheAssertions.assertBucketContainsIds(cacheManager, CACHE_NDS_BY_RATE, "__ALL__", "1", "2");
-      }
-    }
-
-    @Test
-    @DisplayName("Новый rate → появляется новый бакет")
-    void new_rate_adds_new_bucket() {
-      stubProps();
-      final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
-
-      final var items5 = List.of(
-          NdsFullDto.builder().id("1").name("N1").rate("5").code("A")
-              .rateDateStartZoned(date.minusDays(5)).build()
-      );
-      final var items10 = List.of(
-          NdsFullDto.builder().id("2").name("N2").rate("10").code("B")
-              .rateDateStartZoned(date.minusDays(5)).build()
-      );
-
-      try (MockedStatic<BaseMasterDataRequestService> st =
-               Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
-        when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
-            .thenReturn(new GetItemsSearchResponse());
-
-        st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
-            .thenReturn(items5);
-        service.getBasicVatRate(date, null, List.of("5"));
-        CacheAssertions.assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "5");
-
-        st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
-            .thenReturn(items10);
-        service.getBasicVatRate(date, null, List.of("10"));
-
-        // ключи «5» и «10» должны быть оба
-        var nativeMap = ((CaffeineCache) cacheManager.getCache(CACHE_NDS_BY_RATE))
-            .getNativeCache().asMap();
-        assertThat(nativeMap.keySet()).contains("5", "10");
-
-        CacheAssertions.assertCacheHasKeys(cacheManager, CACHE_NDS_BY_RATE, "5", "10");
-        CacheAssertions.assertBucketContainsIds(cacheManager, CACHE_NDS_BY_RATE, "10", "2");
-      }
-    }
-  }
+  // 4) собираем всё и дальше фильтруем/маппим как раньше
+  final var buckets = java.util.stream.Stream.concat(hits.stream(), loaded.stream()).toList();
+  final var dto = mapBucketsToDtoList(buckets, targetDate, rate, code);
+  return getSuccessResponse(dto);
 }
-
-assertThat(keysCap.getAllValues()).hasSize(1);
-assertThat(keysCap.getAllValues().get(0))
-    .asInstanceOf(InstanceOfAssertFactories.LIST.of(String.class))
-    .containsExactly("__ALL__");
 ```
