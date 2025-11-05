@@ -689,155 +689,163 @@ private void stubProps() {
 
 =====================================
 
+@ExtendWith(MockitoExtension.class)
+class NdsService2UnitTest {
 
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class NdsService2 {
+  private static final String TYPE_ID  = "00000000-0000-0000-0000-000000000001";
+  private static final String ACTIVE_ID= "00000000-0000-0000-0000-000000000002";
+  private static final String END_ID   = "00000000-0000-0000-0000-000000000003";
+  private static final String START_ID = "00000000-0000-0000-0000-000000000004";
 
-    public static final String CACHE_NDS_BY_RATE = "nds_by_rate";
-    private static final String ALL_KEY = "_ALL_";
-    private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mmXXX");
+  private CacheManager cacheManager;
+  private BatchCacheSupport batch;
 
-    private static final List<String> BASIC_RATE_TYPE = List.of("1");
-    private static final List<String> ACTIVE_RATE = List.of("true");
+  @Mock private BaseMasterDataRequestService baseService;
+  @Mock private NdsMapper ndsMapper; // не используется в этом сценарии, но пусть остаётся
+  @Mock private SearchRequestProperties properties;
 
-    private final NdsMapper ndsMapper;
-    private final BatchCacheSupport batchLoad;
-    private final BaseMasterDataRequestService baseMasterDataRequestService;
-    private final SearchRequestProperties properties;
-    private final CacheManager cacheManager;
+  private NdsService2 service;
 
-    @Nonnull
-    public ResultObj<List<NdsDto>> getBasicVatRate(@Nullable final ZonedDateTime date,
-                                                   @Nullable final List<String> code,
-                                                   @Nullable final List<String> rate) {
-        final ZonedDateTime targetDate = (date != null) ? date : ZonedDateTime.now();
-        final List<String> keys = (rate == null || rate.isEmpty()) ? List.of(ALL_KEY) : List.copyOf(rate);
+  @BeforeEach
+  void setUp() {
+    // Реальный Caffeine CacheManager без Spring контекста
+    final var caffeine = Caffeine.newBuilder().maximumSize(1_000);
+    final var cm = new CaffeineCacheManager(NdsService2.CACHE_NDS_BY_RATE);
+    cm.setCaffeine(caffeine);
+    this.cacheManager = cm;
+    this.batch = new BatchCacheSupport(cacheManager);
 
-        final List<RateBucket> hits = batchLoad.fetchBatch(
-                CACHE_NDS_BY_RATE,
-                keys,
-                miss -> List.of(), // ничего не грузим здесь
-                RateBucket::key,
-                RateBucket.class
-        );
+    this.service = new NdsService2(ndsMapper, batch, baseService, properties);
 
-        final var hitKeys = hits.stream().map(RateBucket::key).collect(Collectors.toSet());
-        final var missKeys = keys.stream().filter(k -> !hitKeys.contains(k)).toList();
+    // валидные UUID, иначе RequestFactory упадёт
+    when(properties.getSlugValueForVat()).thenReturn("vat");
+    when(properties.getAttributeIdForTaxRateType()).thenReturn(TYPE_ID);
+    when(properties.getAttributeIdForTaxRateActive()).thenReturn(ACTIVE_ID);
+    when(properties.getAttributeIdForTaxRateEndDate()).thenReturn(END_ID);
+    when(properties.getAttributeIdForTaxRateStartDate()).thenReturn(START_ID);
 
-        final List<RateBucket> loaded;
-        if (missKeys.isEmpty()) {
-            loaded = List.of();
-        } else {
-            final var all = loadAllFromMd(targetDate); // один поход в МД
-            final var partitioned = partitionByRate(all, missKeys); // бакеты по ключам miss
-            final var cache = Objects.requireNonNull(
-                    cacheManager.getCache(CACHE_NDS_BY_RATE),
-                    () -> "Cache '%s' not configured".formatted(CACHE_NDS_BY_RATE)
-            );
-            partitioned.forEach(b -> cache.put(b.key(), b)); // явно кладём
-            loaded = partitioned;
-        }
+    // чистым кэш перед каждым тестом (в юнитах @CacheEvict не сработает)
+    Objects.requireNonNull(cacheManager.getCache(NdsService2.CACHE_NDS_BY_RATE)).clear();
+  }
 
-        final var buckets = Stream.concat(hits.stream(), loaded.stream()).toList();
-        final var dto = mapBucketsToDtoList(buckets, targetDate, rate, code);
-        return getSuccessResponse(dto);
+  @Test
+  @DisplayName("Warm-up ⇒ ключ появляется; повторный вызов ⇒ hit; очистка вручную очищает кэш")
+  void warmup_hit_manualClear() {
+    final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
+
+    final var items = List.of(
+        NdsFullDto.builder()
+            .id("1").name("N1").rate("5").code("A")
+            .rateDateStartZoned(date.minusDays(1))
+            .rateDateEndZoned(null)
+            .build()
+    );
+
+    try (MockedStatic<BaseMasterDataRequestService> st =
+             Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
+
+      when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
+          .thenReturn(new GetItemsSearchResponse());
+      st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
+          .thenReturn(items);
+
+      // прогрев
+      service.getBasicVatRate(date, null, List.of("5"));
+
+      // ключ в кэше и размер бакета = 1
+      final RateBucket b = getBucket("5");
+      assertThat(b).isNotNull();
+      assertThat(b.items()).extracting(NdsFullDto::getId).containsExactly("1");
+
+      Mockito.verify(baseService, times(1))
+          .requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK));
+
+      // повторный вызов — hit
+      service.getBasicVatRate(date, null, List.of("5"));
+      Mockito.verify(baseService, times(1))
+          .requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK));
+
+      // manual clear (вместо @CacheEvict)
+      cacheManager.getCache(NdsService2.CACHE_NDS_BY_RATE).clear();
+      assertThat(getBucket("5")).isNull();
+
+      // снова прогрев — второй поход в МД
+      st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
+          .thenReturn(items);
+      service.getBasicVatRate(date, null, List.of("5"));
+      Mockito.verify(baseService, times(2))
+          .requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK));
     }
+  }
 
-    @Nonnull
-    private List<NdsFullDto> loadAllFromMd(@Nonnull final ZonedDateTime date) {
-        final String dateString = date.format(DATE_TIME_FORMATTER);
-        final var response = baseMasterDataRequestService.requestData(
-                buildRequest(dateString),
-                SearchRequestProperties.Context.BOOK
-        );
-        return createResultWithAttribute(response, ndsMapper);
+  @Test
+  @DisplayName("Без параметра rate создаётся бакет '__ALL__'")
+  void no_rate_creates_all_bucket() {
+    final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
+
+    final var items = List.of(
+        NdsFullDto.builder().id("1").name("N1").rate("5").code("A")
+            .rateDateStartZoned(date.minusDays(5)).build(),
+        NdsFullDto.builder().id("2").name("N2").rate("10").code("B")
+            .rateDateStartZoned(date.minusDays(5)).build()
+    );
+
+    try (MockedStatic<BaseMasterDataRequestService> st =
+             Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
+
+      when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
+          .thenReturn(new GetItemsSearchResponse());
+      st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
+          .thenReturn(items);
+
+      service.getBasicVatRate(date, null, null);
+
+      final RateBucket all = getBucket(NdsService2.ALL_KEY);
+      assertThat(all).isNotNull();
+      assertThat(all.items()).extracting(NdsFullDto::getId).containsExactlyInAnyOrder("1", "2");
     }
+  }
 
-    @Nonnull
-    private List<RateBucket> partitionByRate(@Nonnull final List<NdsFullDto> all,
-                                             @Nonnull final List<String> missKeys) {
-        final Map<String, Set<NdsFullDto>> byRate = all.stream()
-                .collect(Collectors.groupingBy(
-                        NdsFullDto::getRate,
-                        Collectors.toCollection(LinkedHashSet::new)));
+  @Test
+  @DisplayName("Новый rate ⇒ добавляется новый бакет")
+  void new_rate_adds_new_bucket() {
+    final var date = ZonedDateTime.parse("2025-07-21T10:00:00+03:00");
 
-        final Set<NdsFullDto> union = Set.copyOf(all);
+    final var items5 = List.of(
+        NdsFullDto.builder().id("1").name("N1").rate("5").code("A")
+            .rateDateStartZoned(date.minusDays(5)).build()
+    );
+    final var items10 = List.of(
+        NdsFullDto.builder().id("2").name("N2").rate("10").code("B")
+            .rateDateStartZoned(date.minusDays(5)).build()
+    );
 
-        return missKeys.stream()
-                .map(k -> new RateBucket(
-                        k,
-                        Set.copyOf(ALL_KEY.equals(k) ? union : byRate.getOrDefault(k, Set.of()))
-                ))
-                .toList();
+    try (MockedStatic<BaseMasterDataRequestService> st =
+             Mockito.mockStatic(BaseMasterDataRequestService.class, Mockito.CALLS_REAL_METHODS)) {
+
+      when(baseService.requestData(any(ItemsSearchCriteriaRequest.class), eq(Context.BOOK)))
+          .thenReturn(new GetItemsSearchResponse());
+
+      st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
+          .thenReturn(items5);
+      service.getBasicVatRate(date, null, List.of("5"));
+      assertThat(getBucket("5")).isNotNull();
+
+      st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(any(), any()))
+          .thenReturn(items10);
+      service.getBasicVatRate(date, null, List.of("10"));
+      assertThat(getBucket("10")).isNotNull();
+
+      assertThat(getBucket("10").items()).extracting(NdsFullDto::getId).containsExactly("2");
     }
+  }
 
-    @Nonnull
-    private List<NdsDto> mapBucketsToDtoList(@Nonnull final List<RateBucket> buckets,
-                                             @Nonnull final ZonedDateTime dateTime,
-                                             @Nullable final List<String> rate,
-                                             @Nullable final List<String> code) {
-        return buckets.stream()
-                .flatMap(b -> b.items().stream())
-                .filter(matches(dateTime, rate, code))
-                .map(this::toDto)
-                .toList();
-    }
+  // --- helpers ---
 
-    @Nonnull
-    private Predicate<NdsFullDto> matches(@Nonnull final ZonedDateTime date,
-                                          @Nullable final List<String> rate,
-                                          @Nullable final List<String> code) {
-        final boolean hasRate = rate != null && !rate.isEmpty();
-        final boolean hasCode = code != null && !code.isEmpty();
-
-        return e -> isBefore(date, e) && isAfter(date, e)
-                && (!hasRate || rate.contains(e.getRate()))
-                && (!hasCode || code.contains(e.getCode()));
-    }
-
-    private NdsDto toDto(@Nonnull final NdsFullDto e) {
-        return NdsDto.builder()
-                .name(e.getName())
-                .rate(e.getRate())
-                .id(e.getId())
-                .code(e.getCode())
-                .build();
-    }
-
-    @Nonnull
-    private ItemsSearchCriteriaRequest buildRequest(@Nonnull final String dateString) {
-        return RequestFactory.getByAttrValuesBuilder()
-                .dictionaryName(properties.getSlugValueForVat())
-                .addAttributesAndRefItemSlug(properties.getAttributeIdForTaxRateType(), BASIC_RATE_TYPE)
-                .addAttributesAndValue(
-                        properties.getAttributeIdForTaxRateActive(),
-                        Pair.of(ACTIVE_RATE, RequestFactory.BOOLEAN_OPERATION))
-                .addAttributesAndValue(
-                        properties.getAttributeIdForTaxRateEndDate(),
-                        Pair.of(List.of(dateString), RequestFactory.MORE_OPERATION))
-                .addAttributesAndValue(
-                        properties.getAttributeIdForTaxRateStartDate(),
-                        Pair.of(List.of(dateString), RequestFactory.LESS_OPERATION))
-                .build();
-    }
-
-    private static boolean isAfter(@Nonnull final ZonedDateTime date, @Nonnull final NdsFullDto e) {
-        return e.getRateDateEndZoned() == null || e.getRateDateEndZoned().isAfter(date);
-    }
-
-    private static boolean isBefore(@Nonnull final ZonedDateTime date, @Nonnull final NdsFullDto e) {
-        return e.getRateDateStartZoned() != null && e.getRateDateStartZoned().isBefore(date);
-    }
-
-    @CacheEvict(cacheNames = CACHE_NDS_BY_RATE, allEntries = true)
-    public void cleanCache() {
-        log.info("NDS cache cleared");
-    }
-
-    private record RateBucket(@Nonnull String key, @Nonnull Set<NdsFullDto> items) {}
+  private RateBucket getBucket(String key) {
+    final Cache cache = cacheManager.getCache(NdsService2.CACHE_NDS_BY_RATE);
+    return cache == null ? null : cache.get(key, RateBucket.class);
+  }
 }
-
 
 ```
