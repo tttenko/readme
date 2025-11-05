@@ -673,45 +673,6 @@ class NdsService2Test {
 
 
 =====================================
-@Nonnull
-public ResultObj<List<NdsDto>> getBasicVatRate(@Nullable final ZonedDateTime date,
-                                               @Nullable final List<String> code,
-                                               @Nullable final List<String> rate) {
-  final ZonedDateTime targetDate = (date != null) ? date : ZonedDateTime.now();
-  final List<String> keys = (rate == null || rate.isEmpty()) ? List.of(ALL_KEY) : List.copyOf(rate);
-
-  // 1) читаем ТОЛЬКО хиты из кеша
-  final List<RateBucket> hits = batchLoad.fetchBatch(
-      CACHE_NDS_BY_RATE,
-      keys,
-      miss -> List.of(),                // ничего не грузим здесь
-      RateBucket::key,
-      RateBucket.class
-  );
-
-  // 2) считаем miss-ключи
-  final var hitKeys = hits.stream().map(RateBucket::key).collect(java.util.stream.Collectors.toSet());
-  final var missKeys = keys.stream().filter(k -> !hitKeys.contains(k)).toList();
-
-  // 3) если есть miss — 1 раз грузим из МД, режем по ключам и КЛАДЁМ в кеш
-  final List<RateBucket> loaded;
-  if (missKeys.isEmpty()) {
-    loaded = List.of();
-  } else {
-    final var all = loadAllFromMd(targetDate);                    // один поход в МД
-    loaded = partitionByRate(all, missKeys);                      // бакеты по ключам miss
-    final var cache = java.util.Objects.requireNonNull(
-        cacheManager.getCache(CACHE_NDS_BY_RATE),
-        () -> "Cache '%s' not configured".formatted(CACHE_NDS_BY_RATE)
-    );
-    loaded.forEach(b -> cache.put(b.key(), b));                   // ЯВНО кладём
-  }
-
-  // 4) собираем всё и дальше фильтруем/маппим как раньше
-  final var buckets = java.util.stream.Stream.concat(hits.stream(), loaded.stream()).toList();
-  final var dto = mapBucketsToDtoList(buckets, targetDate, rate, code);
-  return getSuccessResponse(dto);
-}
 
 private static final String TYPE_ID  = "00000000-0000-0000-0000-000000000001";
 private static final String ACTIVE_ID= "00000000-0000-0000-0000-000000000002";
@@ -725,5 +686,8 @@ private void stubProps() {
   when(properties.getAttributeIdForTaxRateEndDate()).thenReturn(END_ID);
   when(properties.getAttributeIdForTaxRateStartDate()).thenReturn(START_ID);
 }
+
+=====================================
+
 
 ```
