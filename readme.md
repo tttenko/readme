@@ -1,85 +1,84 @@
 ```java
 
 /**
- * Набор удобных ассертов для проверки содержимого Spring-кэша в тестах.
- * <p>Работает поверх {@code CacheIntrospection} и не зависит от конкретной реализации кэша
- * (Caffeine/ConcurrentMap и т.д.).</p>
+ * Интеграционные/компонентные тесты кеширования в {@link NdsService2}.
+ * <p>
+ * Используется реальный {@link CaffeineCacheManager} и вспомогательный
+ * {@link BatchCacheSupport} c моками зависимостей сервиса.
  *
- * <h4>Что умеет</h4>
+ * <h2>Что проверяем</h2>
  * <ul>
- *   <li>Проверка набора ключей в кэше;</li>
- *   <li>Проверка пустоты кэша;</li>
- *   <li>Получение типизированного «бакета» по ключу;</li>
- *   <li>Проверки размера и содержимого бакета.</li>
+ *   <li>прогрев кеша и последующие cache-hit по ключу ставки;</li>
+ *   <li>создание "общего" бакета {@code __ALL__} при отсутствии фильтра по ставкам;</li>
+ *   <li>добавление нового бакета при запросе с новой ставкой;</li>
+ *   <li>ручную очистку кеша и повторный прогрев.</li>
  * </ul>
  *
- * @author …
+ * @see NdsService2
+ * @see RateBucket
  * @since 1.0
  */
-public final class CacheAssertions {
+class NdsService2CacheTest {
 java
 Копировать код
-/**
- * Проверяет, что в кэше присутствуют ровно указанные ключи
- * (порядок не важен, дубликаты не допускаются).
- *
- * @param mgr         {@link CacheManager}, из которого получаем кэш
- * @param cacheName   имя кэша
- * @param expectedKeys ожидаемые ключи
- * @throws AssertionError если набор ключей не совпал
- */
-public static void assertCacheHasKeys(CacheManager mgr, String cacheName, String... expectedKeys) { ... }
+    /**
+     * Инициализация окружения теста.
+     * <p><b>Given</b>: чистый инстанс {@link CaffeineCacheManager} и моки зависимостей.<br>
+     * <b>When</b>: собираем {@link NdsService2} и подставляем {@link BatchCacheSupport}.<br>
+     * <b>Then</b>: кеш {@code nds_by_rate} очищен, моки подготовлены.
+     */
+    @BeforeEach
+    void setUp() { ... }
 java
 Копировать код
-/**
- * Проверяет, что кэш пуст.
- *
- * @param mgr       {@link CacheManager}
- * @param cacheName имя кэша
- * @throws AssertionError если кэш содержит хотя бы один ключ
- */
-public static void assertCacheEmpty(CacheManager mgr, String cacheName) { ... }
+    /**
+     * Прогрев → cache-hit → ручная очистка.
+     * <p><b>Given</b>: одна ставка НДС и элементы из МД.<br>
+     * <b>When</b>: первый вызов прогревает кеш, второй — попадает в кеш, затем выполняем clear.<br>
+     * <b>Then</b>: первый вызов обращается в МД, второй — нет; после clear повторный вызов снова идет в МД.
+     *
+     * @implNote Проверяется состав бакета по ключу ставки и количество обращений к {@code baseService}.
+     */
+    @Test
+    @DisplayName("Warm-up → ключ появляется; повторный вызов ⇒ hit; очистка вручную очищает кеш")
+    void warmup_hit_manualClear() { ... }
 java
 Копировать код
-/**
- * Возвращает типизированный бакет по ключу, предварительно убеждаясь,
- * что под ключом лежит объект нужного типа.
- *
- * @param mgr       {@link CacheManager}
- * @param cacheName имя кэша
- * @param key       ключ, под которым хранится бакет
- * @return найденный {@code RateBucket}
- * @throws AssertionError если по ключу нет значения или тип отличается
- */
-public static RateBucket bucket(CacheManager mgr, String cacheName, String key) { ... }
+    /**
+     * Без параметра rate создаётся только общий бакет {@code __ALL__}.
+     * <p><b>Given</b>: два элемента с разными ставками, запрос без списка ставок.<br>
+     * <b>When</b>: вызываем {@link NdsService2#getBasicVatRate}.<br>
+     * <b>Then</b>: в кеше появляется только ключ {@code __ALL__}, в бакете — оба id.
+     */
+    @Test
+    @DisplayName("Без параметра rate создаётся бакет '__ALL__'")
+    void no_rate_creates_all_bucket() { ... }
 java
 Копировать код
-/**
- * Проверяет ожидаемый размер набора элементов внутри бакета.
- *
- * @param mgr       {@link CacheManager}
- * @param cacheName имя кэша
- * @param key       ключ бакета
- * @param expected  ожидаемое количество элементов в бакете
- * @throws AssertionError если размер не совпал
- */
-public static void assertBucketSize(CacheManager mgr, String cacheName, String key, int expected) { ... }
+    /**
+     * Новый rate добавляет новый бакет в кеше.
+     * <p><b>Given</b>: сначала запрашиваем ставку 5, затем ставку 10.<br>
+     * <b>When</b>: два последовательных вызова {@link NdsService2#getBasicVatRate}.<br>
+     * <b>Then</b>: в кеше есть оба ключа (5 и 10), содержимое бакетов соответствует id элементов.
+     */
+    @Test
+    @DisplayName("Новый rate ⇒ добавляется новый бакет")
+    void new_rate_adds_new_bucket() { ... }
 java
 Копировать код
-/**
- * Проверяет, что бакет содержит элементы с указанными идентификаторами.
- * Сравнение идёт по {@code NdsFullDto#getId()} и не учитывает порядок.
- *
- * @param mgr       {@link CacheManager}
- * @param cacheName имя кэша
- * @param key       ключ бакета
- * @param ids       ожидаемые идентификаторы элементов
- * @throws AssertionError если хотя бы один id не найден
- */
-public static void assertBucketContainsIds(CacheManager mgr, String cacheName, String key, String... ids) { ... }
-java
-Копировать код
-// приватный конструктор — без JavaDoc
-private CacheAssertions() {}
+    /**
+     * Возвращает содержимое бакета из кеша по ключу ставки.
+     *
+     * @param key ключ бакета (ставка НДС или {@code __ALL__})
+     * @return {@link RateBucket} или {@code null}, если бакета нет/кеш не создан
+     * @implNote Утилитный метод для ассертов в тестах.
+     */
+    private RateBucket getBucket(String key) { ... }
+}
+
+
+
+
+
 
 ```
