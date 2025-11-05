@@ -1,10 +1,24 @@
 ```java
 
-keys_whenRateNull_thenAllKey → givenRateNull_whenGetBasicVatRate_thenAllKeyIsRequested
+/**
+ * Контейнер «бакет» для NDS-записей, сгруппированных по ключу (обычно — ставке НДС).
+ * <p>
+ * Иммутабельный {@code record}: безопасен для многопоточного чтения и может кэшироваться.
+ * Равенство/хеш опираются на оба компонента — {@code key} и {@code items}.
+ *
+ * <h2>Инварианты</h2>
+ * <ul>
+ *   <li>{@code key} — не {@code null}, не пустая строка;</li>
+ *   <li>{@code items} — не {@code null}; рекомендуется без {@code null}-элементов.</li>
+ * </ul>
+ *
+ * <h2>Назначение</h2>
+ * Используется как значение в кеше, где ключ кеша — конкретная ставка
+ * (или спец-ключ вроде {@code "__ALL__"}), а содержимое — множество исходных элементов.
+ *
+ * @param key   ключ бакета (например, "5", "10" или "__ALL__"); не {@code null}
+ * @param items набор элементов, входящих в бакет; не {@code null}
+ * @see java.lang.Record
+ */
 
-keys_whenRateProvided_thenExactKeys → givenRatesProvided_whenGetBasicVatRate_thenExactlyTheseKeysAreRequested
-
-buildRequest_shouldPassDictionaryAndDate → givenPropsAndDate_whenBuildRequest_thenDictionaryAndDateApplied
-
-filterAndMapping_shouldReturnOnlyMatchedAndMapped → givenMixedItemsAndFilters_whenGetBasicVatRate_thenOnlyMatchedDtosInOriginalOrder
 ```
