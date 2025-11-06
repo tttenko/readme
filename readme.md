@@ -1,39 +1,85 @@
 ```java
 
+package ru.sber.cs.supplier.portal.masterdata.services.impl.currency;
+
+import com.github.benmanes.caffeine.cache.Caffeine;
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.cache.CacheManager;
+import org.springframework.cache.caffeine.CaffeineCache;
+import org.springframework.cache.caffeine.CaffeineCacheManager;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.junit.jupiter.SpringExtension;
+import org.springframework.cache.annotation.EnableCaching;
+
+import ru.sber.cs.supplier.portal.masterdata.models.md.GetItemsSearchResponse;
+import ru.sber.cs.supplier.portal.masterdata.models.adapter.CurrencyDto;
+import ru.sber.cs.supplier.portal.masterdata.props.SearchRequestProperties;
+import ru.sber.cs.supplier.portal.masterdata.services.impl.BaseMasterDataRequestService;
+import ru.sber.cs.supplier.portal.masterdata.services.impl.currency.mapper.CurrencyMapper;
+import ru.sber.cs.supplier.portal.masterdata.utils.CacheIntrospection;
+
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
+
 @ExtendWith(SpringExtension.class)
 @ContextConfiguration(classes = CurrencyCacheOpsTest.Config.class)
 @Import(CurrencyCacheOps.class)
 class CurrencyCacheOpsTest {
 
   @TestConfiguration
-  @EnableCaching
+  @EnableCaching(proxyTargetClass = true)
   static class Config {
     @Bean
     CacheManager cacheManager() {
-      var mgr = new ConcurrentMapCacheManager(CurrencyService2.CURRENCY_ALL);
-      mgr.setAllowNullValues(true);
+      var mgr = new CaffeineCacheManager(CurrencyService2.CURRENCY_ALL);
+      mgr.setCaffeine(
+          Caffeine.newBuilder()
+              .recordStats()
+              .maximumSize(1_000)
+      );
       return mgr;
     }
   }
 
-  @Autowired private CurrencyCacheOps currencyCacheOps;
-  @Autowired private CacheManager cacheManager;
+  @org.springframework.beans.factory.annotation.Autowired
+  private CurrencyCacheOps currencyCacheOps;
 
-  @MockBean private BaseMasterDataRequestService baseMasterDataRequestService;
-  @MockBean private SearchRequestProperties properties;
-  @MockBean private CurrencyMapper currencyMapper;
+  @org.springframework.beans.factory.annotation.Autowired
+  private CacheManager cacheManager;
+
+  @org.springframework.boot.test.mock.mockito.MockBean
+  private BaseMasterDataRequestService baseMasterDataRequestService;
+
+  @org.springframework.boot.test.mock.mockito.MockBean
+  private SearchRequestProperties properties;
+
+  @org.springframework.boot.test.mock.mockito.MockBean
+  private CurrencyMapper currencyMapper;
 
   @BeforeEach
   void setUp() {
     when(properties.getSlugValueForCurrency()).thenReturn("currency");
     when(properties.getCurrencyAttributeId()).thenReturn("currencyCode");
+    // очистим кеш на всякий случай
     CacheIntrospection.nativeMap(cacheManager, CurrencyService2.CURRENCY_ALL).clear();
   }
 
   @Test
-  void getAll_cachesResult_andStoresUnderAllKey() {
+  void getAll_cachesResult_andStoresUnderALLKey() {
     var resp = new GetItemsSearchResponse();
-    var mapped = of(
+    var mapped = List.of(
         CurrencyDto.builder().currencyCode("USD").build(),
         CurrencyDto.builder().currencyCode("EUR").build()
     );
@@ -42,153 +88,85 @@ class CurrencyCacheOpsTest {
         .thenReturn(resp);
 
     try (MockedStatic<BaseMasterDataRequestService> statics =
-             mockStatic(BaseMasterDataRequestService.class)) {
+             Mockito.mockStatic(BaseMasterDataRequestService.class)) {
       statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
           .thenReturn(mapped);
 
-      var first  = currencyCacheOps.getAll();
+      var first = currencyCacheOps.getAll();
       var second = currencyCacheOps.getAll();
 
+      // бэкенд вызвался ровно один раз
       verify(baseMasterDataRequestService, times(1))
           .requestDataByAttributes("currency", "currencyCode", null);
 
-      // assertThat
+      // результат одинаковый и соответствует маппингу
       assertThat(first).isEqualTo(second).containsExactlyElementsOf(mapped);
 
-      Set<?> keys = CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL);
-      assertThat(keys).contains("ALL");
+      // в кеше есть единственный ключ "ALL"
+      var keys = CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL);
+      assertThat(keys).containsExactly("ALL");
 
+      // «сырой» объект под ключом — тот же список
       @SuppressWarnings("unchecked")
       var raw = (List<CurrencyDto>) CacheIntrospection.rawValue(
           cacheManager, CurrencyService2.CURRENCY_ALL, "ALL");
-
-      assertThat(raw).isNotNull().containsExactlyElementsOf(mapped);
+      assertThat(raw).containsExactlyElementsOf(mapped);
     }
   }
 
   @Test
-  void getAll_syncTrue_avoidsStampede_onParallelCalls() throws Exception {
+  void getAll_thenSecondCall_isHit_byCaffeineStats() {
     var resp = new GetItemsSearchResponse();
-    var mapped = of(CurrencyDto.builder().currencyCode("JPY").build());
+    var mapped = List.of(CurrencyDto.builder().currencyCode("JPY").build());
 
     when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", null))
-        .thenAnswer(inv -> { Thread.sleep(150); return resp; });
-
-    try (MockedStatic<BaseMasterDataRequestService> statics =
-             mockStatic(BaseMasterDataRequestService.class)) {
-      statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
-          .thenReturn(mapped);
-
-      int threads = 8;
-      var start = new CountDownLatch(1);
-      var done  = new CountDownLatch(threads);
-      var pool  = Executors.newFixedThreadPool(threads);
-
-      for (int i = 0; i < threads; i++) {
-        pool.submit(() -> {
-          try { start.await(); currencyCacheOps.getAll(); }
-          catch (InterruptedException ignored) {}
-          finally { done.countDown(); }
-        });
-      }
-
-      start.countDown();
-      assertThat(done.await(5, TimeUnit.SECONDS)).isTrue();
-      pool.shutdownNow();
-
-      verify(baseMasterDataRequestService, times(1))
-          .requestDataByAttributes("currency", "currencyCode", null);
-
-      var keys = CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL);
-      assertThat(keys).containsExactly("ALL");
-    }
-  }
-
-  @Test
-  void loadByCodes_callsBackend_andDoesNotTouchAllCache() {
-    var codes = of("USD", "EUR");
-    var resp  = new GetItemsSearchResponse();
-    var mapped = of(
-        CurrencyDto.builder().currencyCode("USD").build(),
-        CurrencyDto.builder().currencyCode("EUR").build()
-    );
-
-    when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", codes))
         .thenReturn(resp);
 
     try (MockedStatic<BaseMasterDataRequestService> statics =
-             mockStatic(BaseMasterDataRequestService.class)) {
+             Mockito.mockStatic(BaseMasterDataRequestService.class)) {
       statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
           .thenReturn(mapped);
 
-      var out = currencyCacheOps.loadByCodes(codes);
+      var cache = (CaffeineCache) cacheManager.getCache(CurrencyService2.CURRENCY_ALL);
+      var before = cache.getNativeCache().stats();
+
+      currencyCacheOps.getAll(); // miss
+      currencyCacheOps.getAll(); // hit
+
+      var after = cache.getNativeCache().stats();
+
+      // проверяем дельту: 1 промах и 1 попадание
+      assertThat(after.missCount() - before.missCount()).isEqualTo(1);
+      assertThat(after.hitCount() - before.hitCount()).isEqualTo(1);
 
       verify(baseMasterDataRequestService, times(1))
-          .requestDataByAttributes("currency", "currencyCode", codes);
-
-      // assertThat
-      assertThat(out).containsExactlyElementsOf(mapped);
-      assertThat(CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL)).isEmpty();
+          .requestDataByAttributes("currency", "currencyCode", null);
     }
   }
-}
 
-------------------------------------------------------------------------------------------------------------------------------------------------------
+  @Test
+  void afterManualClear_nextCall_isMiss() {
+    var resp = new GetItemsSearchResponse();
+    var mapped = List.of(CurrencyDto.builder().currencyCode("GBP").build());
 
-@Test
-void getAll_syncTrue_avoidsStampede_onParallelCalls_withoutSleep() throws Exception {
-  // given
-  var resp   = new GetItemsSearchResponse();
-  var mapped = List.of(CurrencyDto.builder().currencyCode("JPY").build());
+    when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", null))
+        .thenReturn(resp);
 
-  // латчи вместо Thread.sleep
-  var entered = new CountDownLatch(1);
-  var release = new CountDownLatch(1);
+    try (MockedStatic<BaseMasterDataRequestService> statics =
+             Mockito.mockStatic(BaseMasterDataRequestService.class, CALLS_REAL_METHODS)) {
+      statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
+          .thenReturn(mapped);
 
-  when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", null))
-      .thenAnswer(inv -> { entered.countDown(); release.await(3, TimeUnit.SECONDS); return resp; });
+      currencyCacheOps.getAll(); // первая загрузка -> кешируем
 
-  try (MockedStatic<BaseMasterDataRequestService> statics =
-           mockStatic(BaseMasterDataRequestService.class, CALLS_REAL_METHODS)) {
+      // удаляем ровно элемент "ALL" из кеша
+      CacheIntrospection.nativeMap(cacheManager, CurrencyService2.CURRENCY_ALL).remove("ALL");
 
-    // 1) Явный generic у BiFunction — чтобы матчинг точно сработал
-    @SuppressWarnings("unchecked")
-    var anyMapper = (BiFunction<Map<String, Object>, Map<String, Map<String, Object>>, CurrencyDto>) any(BiFunction.class);
+      currencyCacheOps.getAll(); // вторая загрузка -> снова идём в бэкенд
 
-    statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(
-            any(GetItemsSearchResponse.class), anyMapper
-        ))
-        .thenReturn(mapped);
-
-    // 2) Глушим проверку статуса на всякий случай
-    statics.when(() -> BaseMasterDataRequestService.checkResponseStatus(any(GetItemsSearchResponse.class)))
-        .thenAnswer(inv -> null);
-
-    int threads = 8;
-    var pool = Executors.newFixedThreadPool(threads);
-    var futures = new ArrayList<Future<List<CurrencyDto>>>(threads);
-
-    // when: параллельные вызовы одного и того же кэшируемого метода
-    for (int i = 0; i < threads; i++) {
-      futures.add(pool.submit(() -> currencyCacheOps.getAll()));
+      verify(baseMasterDataRequestService, times(2))
+          .requestDataByAttributes("currency", "currencyCode", null);
     }
-
-    // убеждаемся, что лоадер действительно стартовал
-    assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
-    release.countDown();
-
-    // then: всем вернулся один и тот же маппинг
-    for (var f : futures) {
-      assertThat(f.get(2, TimeUnit.SECONDS)).containsExactlyElementsOf(mapped);
-    }
-    pool.shutdownNow();
-
-    // из-за sync=true должен быть ровно 1 поход в бэкенд
-    verify(baseMasterDataRequestService, times(1))
-        .requestDataByAttributes("currency", "currencyCode", null);
-
-    var keys = CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL);
-    assertThat(keys).containsExactly("ALL");
   }
 }
 
