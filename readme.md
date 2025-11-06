@@ -171,4 +171,70 @@ class CurrencyCacheOpsTest {
 }
 
 
+@Test
+void loadByCodes_delegatesToBackend_andMaps() {
+  // given
+  var codes = List.of("USD", "EUR");
+  var resp  = new GetItemsSearchResponse();
+  var mapped = List.of(
+      CurrencyDto.builder().currencyCode("USD").build(),
+      CurrencyDto.builder().currencyCode("EUR").build()
+  );
+
+  when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", codes))
+      .thenReturn(resp);
+
+  try (MockedStatic<BaseMasterDataRequestService> statics =
+           mockStatic(BaseMasterDataRequestService.class)) {
+    statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
+        .thenReturn(mapped);
+
+    // when
+    var result = currencyCacheOps.loadByCodes(codes);
+
+    // then
+    verify(baseMasterDataRequestService, times(1))
+        .requestDataByAttributes("currency", "currencyCode", codes);
+    assertThat(result).containsExactlyElementsOf(mapped);
+
+    // метод не должен что-то класть в кеш "ALL"
+    var keys = CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL);
+    assertThat(keys).isEmpty();
+  }
+}
+
+@Test
+void loadByCodes_calledTwice_callsBackendTwice_andDoesNotCache() {
+  // given
+  var codes = List.of("JPY");
+  var resp  = new GetItemsSearchResponse();
+  var mapped = List.of(CurrencyDto.builder().currencyCode("JPY").build());
+
+  when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", codes))
+      .thenReturn(resp);
+
+  try (MockedStatic<BaseMasterDataRequestService> statics =
+           mockStatic(BaseMasterDataRequestService.class)) {
+    statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
+        .thenReturn(mapped);
+
+    // when
+    var r1 = currencyCacheOps.loadByCodes(codes);
+    var r2 = currencyCacheOps.loadByCodes(codes);
+
+    // then: без @Cacheable результат одинаковый, но бэкенд дернулся 2 раза
+    assertThat(r1).containsExactlyElementsOf(mapped);
+    assertThat(r2).containsExactlyElementsOf(mapped);
+
+    verify(baseMasterDataRequestService, times(2))
+        .requestDataByAttributes("currency", "currencyCode", codes);
+
+    // кеш "ALL" не трогаем
+    var keys = CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL);
+    assertThat(keys).isEmpty();
+  }
+}
+
+
+
 ```
