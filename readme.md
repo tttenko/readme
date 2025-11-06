@@ -133,5 +133,58 @@ class CurrencyCacheOpsTest {
   }
 }
 
+------------------------------------------------------------------------------------------------------------------------------------------------------
+
+@Test
+void getAll_syncTrue_avoidsStampede_onParallelCalls_withoutSleep() throws Exception {
+  // given
+  var resp   = new GetItemsSearchResponse();
+  var mapped = List.of(CurrencyDto.builder().currencyCode("JPY").build());
+
+  // латчи вместо Thread.sleep
+  var entered = new CountDownLatch(1);   // сигнал: лоадер вошёл
+  var release = new CountDownLatch(1);   // разрешаем завершиться
+
+  when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", null))
+      .thenAnswer(inv -> {
+        entered.countDown();                     // сообщаем, что вошли в лоадер
+        release.await(3, TimeUnit.SECONDS);      // ждём разрешения (c таймаутом)
+        return resp;
+      });
+
+  try (MockedStatic<BaseMasterDataRequestService> statics =
+           mockStatic(BaseMasterDataRequestService.class)) {
+    statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
+        .thenReturn(mapped);
+
+    int threads = 8;
+    var pool = Executors.newFixedThreadPool(threads);
+    var futures = new ArrayList<Future<List<CurrencyDto>>>(threads);
+
+    // when: одновременно дергаем кэшируемый метод
+    for (int i = 0; i < threads; i++) {
+      futures.add(pool.submit(() -> currencyCacheOps.getAll()));
+    }
+
+    // убеждаемся, что лоадер реально стартовал, и только потом "будим" его
+    assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+    release.countDown();
+
+    // then: все потоки получили одинаковый результат
+    for (var f : futures) {
+      assertThat(f.get(2, TimeUnit.SECONDS)).containsExactlyElementsOf(mapped);
+    }
+
+    pool.shutdownNow();
+
+    // один вызов бекенда благодаря sync=true + Caffeine
+    verify(baseMasterDataRequestService, times(1))
+        .requestDataByAttributes("currency", "currencyCode", null);
+
+    var keys = CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL);
+    assertThat(keys.contains("ALL")).isTrue();
+  }
+}
+
 
 ```
