@@ -141,50 +141,56 @@ void getAll_syncTrue_avoidsStampede_onParallelCalls_withoutSleep() throws Except
   var resp   = new GetItemsSearchResponse();
   var mapped = List.of(CurrencyDto.builder().currencyCode("JPY").build());
 
-  // латчи вместо Thread.sleep
-  var entered = new CountDownLatch(1);   // сигнал: лоадер вошёл
-  var release = new CountDownLatch(1);   // разрешаем завершиться
+  var entered = new CountDownLatch(1); // сигнал, что лоадер зашел
+  var release = new CountDownLatch(1); // разрешаем завершать лоадер
 
   when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", null))
       .thenAnswer(inv -> {
-        entered.countDown();                     // сообщаем, что вошли в лоадер
-        release.await(3, TimeUnit.SECONDS);      // ждём разрешения (c таймаутом)
+        entered.countDown();
+        release.await(3, TimeUnit.SECONDS); // без Thread.sleep
         return resp;
       });
 
   try (MockedStatic<BaseMasterDataRequestService> statics =
-           mockStatic(BaseMasterDataRequestService.class)) {
-    statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
+           mockStatic(BaseMasterDataRequestService.class, CALLS_REAL_METHODS)) {
+
+    // Важно: матчеры, а не конкретные инстансы (иначе легко промахнуться)
+    statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(
+            ArgumentMatchers.any(GetItemsSearchResponse.class),
+            ArgumentMatchers.same(currencyMapper)         // тот же мок маппера
+        ))
         .thenReturn(mapped);
+
+    // На всякий — глушим проверку статуса, если вдруг вызов попадет мимо стаба
+    statics.when(() -> BaseMasterDataRequestService.checkResponseStatus(
+            ArgumentMatchers.any(GetItemsSearchResponse.class)
+        ))
+        .thenAnswer(inv -> null);
 
     int threads = 8;
     var pool = Executors.newFixedThreadPool(threads);
     var futures = new ArrayList<Future<List<CurrencyDto>>>(threads);
 
-    // when: одновременно дергаем кэшируемый метод
     for (int i = 0; i < threads; i++) {
       futures.add(pool.submit(() -> currencyCacheOps.getAll()));
     }
 
-    // убеждаемся, что лоадер реально стартовал, и только потом "будим" его
     assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
     release.countDown();
 
-    // then: все потоки получили одинаковый результат
     for (var f : futures) {
       assertThat(f.get(2, TimeUnit.SECONDS)).containsExactlyElementsOf(mapped);
     }
 
     pool.shutdownNow();
 
-    // один вызов бекенда благодаря sync=true + Caffeine
+    // из-за sync=true + Caffeine должен быть ровно один поход в бэкенд
     verify(baseMasterDataRequestService, times(1))
         .requestDataByAttributes("currency", "currencyCode", null);
 
     var keys = CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL);
-    assertThat(keys.contains("ALL")).isTrue();
+    assertThat(keys).containsExactly("ALL");
   }
 }
-
 
 ```
