@@ -235,6 +235,19 @@ void loadByCodes_calledTwice_callsBackendTwice_andDoesNotCache() {
   }
 }
 
+getAll_cachesResult_andStoresUnderALLKey →
+givenEmptyCache_whenGetAll_thenStoresUnderALLKeyAndReturnsData
 
+getAll_thenSecondCall_isHit_byCaffeineStats →
+givenAllCached_whenGetAll_thenReturnsFromCacheHit
+
+afterManualClear_nextCall_isMiss →
+givenCacheCleared_whenGetAll_thenCacheMissAndReloads
+
+loadByCodes_delegatesToBackend_andMaps →
+givenCodes_whenLoadByCodes_thenDelegatesToBackendAndMapsResult
+
+loadByCodes_calledTwice_callsBackendTwice_andDoesNotCache →
+givenTwoSequentialCalls_whenLoadByCodes_thenBackendInvokedTwice_noCaching
 
 ```
