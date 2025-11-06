@@ -1,253 +1,147 @@
 ```java
 
-package ru.sber.cs.supplier.portal.masterdata.services.impl.currency;
+@Component
+@RequiredArgsConstructor
+public class AdapterCacheOps {
 
-import com.github.benmanes.caffeine.cache.Caffeine;
-import org.assertj.core.api.Assertions;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.cache.CacheManager;
-import org.springframework.cache.caffeine.CaffeineCache;
-import org.springframework.cache.caffeine.CaffeineCacheManager;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.ContextConfiguration;
-import org.springframework.test.context.junit.jupiter.SpringExtension;
-import org.springframework.cache.annotation.EnableCaching;
+  public static final String UOM_ALL = "uom_all";
+  public static final String MATERIAL_TYPE_ALL = "material_type_all";
+  public static final String MATERIAL_ALL = "material_all";
 
-import ru.sber.cs.supplier.portal.masterdata.models.md.GetItemsSearchResponse;
-import ru.sber.cs.supplier.portal.masterdata.models.adapter.CurrencyDto;
-import ru.sber.cs.supplier.portal.masterdata.props.SearchRequestProperties;
-import ru.sber.cs.supplier.portal.masterdata.services.impl.BaseMasterDataRequestService;
-import ru.sber.cs.supplier.portal.masterdata.services.impl.currency.mapper.CurrencyMapper;
-import ru.sber.cs.supplier.portal.masterdata.utils.CacheIntrospection;
+  private final BaseMasterDataRequestService md;
+  private final SearchRequestProperties props;
+  private final MeasureUnitMapper measureUnitMapper;
+  private final MaterialTypeMapper materialTypeMapper;
+  private final MaterialMapper materialMapper;
 
-import java.util.List;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.*;
-import static org.mockito.Mockito.CALLS_REAL_METHODS;
-
-@ExtendWith(SpringExtension.class)
-@ContextConfiguration(classes = CurrencyCacheOpsTest.Config.class)
-@Import(CurrencyCacheOps.class)
-class CurrencyCacheOpsTest {
-
-  @TestConfiguration
-  @EnableCaching(proxyTargetClass = true)
-  static class Config {
-    @Bean
-    CacheManager cacheManager() {
-      var mgr = new CaffeineCacheManager(CurrencyService2.CURRENCY_ALL);
-      mgr.setCaffeine(
-          Caffeine.newBuilder()
-              .recordStats()
-              .maximumSize(1_000)
-      );
-      return mgr;
-    }
+  /** Все UOM. */
+  @Cacheable(cacheNames = UOM_ALL, key = "'ALL'", sync = true)
+  @Nonnull
+  public List<UomBankDto> getAllUoms() {
+    var resp = md.requestData(props.getSlugValueForMeasureUnit(), Context.BOOK);
+    return createResultWithAttribute(resp, measureUnitMapper);
   }
 
-  @org.springframework.beans.factory.annotation.Autowired
-  private CurrencyCacheOps currencyCacheOps;
-
-  @org.springframework.beans.factory.annotation.Autowired
-  private CacheManager cacheManager;
-
-  @org.springframework.boot.test.mock.mockito.MockBean
-  private BaseMasterDataRequestService baseMasterDataRequestService;
-
-  @org.springframework.boot.test.mock.mockito.MockBean
-  private SearchRequestProperties properties;
-
-  @org.springframework.boot.test.mock.mockito.MockBean
-  private CurrencyMapper currencyMapper;
-
-  @BeforeEach
-  void setUp() {
-    when(properties.getSlugValueForCurrency()).thenReturn("currency");
-    when(properties.getCurrencyAttributeId()).thenReturn("currencyCode");
-    // очистим кеш на всякий случай
-    CacheIntrospection.nativeMap(cacheManager, CurrencyService2.CURRENCY_ALL).clear();
+  /** Все виды ТМЦ. */
+  @Cacheable(cacheNames = MATERIAL_TYPE_ALL, key = "'ALL'", sync = true)
+  @Nonnull
+  public List<MaterialTypeDto> getAllMaterialTypes() {
+    var resp = md.requestData(props.getSlugValueForMaterialType(), Context.TMC);
+    return createResult(resp, materialTypeMapper);
   }
 
-  @Test
-  void getAll_cachesResult_andStoresUnderALLKey() {
-    var resp = new GetItemsSearchResponse();
-    var mapped = List.of(
-        CurrencyDto.builder().currencyCode("USD").build(),
-        CurrencyDto.builder().currencyCode("EUR").build()
-    );
-
-    when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", null))
-        .thenReturn(resp);
-
-    try (MockedStatic<BaseMasterDataRequestService> statics =
-             Mockito.mockStatic(BaseMasterDataRequestService.class)) {
-      statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
-          .thenReturn(mapped);
-
-      var first = currencyCacheOps.getAll();
-      var second = currencyCacheOps.getAll();
-
-      // бэкенд вызвался ровно один раз
-      verify(baseMasterDataRequestService, times(1))
-          .requestDataByAttributes("currency", "currencyCode", null);
-
-      // результат одинаковый и соответствует маппингу
-      assertThat(first).isEqualTo(second).containsExactlyElementsOf(mapped);
-
-      // в кеше есть единственный ключ "ALL"
-      var keys = CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL);
-      assertThat(keys).containsExactly("ALL");
-
-      // «сырой» объект под ключом — тот же список
-      @SuppressWarnings("unchecked")
-      var raw = (List<CurrencyDto>) CacheIntrospection.rawValue(
-          cacheManager, CurrencyService2.CURRENCY_ALL, "ALL");
-      assertThat(raw).containsExactlyElementsOf(mapped);
-    }
-  }
-
-  @Test
-  void getAll_thenSecondCall_isHit_byCaffeineStats() {
-    var resp = new GetItemsSearchResponse();
-    var mapped = List.of(CurrencyDto.builder().currencyCode("JPY").build());
-
-    when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", null))
-        .thenReturn(resp);
-
-    try (MockedStatic<BaseMasterDataRequestService> statics =
-             Mockito.mockStatic(BaseMasterDataRequestService.class)) {
-      statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
-          .thenReturn(mapped);
-
-      var cache = (CaffeineCache) cacheManager.getCache(CurrencyService2.CURRENCY_ALL);
-      var before = cache.getNativeCache().stats();
-
-      currencyCacheOps.getAll(); // miss
-      currencyCacheOps.getAll(); // hit
-
-      var after = cache.getNativeCache().stats();
-
-      // проверяем дельту: 1 промах и 1 попадание
-      assertThat(after.missCount() - before.missCount()).isEqualTo(1);
-      assertThat(after.hitCount() - before.hitCount()).isEqualTo(1);
-
-      verify(baseMasterDataRequestService, times(1))
-          .requestDataByAttributes("currency", "currencyCode", null);
-    }
-  }
-
-  @Test
-  void afterManualClear_nextCall_isMiss() {
-    var resp = new GetItemsSearchResponse();
-    var mapped = List.of(CurrencyDto.builder().currencyCode("GBP").build());
-
-    when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", null))
-        .thenReturn(resp);
-
-    try (MockedStatic<BaseMasterDataRequestService> statics =
-             Mockito.mockStatic(BaseMasterDataRequestService.class, CALLS_REAL_METHODS)) {
-      statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
-          .thenReturn(mapped);
-
-      currencyCacheOps.getAll(); // первая загрузка -> кешируем
-
-      // удаляем ровно элемент "ALL" из кеша
-      CacheIntrospection.nativeMap(cacheManager, CurrencyService2.CURRENCY_ALL).remove("ALL");
-
-      currencyCacheOps.getAll(); // вторая загрузка -> снова идём в бэкенд
-
-      verify(baseMasterDataRequestService, times(2))
-          .requestDataByAttributes("currency", "currencyCode", null);
-    }
+  /** Все материалы (основная запись). */
+  @Cacheable(cacheNames = MATERIAL_ALL, key = "'ALL'", sync = true)
+  @Nonnull
+  public List<MaterialDto> getAllMaterials() {
+    var resp = md.requestData(props.getSlugValueForMaterial(), Context.TMC);
+    return createResultWithAttribute(resp, materialMapper);
   }
 }
 
 
-@Test
-void loadByCodes_delegatesToBackend_andMaps() {
-  // given
-  var codes = List.of("USD", "EUR");
-  var resp  = new GetItemsSearchResponse();
-  var mapped = List.of(
-      CurrencyDto.builder().currencyCode("USD").build(),
-      CurrencyDto.builder().currencyCode("EUR").build()
-  );
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class AdapterService {
 
-  when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", codes))
-      .thenReturn(resp);
+  // cache names
+  public static final String UOM_BY_CODE = "uom_by_code";
+  public static final String MATERIAL_TYPE_BY_ID = "material_type_by_id";
+  public static final String MATERIAL_BY_CODE = "material_by_code";
 
-  try (MockedStatic<BaseMasterDataRequestService> statics =
-           mockStatic(BaseMasterDataRequestService.class)) {
-    statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
-        .thenReturn(mapped);
+  private final BatchCacheSupport batchLoad;
+  private final BaseMasterDataRequestService md;
+  private final SearchRequestProperties props;
+  private final MeasureUnitMapper measureUnitMapper;
+  private final MaterialTypeMapper materialTypeMapper;
+  private final MaterialMapper materialMapper;
+  private final AdapterAllCacheOps allOps;
 
-    // when
-    var result = currencyCacheOps.loadByCodes(codes);
+  // ---------- API ----------
 
-    // then
-    verify(baseMasterDataRequestService, times(1))
-        .requestDataByAttributes("currency", "currencyCode", codes);
-    assertThat(result).containsExactlyElementsOf(mapped);
+  /** UOM: по кодам или все (если список пуст/null). */
+  @Nonnull
+  public ResultObj<List<UomBankDto>> getUom(@Nullable final List<String> uomCodes) {
+    final List<UomBankDto> data = (uomCodes == null || uomCodes.isEmpty())
+        ? allOps.getAllUoms()
+        : batchLoad.fetchBatch(
+            UOM_BY_CODE,
+            uomCodes,
+            this::loadUomsByCodes,           // miss → один запрос в МД
+            UomBankDto::getUomCode,
+            UomBankDto.class
+          );
+    return getSuccessResponse(data);
+  }
 
-    // метод не должен что-то класть в кеш "ALL"
-    var keys = CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL);
-    assertThat(keys).isEmpty();
+  /** Вид ТМЦ: по id или все. */
+  @Nonnull
+  public ResultObj<List<MaterialTypeDto>> getMaterialType(@Nullable final List<String> typeIds) {
+    final List<MaterialTypeDto> data = (typeIds == null || typeIds.isEmpty())
+        ? allOps.getAllMaterialTypes()
+        : batchLoad.fetchBatch(
+            MATERIAL_TYPE_BY_ID,
+            typeIds,
+            this::loadMaterialTypesByIds,
+            MaterialTypeDto::getTypeId,
+            MaterialTypeDto.class
+          );
+    return getSuccessResponse(data);
+  }
+
+  /** Материалы: по кодам или все. */
+  @Nonnull
+  public ResultObj<List<MaterialDto>> getMaterial(@Nullable final List<String> materialCodes) {
+    final List<MaterialDto> data = (materialCodes == null || materialCodes.isEmpty())
+        ? allOps.getAllMaterials()
+        : batchLoad.fetchBatch(
+            MATERIAL_BY_CODE,
+            materialCodes,
+            this::loadMaterialsByCodes,
+            MaterialDto::getMaterialCode,
+            MaterialDto.class
+          );
+    return getSuccessResponse(data);
+  }
+
+  // ---------- Loaders for miss (без кеш-аннотаций) ----------
+
+  @Nonnull
+  private List<UomBankDto> loadUomsByCodes(@Nonnull final List<String> codes) {
+    final var resp = md.requestDataWithAttribute(
+        props.getSlugValueForMeasureUnit(),
+        codes,
+        Context.BOOK);
+    return createResultWithAttribute(resp, measureUnitMapper);
+  }
+
+  @Nonnull
+  private List<MaterialTypeDto> loadMaterialTypesByIds(@Nonnull final List<String> ids) {
+    final var resp = md.requestData(
+        props.getSlugValueForMaterialType(),
+        ids,
+        Context.TMC);
+    return createResult(resp, materialTypeMapper);
+  }
+
+  @Nonnull
+  private List<MaterialDto> loadMaterialsByCodes(@Nonnull final List<String> codes) {
+    final var resp = md.requestDataWithAttribute(
+        props.getSlugValueForMaterial(),
+        codes,
+        Context.TMC);
+    return createResultWithAttribute(resp, materialMapper);
+  }
+
+  // ---------- Invalidation helpers (опционально) ----------
+  @CacheEvict(cacheNames = {
+      AdapterAllCacheOps.UOM_ALL, UOM_BY_CODE,
+      AdapterAllCacheOps.MATERIAL_TYPE_ALL, MATERIAL_TYPE_BY_ID,
+      AdapterAllCacheOps.MATERIAL_ALL, MATERIAL_BY_CODE
+  }, allEntries = true)
+  public void cleanAllCaches() {
+    log.info("Adapter caches cleared");
   }
 }
-
-@Test
-void loadByCodes_calledTwice_callsBackendTwice_andDoesNotCache() {
-  // given
-  var codes = List.of("JPY");
-  var resp  = new GetItemsSearchResponse();
-  var mapped = List.of(CurrencyDto.builder().currencyCode("JPY").build());
-
-  when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", codes))
-      .thenReturn(resp);
-
-  try (MockedStatic<BaseMasterDataRequestService> statics =
-           mockStatic(BaseMasterDataRequestService.class)) {
-    statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper))
-        .thenReturn(mapped);
-
-    // when
-    var r1 = currencyCacheOps.loadByCodes(codes);
-    var r2 = currencyCacheOps.loadByCodes(codes);
-
-    // then: без @Cacheable результат одинаковый, но бэкенд дернулся 2 раза
-    assertThat(r1).containsExactlyElementsOf(mapped);
-    assertThat(r2).containsExactlyElementsOf(mapped);
-
-    verify(baseMasterDataRequestService, times(2))
-        .requestDataByAttributes("currency", "currencyCode", codes);
-
-    // кеш "ALL" не трогаем
-    var keys = CacheIntrospection.keys(cacheManager, CurrencyService2.CURRENCY_ALL);
-    assertThat(keys).isEmpty();
-  }
-}
-
-getAll_cachesResult_andStoresUnderALLKey →
-givenEmptyCache_whenGetAll_thenStoresUnderALLKeyAndReturnsData
-
-getAll_thenSecondCall_isHit_byCaffeineStats →
-givenAllCached_whenGetAll_thenReturnsFromCacheHit
-
-afterManualClear_nextCall_isMiss →
-givenCacheCleared_whenGetAll_thenCacheMissAndReloads
-
-loadByCodes_delegatesToBackend_andMaps →
-givenCodes_whenLoadByCodes_thenDelegatesToBackendAndMapsResult
-
-loadByCodes_calledTwice_callsBackendTwice_andDoesNotCache →
-givenTwoSequentialCalls_whenLoadByCodes_thenBackendInvokedTwice_noCaching
-
 ```
