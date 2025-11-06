@@ -141,50 +141,49 @@ void getAll_syncTrue_avoidsStampede_onParallelCalls_withoutSleep() throws Except
   var resp   = new GetItemsSearchResponse();
   var mapped = List.of(CurrencyDto.builder().currencyCode("JPY").build());
 
-  var entered = new CountDownLatch(1); // сигнал, что лоадер зашел
-  var release = new CountDownLatch(1); // разрешаем завершать лоадер
+  // латчи вместо Thread.sleep
+  var entered = new CountDownLatch(1);
+  var release = new CountDownLatch(1);
 
   when(baseMasterDataRequestService.requestDataByAttributes("currency", "currencyCode", null))
-      .thenAnswer(inv -> {
-        entered.countDown();
-        release.await(3, TimeUnit.SECONDS); // без Thread.sleep
-        return resp;
-      });
+      .thenAnswer(inv -> { entered.countDown(); release.await(3, TimeUnit.SECONDS); return resp; });
 
   try (MockedStatic<BaseMasterDataRequestService> statics =
            mockStatic(BaseMasterDataRequestService.class, CALLS_REAL_METHODS)) {
 
-    // Важно: матчеры, а не конкретные инстансы (иначе легко промахнуться)
+    // 1) Явный generic у BiFunction — чтобы матчинг точно сработал
+    @SuppressWarnings("unchecked")
+    var anyMapper = (BiFunction<Map<String, Object>, Map<String, Map<String, Object>>, CurrencyDto>) any(BiFunction.class);
+
     statics.when(() -> BaseMasterDataRequestService.createResultWithAttribute(
-            ArgumentMatchers.any(GetItemsSearchResponse.class),
-            ArgumentMatchers.same(currencyMapper)         // тот же мок маппера
+            any(GetItemsSearchResponse.class), anyMapper
         ))
         .thenReturn(mapped);
 
-    // На всякий — глушим проверку статуса, если вдруг вызов попадет мимо стаба
-    statics.when(() -> BaseMasterDataRequestService.checkResponseStatus(
-            ArgumentMatchers.any(GetItemsSearchResponse.class)
-        ))
+    // 2) Глушим проверку статуса на всякий случай
+    statics.when(() -> BaseMasterDataRequestService.checkResponseStatus(any(GetItemsSearchResponse.class)))
         .thenAnswer(inv -> null);
 
     int threads = 8;
     var pool = Executors.newFixedThreadPool(threads);
     var futures = new ArrayList<Future<List<CurrencyDto>>>(threads);
 
+    // when: параллельные вызовы одного и того же кэшируемого метода
     for (int i = 0; i < threads; i++) {
       futures.add(pool.submit(() -> currencyCacheOps.getAll()));
     }
 
+    // убеждаемся, что лоадер действительно стартовал
     assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
     release.countDown();
 
+    // then: всем вернулся один и тот же маппинг
     for (var f : futures) {
       assertThat(f.get(2, TimeUnit.SECONDS)).containsExactlyElementsOf(mapped);
     }
-
     pool.shutdownNow();
 
-    // из-за sync=true + Caffeine должен быть ровно один поход в бэкенд
+    // из-за sync=true должен быть ровно 1 поход в бэкенд
     verify(baseMasterDataRequestService, times(1))
         .requestDataByAttributes("currency", "currencyCode", null);
 
@@ -192,5 +191,6 @@ void getAll_syncTrue_avoidsStampede_onParallelCalls_withoutSleep() throws Except
     assertThat(keys).containsExactly("ALL");
   }
 }
+
 
 ```
