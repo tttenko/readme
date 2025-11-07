@@ -1,5 +1,11 @@
 ```java
 
+/**
+ * Сервис для работы с валютами.
+ * <p>
+ * Предоставляет операции поиска валют по коду или загрузки всех валют из кэша или внешнего источника.
+ * Использует {@link CurrencyCacheOps} для взаимодействия с кэшем и {@link BatchCacheSupport} для пакетной загрузки.
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -11,6 +17,14 @@ public class CurrencyService2 {
     private final BatchCacheSupport batchLoad;
     private final CurrencyCacheOps currencyCacheOps;
 
+    /**
+     * Ищет валюты по их кодам или возвращает все валюты, если список кодов пустой.
+     *
+     * @param currencyCodes список кодов валют для поиска (может быть {@code null} или пустым)
+     * @return объект результата, содержащий список найденных валют
+     * @see CurrencyCacheOps#loadAllCurrencies()
+     * @see CurrencyCacheOps#loadByCodes(List)
+     */
     @Nonnull
     public ResultObj<List<CurrencyDto>> searchCurrenciesByCode(@Nullable final List<String> currencyCodes) {
         final boolean requestAll = (currencyCodes == null || currencyCodes.isEmpty());
@@ -29,6 +43,13 @@ public class CurrencyService2 {
     }
 }
 
+
+/**
+ * Компонент для работы с кэшированными данными валют.
+ * <p>
+ * Обеспечивает загрузку всех валют или выборочную загрузку по кодам
+ * с использованием {@link BaseMasterDataRequestService} и кэшированием результатов.
+ */
 @Service
 @RequiredArgsConstructor
 public class CurrencyCacheOps {
@@ -37,6 +58,14 @@ public class CurrencyCacheOps {
     private final SearchRequestProperties properties;
     private final CurrencyMapper currencyMapper;
 
+    /**
+     * Загружает все валюты и кэширует результат под ключом {@code "ALL"}.
+     * <p>
+     * Используется при первичном обращении для получения полного списка валют.
+     *
+     * @return список всех валют
+     * @see CurrencyService2#CURRENCY_ALL
+     */
     @Cacheable(cacheNames = CurrencyService2.CURRENCY_ALL, key = "'ALL'", sync = true)
     @Nonnull
     public List<CurrencyDto> loadAllCurrencies() {
@@ -48,6 +77,15 @@ public class CurrencyCacheOps {
         return createResultWithAttribute(resp, currencyMapper);
     }
 
+    /**
+     * Загружает валюты по указанным кодам без кэширования.
+     * <p>
+     * Используется при выборочных запросах, когда требуется получить конкретные валюты.
+     *
+     * @param codes список кодов валют, которые необходимо загрузить
+     * @return список найденных валют
+     * @see BaseMasterDataRequestService#requestDataByAttributes(String, String, List)
+     */
     @Nonnull
     public List<CurrencyDto> loadByCodes(@Nonnull final List<String> codes) {
         final GetItemsSearchResponse resp = baseMasterDataRequestService.requestDataByAttributes(
@@ -379,4 +417,204 @@ public class AdapterCacheOps {
     }
 }
 
+
+
+
+
+/**
+ * Тесты для {@link CurrencyCacheOps}.
+ * <p>
+ * Проверяет корректность работы кэширования валют:
+ * сохранение, получение из кэша, очистку и повторные запросы.
+ */
+@ExtendWith(SpringExtension.class)
+@ContextConfiguration(classes = CurrencyCacheOpsTest.Config.class)
+@Import(CurrencyCacheOps.class)
+class CurrencyCacheOpsTest {
+
+    /**
+     * Конфигурация тестового контекста.
+     * Настраивает {@link CacheManager} с использованием Caffeine.
+     */
+    @TestConfiguration
+    @EnableCaching(proxyTargetClass = true)
+    static class Config {
+        /**
+         * Создаёт менеджер кэша с лимитом и статистикой.
+         *
+         * @return настроенный экземпляр {@link CacheManager}
+         */
+        @Bean
+        CacheManager cacheManager() {
+            var mgr = new CaffeineCacheManager(CurrencyService2.CURRENCY_ALL);
+            mgr.setCaffeine(
+                    Caffeine.newBuilder()
+                            .recordStats()
+                            .maximumSize(1_000)
+            );
+            return mgr;
+        }
+    }
+
+    /**
+     * Подготавливает окружение перед каждым тестом:
+     * мокаются свойства и очищается кэш.
+     */
+    @BeforeEach
+    void setUp() { ... }
+
+    /**
+     * Проверяет, что при пустом кэше данные сохраняются под ключом ALL.
+     */
+    @Test
+    void givenEmptyCache_whenGetAll_thenStoresUnderALLKeyAndReturnsData() { ... }
+
+    /**
+     * Проверяет, что при наличии данных в кэше запрос выполняется из него (cache hit).
+     */
+    @Test
+    void givenAllCached_whenGetAll_thenReturnsFromCacheHit() { ... }
+
+    /**
+     * Проверяет, что после очистки кэша данные снова загружаются из источника.
+     */
+    @Test
+    void givenCacheCleared_whenGetAll_thenCacheMissAndReloads() { ... }
+
+    /**
+     * Проверяет загрузку валют по кодам без кэширования.
+     */
+    @Test
+    void givenCodes_whenLoadByCodes_thenDelegatesToBackendAndMapsResult() { ... }
+
+    /**
+     * Проверяет, что повторные вызовы loadByCodes не используют кэш.
+     */
+    @Test
+    void givenTwoSequentialCalls_whenLoadByCodes_thenBackendInvokedTwice_noCaching() { ... }
+}
+
+/**
+ * Сервис для работы с данными справочников единиц измерения и материалов.
+ * <p>
+ * Предоставляет методы для получения UOM, типов и кодов материалов
+ * с использованием кэша или пакетной загрузки.
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class AdapterService2 {
+
+    public static final String UOM_BY_CODE = "uom_by_code";
+    public static final String MATERIAL_TYPE_BY_ID = "material_type_by_id";
+    public static final String MATERIAL_BY_CODE = "material_by_code";
+
+    private final BatchCacheSupport batchLoad;
+    private final AdapterCacheOps adapterCacheOps;
+
+    /**
+     * Получает список единиц измерения.
+     * <p>
+     * При пустом списке кодов — загружает все данные, иначе делает выборочную загрузку.
+     *
+     * @param uomCodes список кодов единиц измерения (может быть {@code null})
+     * @return список единиц измерения
+     */
+    @Nonnull
+    public ResultObj<List<UomBankDto>> getUom(@Nullable final List<String> uomCodes) { ... }
+
+    /**
+     * Получает список типов материалов.
+     *
+     * @param typeIds список идентификаторов типов материалов (может быть {@code null})
+     * @return список типов материалов
+     */
+    @Nonnull
+    public ResultObj<List<MaterialTypeDto>> getMaterialType(@Nullable final List<String> typeIds) { ... }
+
+    /**
+     * Получает список материалов.
+     *
+     * @param materialCodes список кодов материалов (может быть {@code null})
+     * @return список материалов
+     */
+    @Nonnull
+    public ResultObj<List<MaterialDto>> getMaterial(@Nullable final List<String> materialCodes) { ... }
+}
+
+/**
+ * Класс для кэширования и загрузки данных справочников:
+ * единиц измерения (UOM), типов и материалов.
+ * <p>
+ * Использует {@link BaseMasterDataRequestService} для запросов к данным
+ * и сохраняет результаты в кэш для оптимизации повторных обращений.
+ */
+@Component
+@RequiredArgsConstructor
+public class AdapterCacheOps {
+
+    public static final String UOM_ALL = "uom_all";
+    public static final String MATERIAL_TYPE_ALL = "material_type_all";
+    public static final String MATERIAL_ALL = "material_all";
+
+    private final BaseMasterDataRequestService baseMasterDataRequestService;
+    private final SearchRequestProperties properties;
+    private final MeasureUnitMapper measureUnitMapper;
+    private final MaterialTypeMapper materialTypeMapper;
+    private final MaterialMapper materialMapper;
+
+    /**
+     * Загружает и кэширует все единицы измерения.
+     *
+     * @return список всех единиц измерения
+     */
+    @Cacheable(cacheNames = UOM_ALL, key = "'ALL'", sync = true)
+    @Nonnull
+    public List<UomBankDto> getAllUoms() { ... }
+
+    /**
+     * Загружает и кэширует все типы материалов.
+     *
+     * @return список всех типов материалов
+     */
+    @Cacheable(cacheNames = MATERIAL_TYPE_ALL, key = "'ALL'", sync = true)
+    @Nonnull
+    public List<MaterialTypeDto> getAllMaterialTypes() { ... }
+
+    /**
+     * Загружает и кэширует все материалы.
+     *
+     * @return список всех материалов
+     */
+    @Cacheable(cacheNames = MATERIAL_ALL, key = "'ALL'", sync = true)
+    @Nonnull
+    public List<MaterialDto> getAllMaterials() { ... }
+
+    /**
+     * Загружает единицы измерения по указанным кодам.
+     *
+     * @param codes список кодов единиц измерения
+     * @return список найденных UOM
+     */
+    @Nonnull
+    public List<UomBankDto> loadUomsByCodes(@Nonnull final List<String> codes) { ... }
+
+    /**
+     * Загружает типы материалов по их идентификаторам.
+     *
+     * @param ids список идентификаторов
+     * @return список найденных типов материалов
+     */
+    @Nonnull
+    public List<MaterialTypeDto> loadMaterialTypesByIds(@Nonnull final List<String> ids) { ... }
+
+    /**
+     * Загружает материалы по их кодам.
+     *
+     * @param codes список кодов материалов
+     * @return список найденных материалов
+     */
+    @Nonnull
+    public List<MaterialDto> loadMaterialsByCodes(@Nonnull final List<String> codes) { ... }
+}
 ```
