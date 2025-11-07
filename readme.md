@@ -617,4 +617,108 @@ public class AdapterCacheOps {
     @Nonnull
     public List<MaterialDto> loadMaterialsByCodes(@Nonnull final List<String> codes) { ... }
 }
+
+---------------_--------------------------------------__----
+
+
+/**
+ * MVC-тесты контроллера валют.
+ */
+@SpringBootTest(classes = {
+        CurrencyController.class,
+        CurrencyService2.class,
+        CurrencyCacheOps.class,
+        CurrencyMapper.class,
+        CacheConfig.class,
+        BaseMasterDataRequestService.class
+})
+class CurrencyControllerMvcTest {
+
+    private AutoCloseable closeable;
+    private MockMvc mockMvc;
+    private ThreadSafeResourceReader reader;
+
+    @MockBean private ObjectMapper mapper;               // если нужен внутри HttpRequestHelper
+    @MockBean private SearchRequestProperties properties;
+    @MockBean private HttpRequestHelper httpRequestHelper;
+
+    @Autowired private CurrencyController controller;
+
+    @BeforeEach
+    void setUp() {
+        closeable = MockitoAnnotations.openMocks(this);
+
+        // ВАЖНО: один инстанс свойств и корректные значения.
+        when(properties.getSlugValueForCurrency()).thenReturn("currency");
+        when(properties.getCurrencyAttributeId()).thenReturn("currencyCode");
+
+        mockMvc = MockMvcBuilders
+                .standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .defaultResponseCharacterEncoding(StandardCharsets.UTF_8)
+                .build();
+
+        reader = createReader(this);
+    }
+
+    @AfterEach
+    void tearDown() throws Exception {
+        closeable.close();
+    }
+
+    @Test
+    @DisplayName("given no codes when GET /currency then returns all")
+    void givenNoCodes_whenGetAll_thenOk_andAllReturned() throws Exception {
+        // given: MD вернёт все валюты
+        GetItemsSearchResponse response = reader.readResource(
+                "mdresponce/currency/currency-all.json", GetItemsSearchResponse.class);
+        mockPostResponse("/v1/items/byAttrValues", response, GetItemsSearchResponse.class, httpRequestHelper);
+
+        // when/then
+        checkResult(performGetOk(mockMvc, "/api/v1/info/currency"), 5);
+    }
+
+    @Test
+    @DisplayName("given code in query when GET /currency?currencyCode=USD then one returned")
+    void givenQueryCode_whenGet_thenOk_andOneReturned() throws Exception {
+        // given: MD вернёт одну валюту
+        GetItemsSearchResponse response = reader.readResource(
+                "mdresponce/currency/currency-USD.json", GetItemsSearchResponse.class);
+        mockPostResponse("/v1/items/byAttrValues", response, GetItemsSearchResponse.class, httpRequestHelper);
+
+        // when/then
+        checkResult(
+                performGetOk(mockMvc, "/api/v1/info/currency", Map.of("currencyCode", "USD")),
+                1
+        );
+    }
+
+    @Test
+    @DisplayName("given code in path when GET /currency/{code} then one returned")
+    void givenPathCode_whenGet_thenOk_andOneReturned() throws Exception {
+        // given
+        GetItemsSearchResponse response = reader.readResource(
+                "mdresponce/currency/currency-USD.json", GetItemsSearchResponse.class);
+        mockPostResponse("/v1/items/byAttrValues", response, GetItemsSearchResponse.class, httpRequestHelper);
+
+        // when/then
+        checkResult(performGetOk(mockMvc, "/api/v1/info/currency/USD"), 1);
+    }
+
+    @Test
+    @DisplayName("given absent code when GET /currency/{code} then 404 from MD is propagated")
+    void givenUnknownCode_whenGet_thenNotFoundFromMd() throws Exception {
+        // given: MD вернёт «not found»
+        GetItemsSearchResponse response = reader.readResource(
+                "mdresponce/not-found-response.json", GetItemsSearchResponse.class);
+        // стаб для проверки статуса внутри BaseMasterDataRequestService
+        mockResponse("/v1/references", response, GetItemsSearchResponse.class, httpRequestHelper);
+        // и сам вызов поиска по атрибутам
+        mockPostResponse("/v1/items/byAttrValues", response, GetItemsSearchResponse.class, httpRequestHelper);
+
+        // when/then: контроллер пробрасывает ошибку из MD
+        assertThatThrownBy(() -> performGetOk(mockMvc, "/api/v1/info/currency/9999"))
+        .hasCauseInstanceOf(MdaDataNotFoundException.class);
+    }
+}
 ```
