@@ -621,104 +621,118 @@ public class AdapterCacheOps {
 ---------------_--------------------------------------__----
 
 
-/**
- * MVC-тесты контроллера валют.
- */
+@AutoConfigureMockMvc
 @SpringBootTest(classes = {
-        CurrencyController.class,
-        CurrencyService2.class,
-        CurrencyCacheOps.class,
-        CurrencyMapper.class,
-        CacheConfig.class,
-        BaseMasterDataRequestService.class
+    CurrencyController.class,
+    CurrencyService2.class,
+    CurrencyCacheOps.class,
+    CurrencyMapper.class,
+    BaseMasterDataRequestService.class,
+    CurrencyControllerMvcTest.TestConfig.class // <— локальная тест-конфигурация
 })
 class CurrencyControllerMvcTest {
 
-    private AutoCloseable closeable;
-    private MockMvc mockMvc;
-    private ThreadSafeResourceReader reader;
+    @TestConfiguration
+    @EnableCaching
+    static class TestConfig {
+        @Bean
+        CacheManager cacheManager() {
+            var mgr = new CaffeineCacheManager(
+                CurrencyService2.CURRENCY_BY_CODE,
+                CurrencyService2.CURRENCY_ALL
+            );
+            mgr.setCaffeine(Caffeine.newBuilder().maximumSize(1000));
+            return mgr;
+        }
 
-    @MockBean private ObjectMapper mapper;               // если нужен внутри HttpRequestHelper
-    @MockBean private SearchRequestProperties properties;
-    @MockBean private HttpRequestHelper httpRequestHelper;
+        // нужен CurrencyService2
+        @Bean
+        BatchCacheSupport batchCacheSupport(CacheManager cm) {
+            return new BatchCacheSupport(cm);
+        }
 
-    @Autowired private CurrencyController controller;
+        // реальный helper, по нему MvcTestUtils подменяет ответы
+        @Bean
+        HttpRequestHelper httpRequestHelper() {
+            return new HttpRequestHelper(new RestTemplate());
+        }
+    }
+
+    @Autowired private MockMvc mockMvc;
+    @Autowired private HttpRequestHelper httpRequestHelper;
+
+    // мок только свойств — чтобы buildRequest собрался
+    @MockBean private SearchRequestProperties searchRequestProperties;
 
     @BeforeEach
     void setUp() {
-        closeable = MockitoAnnotations.openMocks(this);
-
-        // ВАЖНО: один инстанс свойств и корректные значения.
-        when(properties.getSlugValueForCurrency()).thenReturn("currency");
-        when(properties.getCurrencyAttributeId()).thenReturn("currencyCode");
-
-        mockMvc = MockMvcBuilders
-                .standaloneSetup(controller)
-                .setControllerAdvice(new GlobalExceptionHandler())
-                .defaultResponseCharacterEncoding(StandardCharsets.UTF_8)
-                .build();
-
-        reader = createReader(this);
-    }
-
-    @AfterEach
-    void tearDown() throws Exception {
-        closeable.close();
+        // lenient — чтобы Mockito не ругался Unnecessary stubbing, если тест это не трогает
+        lenient().when(searchRequestProperties.getSlugValueForCurrency()).thenReturn("currency");
+        lenient().when(searchRequestProperties.getCurrencyAttributeId()).thenReturn("code");
     }
 
     @Test
-    @DisplayName("given no codes when GET /currency then returns all")
-    void givenNoCodes_whenGetAll_thenOk_andAllReturned() throws Exception {
-        // given: MD вернёт все валюты
-        GetItemsSearchResponse response = reader.readResource(
-                "mdresponce/currency/currency-all.json", GetItemsSearchResponse.class);
-        mockPostResponse("/v1/items/byAttrValues", response, GetItemsSearchResponse.class, httpRequestHelper);
+    @DisplayName("тест GET {host}/api/v1/info/currency")
+    void searchTbAllTest() throws Exception {
+        MvcTestUtils.mockPostResponse(
+            "/v1/items/byAttrValues",
+            TestJson.read("/mdresponce/currency/currency-all.json"),
+            GetItemsSearchResponse.class,
+            httpRequestHelper
+        );
 
-        // when/then
-        checkResult(performGetOk(mockMvc, "/api/v1/info/currency"), 5);
-    }
-
-    @Test
-    @DisplayName("given code in query when GET /currency?currencyCode=USD then one returned")
-    void givenQueryCode_whenGet_thenOk_andOneReturned() throws Exception {
-        // given: MD вернёт одну валюту
-        GetItemsSearchResponse response = reader.readResource(
-                "mdresponce/currency/currency-USD.json", GetItemsSearchResponse.class);
-        mockPostResponse("/v1/items/byAttrValues", response, GetItemsSearchResponse.class, httpRequestHelper);
-
-        // when/then
-        checkResult(
-                performGetOk(mockMvc, "/api/v1/info/currency", Map.of("currencyCode", "USD")),
-                1
+        MvcTestUtils.checkResult(
+            MvcTestUtils.performGetOk(mockMvc, "/api/v1/info/currency"),
+            5
         );
     }
 
     @Test
-    @DisplayName("given code in path when GET /currency/{code} then one returned")
-    void givenPathCode_whenGet_thenOk_andOneReturned() throws Exception {
-        // given
-        GetItemsSearchResponse response = reader.readResource(
-                "mdresponce/currency/currency-USD.json", GetItemsSearchResponse.class);
-        mockPostResponse("/v1/items/byAttrValues", response, GetItemsSearchResponse.class, httpRequestHelper);
+    @DisplayName("тест GET {host}/api/v1/info/currency?currencyCode=USD")
+    void searchTbTest() throws Exception {
+        MvcTestUtils.mockPostResponse(
+            "/v1/items/byAttrValues",
+            TestJson.read("/mdresponce/currency/currency-USD.json"),
+            GetItemsSearchResponse.class,
+            httpRequestHelper
+        );
 
-        // when/then
-        checkResult(performGetOk(mockMvc, "/api/v1/info/currency/USD"), 1);
+        MvcTestUtils.checkResult(
+            MvcTestUtils.performGetOk(mockMvc, "/api/v1/info/currency?currencyCode=USD"),
+            1
+        );
     }
 
     @Test
-    @DisplayName("given absent code when GET /currency/{code} then 404 from MD is propagated")
-    void givenUnknownCode_whenGet_thenNotFoundFromMd() throws Exception {
-        // given: MD вернёт «not found»
-        GetItemsSearchResponse response = reader.readResource(
-                "mdresponce/not-found-response.json", GetItemsSearchResponse.class);
-        // стаб для проверки статуса внутри BaseMasterDataRequestService
-        mockResponse("/v1/references", response, GetItemsSearchResponse.class, httpRequestHelper);
-        // и сам вызов поиска по атрибутам
-        mockPostResponse("/v1/items/byAttrValues", response, GetItemsSearchResponse.class, httpRequestHelper);
+    @DisplayName("тест GET {host}/api/v1/info/currency/{currencyCode}")
+    void searchTbByIdTest() throws Exception {
+        MvcTestUtils.mockPostResponse(
+            "/v1/items/byAttrValues",
+            TestJson.read("/mdresponce/currency/currency-USD.json"),
+            GetItemsSearchResponse.class,
+            httpRequestHelper
+        );
 
-        // when/then: контроллер пробрасывает ошибку из MD
-        assertThatThrownBy(() -> performGetOk(mockMvc, "/api/v1/info/currency/9999"))
-        .hasCauseInstanceOf(MdaDataNotFoundException.class);
+        MvcTestUtils.checkResult(
+            MvcTestUtils.performGetOk(mockMvc, "/api/v1/info/currency/USD"),
+            1
+        );
+    }
+
+    @Test
+    @DisplayName("тест GET {host}/api/v1/info/currency/{currencyCode}/ — 404 обработка")
+    void searchTbByIdTestEmpty() throws Exception {
+        MvcTestUtils.mockPostResponse(
+            "/v1/references",
+            TestJson.read("/mdresponce/not-found-response.json"),
+            GetItemsSearchResponse.class,
+            httpRequestHelper
+        );
+
+        var ex = assertThrows(ServletException.class,
+            () -> MvcTestUtils.performGetOk(mockMvc, "/api/v1/info/currency/9999"));
+        assertEquals(MdaDataNotFoundException.class, ex.getCause().getClass());
     }
 }
+
 ```
