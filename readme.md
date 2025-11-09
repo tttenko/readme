@@ -255,5 +255,90 @@ class AdapterCacheOpsTest {
   }
 }
 
+/**
+ * Unit-тесты для {@link AdapterCacheOps}.
+ * <p>
+ * Проверяется корректная работа кэширования Caffeine для справочников:
+ * <ul>
+ *   <li>UOM (единицы измерения),</li>
+ *   <li>MaterialType (типы материалов),</li>
+ *   <li>Material (материалы).</li>
+ * </ul>
+ * Тесты охватывают сценарии кэширования ключа "ALL", подсчёт hit/miss и отсутствие кэширования
+ * при выборочной загрузке по кодам или идентификаторам.
+ *
+ * @author <PRIVATE_PERSON>
+ * @since 2025-11
+ * @see AdapterCacheOps
+ */
+@ExtendWith(SpringExtension.class)
+@ContextConfiguration(classes = AdapterCacheOpsTest.Config.class)
+@Import(AdapterCacheOps.class)
+class AdapterCacheOpsTest {
+
+    /**
+     * Проверяет, что при пустом кэше данные загружаются из backend и сохраняются под ключом "ALL".
+     *
+     * @see AdapterCacheOps#getAllUoms()
+     */
+    @Test
+    void uom_givenEmptyCache_whenGetAll_thenStoresALLAndReturnsData() { /* ... */ }
+
+    /**
+     * Проверяет, что при повторном вызове растёт hit, а miss не увеличивается.
+     *
+     * @see AdapterCacheOps#getAllUoms()
+     */
+    @Test
+    void uom_givenAllCached_whenGetAll_thenHitStats() { /* ... */ }
+
+    /**
+     * Проверяет, что после очистки кэша выполняется повторная загрузка данных.
+     *
+     * @see AdapterCacheOps#getAllUoms()
+     */
+    @Test
+    void uom_givenCacheCleared_whenGetAll_thenMissAndReload() { /* ... */ }
+
+    /**
+     * Проверяет, что выборочная загрузка по кодам не использует кэш.
+     *
+     * @see AdapterCacheOps#loadUomsByCodes(List)
+     */
+    @Test
+    void uom_givenCodes_whenLoadByCodes_thenDelegatesNoCaching() { /* ... */ }
+
+    /**
+     * Проверяет кэширование списка типов материалов.
+     *
+     * @see AdapterCacheOps#getAllMaterialTypes()
+     */
+    @Test
+    void materialType_cacheAll_onceBackend() { /* ... */ }
+
+    /**
+     * Проверяет, что выборочная загрузка типов материалов не кэшируется.
+     *
+     * @see AdapterCacheOps#loadMaterialTypesByIds(List)
+     */
+    @Test
+    void materialType_loadByIds_noCaching() { /* ... */ }
+
+    /**
+     * Проверяет кэширование списка материалов.
+     *
+     * @see AdapterCacheOps#getAllMaterials()
+     */
+    @Test
+    void material_cacheAll_onceBackend() { /* ... */ }
+
+    /**
+     * Проверяет, что загрузка материалов по кодам выполняется без кэширования.
+     *
+     * @see AdapterCacheOps#loadMaterialsByCodes(List)
+     */
+    @Test
+    void material_loadByCodes_noCaching() { /* ... */ }
+}
 
 ```
