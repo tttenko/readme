@@ -342,14 +342,22 @@ class AdapterCacheOpsTest {
 }
 
 
-// ⚠️ НЕ new SearchRequestProperties()
-  // Настраиваем существующий бин, который используется сервисами
-  searchRequestProperties.setSlugValueForMeasureUnit("uom");
-  searchRequestProperties.setUomAttributeId("uomCode");
+searchRequestProperties = new SearchRequestProperties();
 
-  searchRequestProperties.setSlugValueForMaterial("material");
-  searchRequestProperties.setMaterialAttributeId("materialCode");
+// NDS
+searchRequestProperties.setSlugValueForVat("vat");
+searchRequestProperties.setAttributeIdForTaxRateType("type");
+searchRequestProperties.setAttributeIdForTaxRateActive("active");
+searchRequestProperties.setAttributeIdForTaxRateStartDate("start");
+searchRequestProperties.setAttributeIdForTaxRateEndDate("end");
 
-  searchRequestProperties.setSlugValueForMaterialType("materialType");
-  searchRequestProperties.setMaterialTypeId("typeId");
+// Currency
+searchRequestProperties.setSlugValueForCurrency("currency");
+searchRequestProperties.setCurrencyAttributeId("currencyCode");
+
+// (опционально, если используешь эти словари/эндпоинты)
+searchRequestProperties.setSlugValueForMeasureUnit("uom");
+searchRequestProperties.setSlugValueForMaterialType("materialType");
+searchRequestProperties.setSlugValueForMaterial("material");
+
 ```
