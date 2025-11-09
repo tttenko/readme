@@ -341,4 +341,15 @@ class AdapterCacheOpsTest {
     void material_loadByCodes_noCaching() { /* ... */ }
 }
 
+
+// ⚠️ НЕ new SearchRequestProperties()
+  // Настраиваем существующий бин, который используется сервисами
+  searchRequestProperties.setSlugValueForMeasureUnit("uom");
+  searchRequestProperties.setUomAttributeId("uomCode");
+
+  searchRequestProperties.setSlugValueForMaterial("material");
+  searchRequestProperties.setMaterialAttributeId("materialCode");
+
+  searchRequestProperties.setSlugValueForMaterialType("materialType");
+  searchRequestProperties.setMaterialTypeId("typeId");
 ```
