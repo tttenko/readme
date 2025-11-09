@@ -342,22 +342,6 @@ class AdapterCacheOpsTest {
 }
 
 
-searchRequestProperties = new SearchRequestProperties();
-
-// NDS
-searchRequestProperties.setSlugValueForVat("vat");
-searchRequestProperties.setAttributeIdForTaxRateType("type");
-searchRequestProperties.setAttributeIdForTaxRateActive("active");
-searchRequestProperties.setAttributeIdForTaxRateStartDate("start");
-searchRequestProperties.setAttributeIdForTaxRateEndDate("end");
-
-// Currency
-searchRequestProperties.setSlugValueForCurrency("currency");
-searchRequestProperties.setCurrencyAttributeId("currencyCode");
-
-// (опционально, если используешь эти словари/эндпоинты)
-searchRequestProperties.setSlugValueForMeasureUnit("uom");
-searchRequestProperties.setSlugValueForMaterialType("materialType");
-searchRequestProperties.setSlugValueForMaterial("material");
+Mockito.lenient().doAnswer(inv -> { @SuppressWarnings("unchecked") var loader = (Function<List<String>, List<?>>) inv.getArgument(2); var keys = (List<String>) inv.getArgument(1); return loader.apply(keys); // просто делегируем в loader, кэш не нужен }).when(batchLoad).fetchBatch(Mockito.anyString(), Mockito.anyList(), Mockito.any(), Mockito.any(), Mockito.any())
 
 ```
