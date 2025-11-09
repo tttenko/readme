@@ -342,6 +342,12 @@ class AdapterCacheOpsTest {
 }
 
 
-Mockito.lenient().doAnswer(inv -> { @SuppressWarnings("unchecked") var loader = (Function<List<String>, List<?>>) inv.getArgument(2); var keys = (List<String>) inv.getArgument(1); return loader.apply(keys); // просто делегируем в loader, кэш не нужен }).when(batchLoad).fetchBatch(Mockito.anyString(), Mockito.anyList(), Mockito.any(), Mockito.any(), Mockito.any())
+Mockito.lenient().doAnswer(inv -> {
+    @SuppressWarnings("unchecked")
+    Function<List<String>, List<?>> loader = (Function<List<String>, List<?>>) inv.getArgument(2);
+    List<String> keys = inv.getArgument(1);
+    return loader.apply(keys);
+  }).when(batchLoad).fetchBatch(
+      Mockito.anyString(), Mockito.anyList(), Mockito.any(), Mockito.any(), Mockito.any());
 
 ```
