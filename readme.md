@@ -1,81 +1,85 @@
 ```java
 
 /**
- * Компонент, отвечающий за кэширование справочников мастер-данных (UOM, MaterialType, Material).
+ * Сервис для получения данных из мастер-данных с поддержкой кэширования.
  * <p>
- * Содержит методы для загрузки всех элементов справочников с кэшированием
- * и выборочной загрузки данных без кэширования.
+ * Делегирует загрузку справочников классу {@link AdapterCacheOps} и использует
+ * {@link BatchCacheSupport} для пакетной подгрузки данных по ключам.
  * </p>
+ * Сервис обрабатывает:
+ * <ul>
+ *   <li>Единицы измерения (UOM)</li>
+ *   <li>Типы материалов</li>
+ *   <li>Материалы</li>
+ * </ul>
  *
  * @author Максим Коптенко
  */
-@Component
+@Slf4j
+@Service
 @RequiredArgsConstructor
-public class AdapterCacheOps {
+public class AdapterService2 {
 
     /**
-     * Загружает все единицы измерения (UOM) и сохраняет результат в кэш.
-     *
-     * @return список всех {@link UomBankDto}, полученных из мастер-данных.
+     * Код операции для единиц измерения.
      */
-    @Cacheable(cacheNames = UOM_ALL, key = "'ALL'", sync = true)
+    public static final String UOM_BY_CODE = "uom_by_code";
+
+    /**
+     * Код операции для типов материалов.
+     */
+    public static final String MATERIAL_TYPE_BY_ID = "material_type_by_id";
+
+    /**
+     * Код операции для материалов.
+     */
+    public static final String MATERIAL_BY_CODE = "material_by_code";
+
+    private final BatchCacheSupport batchLoad;
+    private final AdapterCacheOps adapterCacheOps;
+
+    /**
+     * Возвращает список единиц измерения (UOM) по их кодам.
+     * <p>
+     * Если список кодов пустой или равен {@code null}, метод возвращает все единицы
+     * измерения из кэша. Иначе — выполняет пакетную загрузку данных.
+     * </p>
+     *
+     * @param uomCodes список кодов единиц измерения (может быть {@code null}).
+     * @return результат запроса, обёрнутый в {@link ResultObj}, содержащий список {@link UomBankDto}.
+     */
     @NonNull
-    public List<UomBankDto> getAllUoms() {
+    public ResultObj<List<UomBankDto>> getUom(@Nullable final List<String> uomCodes) {
         // ...
     }
 
     /**
-     * Загружает все типы материалов и сохраняет результат в кэш.
+     * Возвращает список типов материалов по их идентификаторам.
+     * <p>
+     * Если список идентификаторов пустой или равен {@code null}, возвращаются все типы
+     * материалов из кэша. Иначе выполняется загрузка по идентификаторам.
+     * </p>
      *
-     * @return список всех {@link MaterialTypeDto}, полученных из мастер-данных.
+     * @param typeIds список идентификаторов типов материалов (может быть {@code null}).
+     * @return результат запроса, содержащий список {@link MaterialTypeDto}.
      */
-    @Cacheable(cacheNames = MATERIAL_TYPE_ALL, key = "'ALL'", sync = true)
     @NonNull
-    public List<MaterialTypeDto> getAllMaterialTypes() {
+    public ResultObj<List<MaterialTypeDto>> getMaterialType(@Nullable final List<String> typeIds) {
         // ...
     }
 
     /**
-     * Загружает все материалы и сохраняет результат в кэш.
+     * Возвращает список материалов по их кодам.
+     * <p>
+     * Если список кодов пустой или равен {@code null}, метод возвращает все материалы из кэша.
+     * При наличии кодов выполняется пакетная загрузка данных.
+     * </p>
      *
-     * @return список всех {@link MaterialDto}, полученных из мастер-данных.
-     */
-    @Cacheable(cacheNames = MATERIAL_ALL, key = "'ALL'", sync = true)
-    @NonNull
-    public List<MaterialDto> getAllMaterials() {
-        // ...
-    }
-
-    /**
-     * Загружает единицы измерения (UOM) по списку кодов без кэширования.
-     *
-     * @param codes список кодов единиц измерения.
-     * @return список {@link UomBankDto}, соответствующих указанным кодам.
+     * @param materialCodes список кодов материалов (может быть {@code null}).
+     * @return результат запроса, содержащий список {@link MaterialDto}.
      */
     @NonNull
-    public List<UomBankDto> loadUomsByCodes(@NonNull final List<String> codes) {
-        // ...
-    }
-
-    /**
-     * Загружает типы материалов по их идентификаторам без кэширования.
-     *
-     * @param ids список идентификаторов типов материалов.
-     * @return список {@link MaterialTypeDto}, соответствующих указанным идентификаторам.
-     */
-    @NonNull
-    public List<MaterialTypeDto> loadMaterialTypesByIds(@NonNull final List<String> ids) {
-        // ...
-    }
-
-    /**
-     * Загружает материалы по списку кодов без кэширования.
-     *
-     * @param codes список кодов материалов.
-     * @return список {@link MaterialDto}, соответствующих указанным кодам.
-     */
-    @NonNull
-    public List<MaterialDto> loadMaterialsByCodes(@NonNull final List<String> codes) {
+    public ResultObj<List<MaterialDto>> getMaterial(@Nullable final List<String> materialCodes) {
         // ...
     }
 }
