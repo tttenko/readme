@@ -1,201 +1,179 @@
 ```java
 
-@Component
-@RequiredArgsConstructor
-public final class CacheGateway {
+BatchCacheOrchestrator
+/**
+ * Оркестратор пакетного чтения по модели «cache-aside».
+ *
+ * <p>Алгоритм:</p>
+ * <ol>
+ *   <li>Чтение значений из кэша для входных ключей;</li>
+ *   <li>Определение промахов и их батч-загрузка через переданный лоадер;</li>
+ *   <li>Запись загруженных значений обратно в кэш (write-back);</li>
+ *   <li>Сбор результата в порядке входных ключей (дубликаты сохраняются).</li>
+ * </ol>
+ *
+ * <p>Зависимости и разделение обязанностей:</p>
+ * <ul>
+ *   <li>Доступ к кэшу инкапсулирован в {@link CacheAdapter};</li>
+ *   <li>Правила валидности ключа — {@link KeyValidator};</li>
+ *   <li>Обработка ошибок лоадера и null-результатов — {@link Loaders#safe(java.util.function.Function)}.</li>
+ * </ul>
+ *
+ * <p><b>Потокобезопасность:</b> класс без состояния; полагается на потокобезопасность реализации кэша.</p>
+ *
+ * @since 1.0
+ */
 
-  private final CacheManager cacheManager;
+/**
+ * Получить элементы по набору ключей с использованием кэша и батч-загрузки промахов.
+ *
+ * <p>Особенности:</p>
+ * <ul>
+ *   <li>Пустые/некорректные ключи игнорируются (debug-лог) и не попадают в результат;</li>
+ *   <li>Порядок результата соответствует порядку {@code keys}; дубликаты ключей сохраняются;</li>
+ *   <li>Если значение есть и в кэше, и в загруженном списке — берётся загруженное (свежее);</li>
+ *   <li>Элементы {@code null} от лоадера игнорируются.</li>
+ * </ul>
+ *
+ * @param <T> тип элементов
+ * @param cacheName имя кэша в {@code CacheManager}
+ * @param keys список ключей (допускает дубликаты); {@code null}/blank ключи будут пропущены
+ * @param loader функция батч-загрузки промахов; может вернуть подмножество; {@code null} трактуется как пустой список
+ * @param keyExtractor функция извлечения ключа из элемента (для записи в кэш и мерджа)
+ * @param type тип элементов в кэше
+ * @return список элементов в порядке {@code keys} без {@code null}
+ */
 
-  @Nonnull
-  public <T> Optional<T> get(@Nonnull String cacheName, @Nonnull String key, @Nonnull Class<T> type) {
-    final @Nullable Cache cache = cacheManager.getCache(cacheName);
-    return cache == null ? Optional.empty() : Optional.ofNullable(cache.get(key, type));
-  }
+/**
+ * Делит входные ключи на хиты/промахи и заполняет переданные коллекции.
+ *
+ * <p>Невалидные ключи пропускаются (debug-лог). Для каждого валидного ключа выполняется
+ * попытка чтения из кэша: присутствующие значения попадают в {@code hitsOut},
+ * отсутствующие ключи — в {@code missOut}.</p>
+ *
+ * @param <T> тип элементов
+ * @param cacheName имя кэша
+ * @param keys список входных ключей
+ * @param type тип элементов
+ * @param hitsOut карта «ключ → значение» для найденных в кэше элементов (заполняется методом)
+ * @param missOut список ключей-промахов (заполняется методом)
+ */
 
-  public <T> void put(@Nonnull String cacheName, @Nonnull String key, @Nonnull T value) {
-    final @Nullable Cache cache = cacheManager.getCache(cacheName);
-    if (cache != null) cache.put(key, value);
-  }
-}
+/**
+ * Загружает значения для ключей-промахов.
+ *
+ * <p>Если список промахов пуст — возвращает пустой список. Делегат-лоадер
+ * оборачивается через {@link Loaders#safe(java.util.function.Function)}:
+ * любые {@link RuntimeException} гасит в warn-лог, {@code null}-результат трактует как пустой список.</p>
+ *
+ * @param <T> тип элементов
+ * @param loader функция батч-загрузки промахов
+ * @param miss список ключей-промахов
+ * @return список загруженных элементов (может быть пустым)
+ */
 
+/**
+ * Записывает загруженные элементы обратно в кэш.
+ *
+ * <p>Для каждого элемента пытается извлечь ключ через {@code keyExtractor}. Ошибки извлечения
+ * не прерывают цикл (warn-лог), элементы с {@code null}/blank ключом пропускаются.</p>
+ *
+ * @param <T> тип элементов
+ * @param cacheName имя кэша
+ * @param loaded список загруженных элементов
+ * @param keyExtractor функция извлечения ключа из элемента
+ */
 
+/**
+ * Объединяет хиты и загруженные элементы, возвращая список в порядке исходных ключей.
+ *
+ * <p>Загруженные элементы перекрывают значения из кэша по одному и тому же ключу.
+ * Дубликаты ключей в {@code originalKeys} сохраняются в выходном списке. {@code null}-элементы не возвращаются.</p>
+ *
+ * @param <T> тип элементов
+ * @param originalKeys исходный список ключей (порядок сохраняется)
+ * @param hits карта значений, найденных в кэше
+ * @param loaded список загруженных элементов
+ * @param keyExtractor функция извлечения ключа из элемента
+ * @return итоговый список в порядке {@code originalKeys}
+ */
 
-@Component
-public final class KeyValidator {
-  public boolean isValid(@Nullable String key) {
-    return key != null && !key.isBlank();
-  }
-}
+/**
+ * Безопасно извлекает ключ из элемента для операций записи/мерджа.
+ *
+ * <p>Любые {@link RuntimeException}, брошенные {@code keyExtractor}, логируются на уровне warn,
+ * метод возвращает {@code null}.</p>
+ *
+ * @param <T> тип элемента
+ * @param item элемент
+ * @param keyExtractor функция извлечения ключа
+ * @return ключ или {@code null}, если извлечение не удалось
+ */
 
+CacheAdapter
+/**
+ * Адаптер доступа к Spring Cache через {@link org.springframework.cache.CacheManager}.
+ *
+ * <p>Цель — изолировать бизнес-код от прямой зависимости на API Spring Cache.</p>
+ * <p>Если кэш с указанным именем не сконфигурирован, вызовы безопасны:
+ * {@link #get(String, String, Class)} вернёт {@link java.util.Optional#empty()},
+ * а {@link #put(String, String, Object)} выполнит no-op.</p>
+ *
+ * @since 1.0
+ */
 
-@Slf4j
-@UtilityClass
-public class Loaders {
-  /**
-   * Декоратор, гасащий runtime-ошибки и null → пустой список.
-   */
-  @Nonnull
-  public static <T> Function<List<String>, List<T>> safe(@Nonnull Function<List<String>, List<T>> delegate) {
-    return keys -> {
-      try {
-        final var res = delegate.apply(keys);
-        return res == null ? List.of() : res;
-      } catch (RuntimeException ex) {
-        log.warn("Batch loader failed ({} keys): {}", keys.size(), ex.toString());
-        return List.of();
-      }
-    };
-  }
-}
+/**
+ * Получить значение из кэша по ключу.
+ *
+ * @param <T> тип значения
+ * @param cacheName имя кэша
+ * @param key ключ
+ * @param type ожидаемый тип значения
+ * @return {@code Optional} со значением, либо пустой, если кэш не найден или значения нет
+ */
 
+/**
+ * Поместить значение в кэш по ключу.
+ *
+ * @param <T> тип значения
+ * @param cacheName имя кэша
+ * @param key ключ
+ * @param value значение для сохранения
+ */
 
+KeyValidator
+/**
+ * Политика валидности ключа кэша.
+ *
+ * <p>Дефолтная реализация: ключ должен быть не {@code null} и не {@code blank}.
+ * Логику можно расширить (нормализация, ограничения длины, regexp и т.п.).</p>
+ *
+ * @since 1.0
+ */
 
-@Slf4j
-@Component
-@RequiredArgsConstructor
-public final class BatchCacheOrchestrator {
+/**
+ * Проверяет валидность ключа кэша.
+ *
+ * @param key ключ
+ * @return {@code true}, если ключ не {@code null} и содержит непустые символы; иначе {@code false}
+ */
 
-  private final CacheGateway cache;
-  private final KeyValidator keyValidator;
+Loaders
+/**
+ * Утилиты для обёртки батч-лоадеров.
+ *
+ * <p>Позволяют стандартизировать обработку ошибок и {@code null}-результатов, не засоряя оркестратор.</p>
+ *
+ * @since 1.0
+ */
 
-  @Nonnull
-  public <T> List<T> fetchBatch(
-      @Nonnull String cacheName,
-      @Nonnull List<String> keys,
-      @Nonnull Function<List<String>, List<T>> loader,
-      @Nonnull Function<T, String> keyExtractor,
-      @Nonnull Class<T> type) {
-
-    if (keys.isEmpty()) return List.of();
-
-    final Map<String, T> hits = new LinkedHashMap<>();
-    final List<String> miss = new ArrayList<>();
-
-    // 1) hits/misses
-    for (String k : keys) {
-      if (!keyValidator.isValid(k)) {
-        log.debug("Skip invalid key: '{}'", k);
-        continue;
-      }
-      cache.get(cacheName, k, type).ifPresentOrElse(v -> hits.put(k, v), () -> miss.add(k));
-    }
-
-    // 2) дозагрузка (исключения гасит декоратор)
-    final var safeLoader = Loaders.safe(loader);
-    final List<T> loaded = miss.isEmpty() ? List.of() : safeLoader.apply(miss);
-
-    // 3) запись в кэш
-    for (T item : loaded) {
-      if (item == null) continue;
-      final String k;
-      try { k = keyExtractor.apply(item); }
-      catch (RuntimeException ex) { log.warn("Key extraction failed for {}: {}", item, ex.toString()); continue; }
-      if (keyValidator.isValid(k)) cache.put(cacheName, k, item);
-      else log.debug("Skip caching item with blank key: {}", item);
-    }
-
-    // 4) сбор результата в порядке входных ключей
-    final Map<String, T> byKey = new HashMap<>(hits);
-    for (T item : loaded) {
-      if (item == null) continue;
-      try {
-        final String k = keyExtractor.apply(item);
-        if (keyValidator.isValid(k)) byKey.put(k, item);
-      } catch (RuntimeException ignore) { /* уже залогировано выше */ }
-    }
-
-    final List<T> out = new ArrayList<>(keys.size());
-    for (String k : keys) {
-      final T v = byKey.get(k);
-      if (v != null) out.add(v);
-    }
-    return out;
-  }
-}
-
-
-@Nonnull
-public <T> List<T> fetchBatch(
-    @Nonnull final String cacheName,
-    @Nonnull final List<String> keys,
-    @Nonnull final Function<List<String>, List<T>> loader,
-    @Nonnull final Function<T, String> keyExtractor,
-    @Nonnull final Class<T> type) {
-
-  if (keys.isEmpty()) return List.of();
-
-  final Map<String, T> hits = new LinkedHashMap<>();
-  final List<String> miss = new ArrayList<>();
-  partitionHitsAndMissesInto(cacheName, keys, type, hits, miss);
-
-  final List<T> loaded = loadMisses(loader, miss);
-  writeBack(cacheName, loaded, keyExtractor);
-
-  return mergeAndOrder(keys, hits, loaded, keyExtractor);
-}
-
-/** Делит ключи на хиты/промахи и заполняет переданные коллекции. */
-private <T> void partitionHitsAndMissesInto(
-    @Nonnull final String cacheName,
-    @Nonnull final List<String> keys,
-    @Nonnull final Class<T> type,
-    @Nonnull final Map<String, T> hitsOut,
-    @Nonnull final List<String> missOut) {
-
-  for (String k : keys) {
-    if (!keyValidator.isValid(k)) {
-      log.debug("Skip invalid key: '{}'", k);
-      continue;
-    }
-    cache.get(cacheName, k, type)
-         .ifPresentOrElse(v -> hitsOut.put(k, v), () -> missOut.add(k));
-  }
-}
-
-private static <T> List<T> loadMisses(
-    @Nonnull final Function<List<String>, List<T>> loader,
-    @Nonnull final List<String> miss) {
-  if (miss.isEmpty()) return List.of();
-  return Loaders.safe(loader).apply(miss);
-}
-
-private <T> void writeBack(
-    @Nonnull final String cacheName,
-    @Nonnull final List<T> loaded,
-    @Nonnull final Function<T, String> keyExtractor) {
-  if (loaded.isEmpty()) return;
-
-  for (T item : loaded) {
-    if (item == null) continue;
-    final String k;
-    try { k = keyExtractor.apply(item); }
-    catch (RuntimeException ex) { log.warn("Key extraction failed for {}: {}", item, ex.toString()); continue; }
-    if (keyValidator.isValid(k)) cache.put(cacheName, k, item);
-    else log.debug("Skip caching item with invalid key: {}", item);
-  }
-}
-
-@Nonnull
-private static <T> List<T> mergeAndOrder(
-    @Nonnull final List<String> originalKeys,
-    @Nonnull final Map<String, T> hits,
-    @Nonnull final List<T> loaded,
-    @Nonnull final Function<T, String> keyExtractor) {
-
-  final Map<String, T> byKey = new HashMap<>(hits);
-  for (T item : loaded) {
-    if (item == null) continue;
-    try {
-      final String k = keyExtractor.apply(item);
-      if (k != null && !k.isBlank()) byKey.put(k, item);
-    } catch (RuntimeException ignore) { /* уже логировали в writeBack */ }
-  }
-
-  final List<T> out = new ArrayList<>(originalKeys.size());
-  for (String k : originalKeys) {
-    final T v = byKey.get(k);
-    if (v != null) out.add(v);
-  }
-  return out;
-}
+/**
+ * Возвращает «безопасный» лоадер, гасащий {@link RuntimeException} и трактующий {@code null} как пустой список.
+ *
+ * <p>Исключение логируется на уровне warn с кратким описанием и размером входного батча.</p>
+ *
+ * @param <T> тип элементов, возвращаемых лоадером
+ * @param delegate исходная функция батч-загрузки
+ * @return функция, которая при ошибке/{@code null} вернёт {@link java.util.List#of()}
+ */
 ```
