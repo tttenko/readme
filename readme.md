@@ -112,4 +112,90 @@ public final class BatchCacheOrchestrator {
     return out;
   }
 }
+
+
+@Nonnull
+public <T> List<T> fetchBatch(
+    @Nonnull final String cacheName,
+    @Nonnull final List<String> keys,
+    @Nonnull final Function<List<String>, List<T>> loader,
+    @Nonnull final Function<T, String> keyExtractor,
+    @Nonnull final Class<T> type) {
+
+  if (keys.isEmpty()) return List.of();
+
+  final Map<String, T> hits = new LinkedHashMap<>();
+  final List<String> miss = new ArrayList<>();
+  partitionHitsAndMissesInto(cacheName, keys, type, hits, miss);
+
+  final List<T> loaded = loadMisses(loader, miss);
+  writeBack(cacheName, loaded, keyExtractor);
+
+  return mergeAndOrder(keys, hits, loaded, keyExtractor);
+}
+
+/** Делит ключи на хиты/промахи и заполняет переданные коллекции. */
+private <T> void partitionHitsAndMissesInto(
+    @Nonnull final String cacheName,
+    @Nonnull final List<String> keys,
+    @Nonnull final Class<T> type,
+    @Nonnull final Map<String, T> hitsOut,
+    @Nonnull final List<String> missOut) {
+
+  for (String k : keys) {
+    if (!keyValidator.isValid(k)) {
+      log.debug("Skip invalid key: '{}'", k);
+      continue;
+    }
+    cache.get(cacheName, k, type)
+         .ifPresentOrElse(v -> hitsOut.put(k, v), () -> missOut.add(k));
+  }
+}
+
+private static <T> List<T> loadMisses(
+    @Nonnull final Function<List<String>, List<T>> loader,
+    @Nonnull final List<String> miss) {
+  if (miss.isEmpty()) return List.of();
+  return Loaders.safe(loader).apply(miss);
+}
+
+private <T> void writeBack(
+    @Nonnull final String cacheName,
+    @Nonnull final List<T> loaded,
+    @Nonnull final Function<T, String> keyExtractor) {
+  if (loaded.isEmpty()) return;
+
+  for (T item : loaded) {
+    if (item == null) continue;
+    final String k;
+    try { k = keyExtractor.apply(item); }
+    catch (RuntimeException ex) { log.warn("Key extraction failed for {}: {}", item, ex.toString()); continue; }
+    if (keyValidator.isValid(k)) cache.put(cacheName, k, item);
+    else log.debug("Skip caching item with invalid key: {}", item);
+  }
+}
+
+@Nonnull
+private static <T> List<T> mergeAndOrder(
+    @Nonnull final List<String> originalKeys,
+    @Nonnull final Map<String, T> hits,
+    @Nonnull final List<T> loaded,
+    @Nonnull final Function<T, String> keyExtractor) {
+
+  final Map<String, T> byKey = new HashMap<>(hits);
+  for (T item : loaded) {
+    if (item == null) continue;
+    try {
+      final String k = keyExtractor.apply(item);
+      if (k != null && !k.isBlank()) byKey.put(k, item);
+    } catch (RuntimeException ignore) { /* уже логировали в writeBack */ }
+  }
+
+  final List<T> out = new ArrayList<>(originalKeys.size());
+  for (String k : originalKeys) {
+    final T v = byKey.get(k);
+    if (v != null) out.add(v);
+  }
+  return out;
+}
 ```
