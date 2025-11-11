@@ -1,176 +1,102 @@
 ```java
 
-/**
- * Вспомогательный сервис для пакетной выборки данных с использованием Spring Cache.
- * Позволяет получать элементы по набору ключей, использовать кэш и догружать промахи батчем.
- */
-@Slf4j
+public interface BatchLoader<T> {
+  /** Имя кэша, с которым работает загрузчик (должно совпадать с cacheName в @Cacheable/константах). */
+  String cacheName();
+
+  /** Тип элементов в кэше. */
+  Class<T> type();
+
+  /** Как получить ключ из объекта (для записи в кэш и восстановления порядка). */
+  String keyOf(T value);
+
+  /** Грузим промахи одним запросом. */
+  List<T> loadByKeys(List<String> keys);
+
+  /* Безопасная обёртка (вынесли из BatchCacheSupport). */
+  default List<T> loadSafely(List<String> keys) {
+    try {
+      var res = loadByKeys(keys);
+      return res == null ? List.of() : res;
+    } catch (RuntimeException ex) {
+      return List.of();
+    }
+  }
+}
+Пример реализаций (микро-классы, по 10–20 строк):
+
+java
+Копировать код
 @Component
-@RequiredArgsConstructor
-public class BatchCacheSupport {
+class TerBankByCodeLoader implements BatchLoader<TerBankDto> {
+  private final BaseMasterDataRequestService master;
+  private final TerBankMapper mapper;
+  private final SearchRequestProperties props;
 
-    private final CacheManager cacheManager;
+  // конструктор через @RequiredArgsConstructor
 
-    /**
-     * Получает данные по набору ключей из кэша. Для отсутствующих элементов вызывает загрузчик и обновляет кэш.
-     *
-     * @param cacheName   имя кэша
-     * @param keys        список ключей для выборки
-     * @param loader      функция загрузки отсутствующих элементов
-     * @param keyExtractor функция для получения ключа из загруженного объекта
-     * @param type        тип элементов
-     * @param <T>         тип данных
-     * @return список элементов в порядке исходных ключей
-     */
-    @NonNull
-    public <T> List<T> fetchBatch(
-            @NonNull final String cacheName,
-            @NonNull final List<String> keys,
-            @NonNull final Function<List<String>, List<T>> loader,
-            @NonNull final Function<T, String> keyExtractor,
-            @NonNull final Class<T> type) {
+  @Override public String cacheName() { return TerBankService2.TB_BY_CODE; }
+  @Override public Class<TerBankDto> type() { return TerBankDto.class; }
+  @Override public String keyOf(TerBankDto v) { return v.getTbCode(); }
 
-        if (keys.isEmpty()) return List.of();
-
-        final Cache cache = cacheManager.getCache(cacheName);
-
-        final Map<String, T> hits = new LinkedHashMap<>();
-        final List<String> miss = new ArrayList<>();
-
-        collectHitsAndMisses(cache, keys, type, hits, miss);
-
-        final List<T> loaded = miss.isEmpty() ? List.of() : safeLoadBatch(loader, miss);
-
-        putLoadedToCache(cache, loaded, keyExtractor);
-
-        return orderByOriginal(keys, hits, loaded, keyExtractor);
-    }
-
-    /**
-     * Безопасно вызывает загрузчик, возвращая пустой список при исключениях.
-     *
-     * @param loader функция загрузки
-     * @param miss   список недостающих ключей
-     * @param <T>    тип данных
-     * @return загруженные элементы или пустой список при ошибке
-     */
-    private static <T> List<T> safeLoadBatch(
-            @NonNull final Function<List<String>, List<T>> loader,
-            @NonNull final List<String> miss) {
-        try {
-            final List<T> res = loader.apply(miss);
-            return (res == null) ? List.of() : res;
-        } catch (RuntimeException ex) {
-            return List.of();
-        }
-    }
-
-    /**
-     * Делит ключи на хиты (нашлись в кэше) и промахи (требуют загрузки).
-     *
-     * @param cache   кэш
-     * @param keys    ключи для выборки
-     * @param type    тип элементов
-     * @param hitsOut карта найденных элементов
-     * @param missOut список отсутствующих ключей
-     * @param <T>     тип данных
-     */
-    private <T> void collectHitsAndMisses(
-            @Nullable final Cache cache,
-            @NonNull final List<String> keys,
-            @NonNull final Class<T> type,
-            @NonNull final Map<String, T> hitsOut,
-            @NonNull final List<String> missOut) {
-        for (String key : keys) {
-            if (key == null || key.isBlank()) {
-                log.debug("Skip invalid cache key: '{}'", key);
-                continue;
-            }
-
-            T cached = null;
-            if (cache != null) {
-                cached = cache.get(key, type);
-            }
-
-            if (cached != null) {
-                hitsOut.put(key, cached);
-            } else {
-                missOut.add(key);
-            }
-        }
-    }
-
-    /**
-     * Добавляет загруженные элементы в кэш, пропуская элементы с некорректными ключами.
-     *
-     * @param cache        кэш для обновления
-     * @param loaded       список загруженных элементов
-     * @param keyExtractor функция получения ключа из объекта
-     * @param <T>          тип данных
-     */
-    private <T> void putLoadedToCache(
-            @Nullable final Cache cache,
-            @NonNull final List<T> loaded,
-            @NonNull final Function<T, String> keyExtractor) {
-        if (cache == null || loaded.isEmpty()) return;
-
-        for (T item : loaded) {
-            if (item == null) continue;
-
-            final String key;
-            try {
-                key = keyExtractor.apply(item);
-            } catch (RuntimeException ex) {
-                log.warn("Failed to extract cache key for item {}: {}", item, ex.toString());
-                continue;
-            }
-
-            if (key == null || key.isBlank()) {
-                log.debug("Skip caching item with blank key: {}", item);
-                continue;
-            }
-            cache.put(key, item);
-        }
-    }
-
-    /**
-     * Собирает итоговый список элементов в порядке исходных ключей.
-     *
-     * @param originalKeys исходные ключи
-     * @param hits         элементы, найденные в кэше
-     * @param loaded       загруженные элементы
-     * @param keyExtractor функция получения ключа из объекта
-     * @param <T>          тип данных
-     * @return итоговый список элементов в порядке входных ключей
-     */
-    @NonNull
-    private <T> List<T> orderByOriginal(
-            @NonNull final List<String> originalKeys,
-            @NonNull final Map<String, T> hits,
-            @NonNull final List<T> loaded,
-            @NonNull final Function<T, String> keyExtractor) {
-
-        final Map<String, T> byKey = new HashMap<>(hits);
-        for (T item : loaded) {
-            if (item == null) continue;
-
-            final String key;
-            try {
-                key = keyExtractor.apply(item);
-            } catch (RuntimeException ex) {
-                log.warn("Failed to extract key for ordering, item {}: {}", item, ex.toString());
-                continue;
-            }
-
-            if (key == null || key.isBlank()) continue;
-            byKey.put(key, item);
-        }
-
-        return originalKeys.stream()
-                .map(byKey::get)
-                .filter(Objects::nonNull)
-                .toList();
-    }
+  @Override public List<TerBankDto> loadByKeys(List<String> codes) {
+    var resp = master.requestData(props.getSlugValueForTerBank(), codes, SearchRequestProperties.Context.BOOK);
+    return createResult(resp, mapper);
+  }
 }
 
+@Component
+class TerBankReqByCodeLoader implements BatchLoader<TerBankWithRequisiteDto> {
+  private final BaseMasterDataRequestService master;
+  private final TerBankWithRequisiteMapper mapper;
+  private final SearchRequestProperties props;
+
+  @Override public String cacheName() { return TerBankService2.TB_REQ_BY_CODE; }
+  @Override public Class<TerBankWithRequisiteDto> type() { return TerBankWithRequisiteDto.class; }
+  @Override public String keyOf(TerBankWithRequisiteDto v) { return v.getTbCode(); }
+
+  @Override public List<TerBankWithRequisiteDto> loadByKeys(List<String> codes) {
+    var resp = master.requestDataWithAttribute(props.getSlugValueForTerBank(), codes, SearchRequestProperties.Context.BOOK);
+    return createWithAttribute(resp, mapper);
+  }
+}
+2) Упрощённый BatchCacheSupport (только кэш + оркестрация)
+java
+Копировать код
+@Slf4j
+@Component
+public class BatchCacheSupport {
+  private final CacheManager cacheManager;
+  private final Map<String, BatchLoader<?>> loadersByCache;
+
+  public BatchCacheSupport(CacheManager cacheManager, List<BatchLoader<?>> loaders) {
+    this.cacheManager = cacheManager;
+    this.loadersByCache = loaders.stream()
+        .collect(Collectors.toMap(BatchLoader::cacheName, Function.identity()));
+  }
+
+  @SuppressWarnings("unchecked")
+  @NonNull
+  public <T> List<T> fetchBatch(@NonNull String cacheName, @NonNull List<String> keys) {
+    if (keys.isEmpty()) return List.of();
+
+    BatchLoader<T> loader = (BatchLoader<T>) loadersByCache.get(cacheName);
+    if (loader == null) throw new IllegalArgumentException("No BatchLoader for cache " + cacheName);
+
+    Cache cache = cacheManager.getCache(cacheName);
+
+    Map<String, T> hits = new LinkedHashMap<>();
+    List<String> miss = new ArrayList<>();
+
+    collectHitsAndMisses(cache, keys, loader.type(), hits, miss);
+
+    List<T> loaded = miss.isEmpty() ? List.of() : loader.loadSafely(miss);
+
+    putLoadedToCache(cache, loaded, loader::keyOf);
+
+    return orderByOriginal(keys, hits, loaded, loader::keyOf);
+  }
+
+  /* дальше — ваши же утилиты без изменений: collectHitsAndMisses, putLoadedToCache, orderByOriginal */
+}
 ```
