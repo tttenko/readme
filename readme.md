@@ -99,4 +99,21 @@ public class BatchCacheSupport {
 
   /* дальше — ваши же утилиты без изменений: collectHitsAndMisses, putLoadedToCache, orderByOriginal */
 }
+
+batchLoad.fetchBatch(
+    TerBankService2.TB_BY_CODE,
+    tbCodes,
+    this::loadBanksByCodes,
+    TerBankDto::getTbCode,
+    TerBankDto.class);
+становится:
+
+java
+Копировать код
+batchLoad.fetchBatch(TerBankService2.TB_BY_CODE, tbCodes);
+И аналогично для реквизитов:
+
+java
+Копировать код
+batchLoad.fetchBatch(TerBankService2.TB_REQ_BY_CODE, tbCodes);
 ```
