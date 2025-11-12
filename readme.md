@@ -1,28 +1,21 @@
 ```java
 
-@Test
-void handleInvalidLoadedItemKey() {
-    // given
-    when(messageSource.getMessage(eq("error.invalidCacheKey"), any(), any()))
-        .thenReturn("Ошибка при кэшировании элемента");
+public <T> List<String> collectMisses(
+    @NonNull String cacheName,
+    @NonNull List<String> keys,
+    @NonNull Class<T> type
+) {
+    if (keys.isEmpty()) return List.of();
 
-    WebRequest request = mock(WebRequest.class);
-    var ex = new MdaInvalidCacheKeyException("tb_by_code", new Object());
+    Cache cache = cacheManager.getCache(cacheName);
+    if (cache == null) {
+        throw new IllegalStateException("Unknown cache: " + cacheName);
+    }
 
-    // when
-    var response = globalExceptionHandler.handleInvalidLoadedItemKey(ex, request);
-
-    // then
-    assertThat(response).isNotNull();
-    assertNotNull(response.getBody());
-
-    MessageObj body = (MessageObj) response.getBody();
-
-    assertEquals("Ошибка при кэшировании элемента",
-        body.getMessages().get(0).getMessage());
-    assertEquals(AppMessageSemantic.E,
-        body.getMessages().get(0).getSemantic());
-    assertEquals(HttpStatus.INTERNAL_SERVER_ERROR,
-        response.getStatusCode());
+    return keys.stream()
+        .filter(k -> cache.get(k, type) == null)
+        .distinct()
+        .toList();
 }
+
 ```
