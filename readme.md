@@ -1,28 +1,69 @@
 ```java
 
-@Test
-void handleCacheNotFound() {
-    // given
-    when(messageSource.getMessage(eq("error.cacheNotFound"), any(), any()))
-        .thenReturn("Кэш недоступен или не сконфигурирован");
+/**
+ * Унифицированный контракт "батч-загрузчика" данных для кэширования.
+ *
+ * <p>Реализация отвечает только за получение данных из внешнего источника и
+ * извлечение ключа кэширования. Вся оркестрация (поиск хитов/миссов,
+ * запись в кэш, повторное чтение) выполняется фасадом.</p>
+ *
+ * <h3>Инварианты и ожидания</h3>
+ * <ul>
+ *   <li>Лоадер должен быть <b>стейтлес</b> и потокобезопасен.</li>
+ *   <li>{@link #fetchByKeys(List)} <b>не возвращает null</b> (пустой список при отсутствии данных).</li>
+ *   <li>{@link #extractKey(Object)} должен возвращать <b>непустой</b> ключ; иначе это ошибка данных.</li>
+ *   <li>Дубликаты ключей во входном списке допустимы; реализация может их дедуплицировать.</li>
+ *   <li>Допустимо возвращать данные только по части запрошенных ключей; лишние элементы будут игнорироваться.</li>
+ * </ul>
+ *
+ * <h3>Типовой сценарий</h3>
+ * <ol>
+ *   <li>Фасад определяет «промахи» в кэше.</li>
+ *   <li>Вызывает {@link #fetchByKeys(List)} для отсутствующих ключей.</li>
+ *   <li>Кладёт результаты в кэш, используя {@link #extractKey(Object)}.</li>
+ * </ol>
+ *
+ * @param <T> тип доменного объекта, который загружает лоадер
+ */
+public interface BatchLoader<T> {
 
-    WebRequest request = mock(WebRequest.class);
-    var ex = new MdaCacheNotFoundException("tb_by_code");
+  /**
+   * Имя кэша, к которому привязан лоадер.
+   * <p>Используется фасадом как идентификатор для поиска нужной реализации.</p>
+   *
+   * @return уникальное имя кэша (не пустое)
+   */
+  String cacheName();
 
-    // when
-    var response = globalExceptionHandler.handleCacheNotFound(ex, request);
+  /**
+   * Тип объектов, которые возвращает лоадер.
+   * <p>Нужен для типобезопасных операций {@code cache.get(key, type)}.</p>
+   *
+   * @return класс доменного типа T
+   */
+  Class<T> elementType();
 
-    // then
-    assertThat(response).isNotNull();
-    assertNotNull(response.getBody());
+  /**
+   * Извлекает ключ кэширования из доменного объекта.
+   *
+   * @param value объект, полученный из внешнего источника
+   * @return ключ кэширования (не {@code null} и не пустой)
+   * @throws RuntimeException если ключ извлечь невозможно (битые данные)
+   */
+  String extractKey(T value);
 
-    MessageObj body = (MessageObj) response.getBody();
-    assertEquals("Кэш недоступен или не сконфигурирован",
-        body.getMessages().get(0).getMessage());
-    assertEquals(AppMessageSemantic.E,
-        body.getMessages().get(0).getSemantic());
-    assertEquals(HttpStatus.INTERNAL_SERVER_ERROR,   // или SERVICE_UNAVAILABLE, если так решили
-        response.getStatusCode());
+  /**
+   * Загружает данные батчом по списку ключей.
+   *
+   * <p>Реализация должна обрабатывать пустой результат без ошибок и
+   * <b>не возвращать null</b>. Разрешается возвращать элементы только по части
+   * ключей (фасад сам сопоставит и закэширует найденные).</p>
+   *
+   * @param keys список ключей (может содержать дубликаты)
+   * @return список найденных объектов (может быть пустым, но не {@code null})
+   * @throws RuntimeException при ошибках обращения к внешнему источнику
+   */
+  List<T> fetchByKeys(List<String> keys);
 }
 
 
