@@ -1,214 +1,155 @@
 ```java
 
-/**
- * Обработчик ошибок пакетной загрузки МДА-данных.
- */
-@ExceptionHandler(MdaBatchLoadException.class)
-@ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
-public ResponseEntity<Object> handleMdaBatchLoadException(MdaBatchLoadException ex, WebRequest request) {
-    ...
-}
+@ExtendWith(MockitoExtension.class)
+class BatchCacheSupportTest {
 
-/**
- * Обработчик ошибок с некорректным ключом кеша при загрузке МДА-данных.
- */
-@ExceptionHandler(MdaInvalidCacheKeyException.class)
-@ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-public ResponseEntity<Object> handleInvalidLoadedItemKey(MdaInvalidCacheKeyException ex, WebRequest request) {
-    ...
-}
+    private static final String CACHE_NAME = "tb_by_code";
 
-/**
- * Обработчик случая, когда запрашиваемый кеш МДА не найден.
- */
-@ExceptionHandler(MdaCacheNotFoundException.class)
-@ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-public ResponseEntity<Object> handleCacheNotFound(MdaCacheNotFoundException ex, WebRequest request) {
-    ...
-}
-MdaBatchLoadException
-java
-Копировать код
-/**
- * Исключение, сигнализирующее об ошибке пакетной загрузки данных МДА.
- */
-public class MdaBatchLoadException extends RuntimeException {
+    @Mock
+    CacheManager cacheManager;
 
-    /**
-     * Создаёт исключение с причиной ошибки загрузки.
-     *
-     * @param cause причина ошибки
-     */
-    public MdaBatchLoadException(Throwable cause) {
-        super("Load data failed", cause);
+    @Mock
+    Cache cache;
+
+    BatchCacheSupport support;
+
+    @BeforeEach
+    void setUp() {
+        support = new BatchCacheSupport(cacheManager);
+        when(cacheManager.getCache(CACHE_NAME)).thenReturn(cache);
     }
 
-    /**
-     * Создаёт исключение с заданным сообщением.
-     *
-     * @param message текст сообщения об ошибке
-     */
-    public MdaBatchLoadException(String message) {
-        super(message);
-    }
-}
-MdaCacheNotFoundException
-java
-Копировать код
-/**
- * Исключение, выбрасываемое при отсутствии указанного кеша МДА.
- */
-@Getter
-public class MdaCacheNotFoundException extends RuntimeException {
+    // ===== collectMisses =====
 
-    private final String cacheName;
+    @Test
+    void collectMisses_emptyKeys_returnsEmptyAndDoesNotHitCacheManager() {
+        List<String> result = support.collectMisses(CACHE_NAME, List.of(), Tb.class);
 
-    /**
-     * Создаёт исключение для не найденного кеша.
-     *
-     * @param cacheName имя кеша
-     */
-    public MdaCacheNotFoundException(String cacheName) {
-        super("Cache not found: " + cacheName);
-        this.cacheName = cacheName;
-    }
-}
-MdaInvalidCacheKeyException
-java
-Копировать код
-/**
- * Исключение, обозначающее неверный (null/пустой) ключ кеша МДА.
- */
-@Getter
-public class MdaInvalidCacheKeyException extends RuntimeException {
-
-    private final String cacheName;
-    private final Object item;
-
-    /**
-     * Создаёт исключение для некорректного ключа кеша и элемента.
-     *
-     * @param cacheName имя кеша
-     * @param item      объект, для которого сформирован неверный ключ
-     */
-    public MdaInvalidCacheKeyException(String cacheName, Object item) {
-        super("Invalid (null/blank) cache key. cache='" + cacheName + "', item=" + String.valueOf(item));
-        this.cacheName = cacheName;
-        this.item = item;
-    }
-}
-LoaderTerBankByCode
-java
-Копировать код
-/**
- * Batch-загрузчик тербанков по коду без реквизитов.
- */
-@Component
-@RequiredArgsConstructor
-public class LoaderTerBankByCode implements BatchLoader<TerBankDto> {
-
-    /**
-     * Возвращает имя кеша для тербанков по коду.
-     *
-     * @return имя кеша
-     */
-    @Override
-    public String cacheName() {
-        return TerBankService2.TB_BY_CODE;
+        assertTrue(result.isEmpty());
+        verifyNoInteractions(cacheManager);
     }
 
-    /**
-     * Возвращает тип элементов, загружаемых данным лоадером.
-     *
-     * @return класс DTO тербанка
-     */
-    @Override
-    public Class<TerBankDto> elementType() {
-        return TerBankDto.class;
-    }
+    @Test
+    void collectMisses_skipsHitsAndDeduplicatesMisses() {
+        when(cache.get("A", Tb.class)).thenReturn(new Tb("A", "Bank A"));
+        when(cache.get("B", Tb.class)).thenReturn(null);
+        when(cache.get("C", Tb.class)).thenReturn(null);
 
-    /**
-     * Извлекает ключ кеша из DTO тербанка.
-     *
-     * @param v DTO тербанка
-     * @return код тербанка
-     */
-    @Override
-    public String extractKey(TerBankDto v) {
-        return v.getTbCode();
-    }
-
-    /**
-     * Загружает список тербанков по указанным кодам.
-     *
-     * @param codes список кодов тербанков
-     * @return загруженные DTO тербанков
-     */
-    @Override
-    public List<TerBankDto> fetchByKeys(List<String> codes) {
-        var resp = master.requestData(
-            props.getSlugValueForTerBank(),
-            codes,
-            SearchRequestProperties.Context.BOOK
+        List<String> result = support.collectMisses(
+                CACHE_NAME,
+                List.of("A", "B", "B", "C"),
+                Tb.class
         );
-        return createResult(resp, mapper);
-    }
-}
-LoaderTerBankWithRequisiteByCode
-java
-Копировать код
-/**
- * Batch-загрузчик тербанков по коду вместе с реквизитами.
- */
-@Component
-@RequiredArgsConstructor
-public class LoaderTerBankWithRequisiteByCode implements BatchLoader<TerBankWithRequisiteDto> {
 
-    /**
-     * Возвращает имя кеша для тербанков с реквизитами по коду.
-     *
-     * @return имя кеша
-     */
-    @Override
-    public String cacheName() {
-        return TerBankService2.TB_REQ_BY_CODE;
+        assertEquals(List.of("B", "C"), result);
     }
 
-    /**
-     * Возвращает тип элементов, загружаемых данным лоадером.
-     *
-     * @return класс DTO тербанка с реквизитами
-     */
-    @Override
-    public Class<TerBankWithRequisiteDto> elementType() {
-        return TerBankWithRequisiteDto.class;
-    }
+    @Test
+    void collectMisses_cacheNotFound_throwsException() {
+        when(cacheManager.getCache(CACHE_NAME)).thenReturn(null);
 
-    /**
-     * Извлекает ключ кеша из DTO тербанка с реквизитами.
-     *
-     * @param v DTO тербанка с реквизитами
-     * @return код тербанка
-     */
-    @Override
-    public String extractKey(TerBankWithRequisiteDto v) {
-        return v.getTbCode();
-    }
-
-    /**
-     * Загружает тербанки с реквизитами по списку кодов.
-     *
-     * @param codes список кодов тербанков
-     * @return загруженные DTO тербанков с реквизитами
-     */
-    @Override
-    public List<TerBankWithRequisiteDto> fetchByKeys(List<String> codes) {
-        var resp = master.requestDataWithAttribute(
-            props.getSlugValueForTerBank(),
-            codes,
-            SearchRequestProperties.Context.BOOK
+        assertThrows(
+                MdaCacheNotFoundException.class,
+                () -> support.collectMisses(CACHE_NAME, List.of("A"), Tb.class)
         );
-        return createWithAttribute(resp, mapper);
+    }
+
+    // ===== putToCache =====
+
+    @Test
+    void putToCache_emptyList_doesNothing() {
+        support.putToCache(CACHE_NAME, List.of(), Tb::getCode);
+
+        verifyNoInteractions(cacheManager);
+        verifyNoInteractions(cache);
+    }
+
+    @Test
+    void putToCache_putsNonNullItemsWithKeys() {
+        Tb a = new Tb("A", "Bank A");
+        Tb b = new Tb("B", "Bank B");
+
+        support.putToCache(CACHE_NAME, List.of(a, b), Tb::getCode);
+
+        verify(cache).put("A", a);
+        verify(cache).put("B", b);
+        verifyNoMoreInteractions(cache);
+    }
+
+    @Test
+    void putToCache_skipsNullItems() {
+        Tb b = new Tb("B", "Bank B");
+
+        support.putToCache(CACHE_NAME, Arrays.asList(null, b), Tb::getCode);
+
+        verify(cache).put("B", b);
+        verify(cache, never()).put(anyString(), isNull());
+    }
+
+    @Test
+    void putToCache_blankKey_throwsInvalidKeyException() {
+        Tb bad = new Tb("", "Bad");
+
+        assertThrows(
+                MdaInvalidCacheKeyException.class,
+                () -> support.putToCache(CACHE_NAME, List.of(bad), Tb::getCode)
+        );
+
+        // убедимся, что в кэш ничего не положили
+        verify(cache, never()).put(anyString(), any());
+    }
+
+    // ===== readFromCache =====
+
+    @Test
+    void readFromCache_returnsNonNullValuesInOrder() {
+        Tb a = new Tb("A", "Bank A");
+
+        when(cache.get("A", Tb.class)).thenReturn(a);
+        when(cache.get("B", Tb.class)).thenReturn(null);
+        when(cache.get("C", Tb.class)).thenReturn(a);
+
+        List<Tb> result = support.readFromCache(
+                CACHE_NAME,
+                List.of("A", "B", "C"),
+                Tb.class
+        );
+
+        assertEquals(List.of(a, a), result); // B выпал как null
+    }
+
+    @Test
+    void readFromCache_cacheNotFound_throwsException() {
+        when(cacheManager.getCache(CACHE_NAME)).thenReturn(null);
+
+        assertThrows(
+                MdaCacheNotFoundException.class,
+                () -> support.readFromCache(CACHE_NAME, List.of("A"), Tb.class)
+        );
+    }
+
+    // ===== Вспомогательный DTO только для тестов =====
+
+    private static class Tb {
+        private final String code;
+        private final String name;
+
+        Tb(String code, String name) {
+            this.code = code;
+            this.name = name;
+        }
+
+        String getCode() {
+            return code;
+        }
+
+        @Override
+        public String toString() {
+            return "Tb{" +
+                    "code='" + code + '\'' +
+                    ", name='" + name + '\'' +
+                    '}';
+        }
     }
 }
 
