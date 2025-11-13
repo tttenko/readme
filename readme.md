@@ -1,24 +1,29 @@
 ```java
 
-public class MdaCacheNotFoundException extends RuntimeException {
-  private final String cacheName;
+@Test
+void handleCacheNotFound() {
+    // given
+    when(messageSource.getMessage(eq("error.cacheNotFound"), any(), any()))
+        .thenReturn("Кэш недоступен или не сконфигурирован");
 
-  public MdaCacheNotFoundException(String cacheName) {
-    super("Cache not found: " + cacheName);
-    this.cacheName = cacheName;
-  }
+    WebRequest request = mock(WebRequest.class);
+    var ex = new MdaCacheNotFoundException("tb_by_code");
 
-  public String getCacheName() { return cacheName; }
+    // when
+    var response = globalExceptionHandler.handleCacheNotFound(ex, request);
+
+    // then
+    assertThat(response).isNotNull();
+    assertNotNull(response.getBody());
+
+    MessageObj body = (MessageObj) response.getBody();
+    assertEquals("Кэш недоступен или не сконфигурирован",
+        body.getMessages().get(0).getMessage());
+    assertEquals(AppMessageSemantic.E,
+        body.getMessages().get(0).getSemantic());
+    assertEquals(HttpStatus.INTERNAL_SERVER_ERROR,   // или SERVICE_UNAVAILABLE, если так решили
+        response.getStatusCode());
 }
 
-error.cacheNotFound=Кэш недоступен или не сконфигурирован
-
-@ExceptionHandler(MdaCacheNotFoundException.class)
-@ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-public ResponseEntity<Object> handleCacheNotFound(MdaCacheNotFoundException ex, WebRequest request) {
-  log.error(ERROR_MESSAGE, ex);
-  String message = getLocalizedErrorMessage("error.cacheNotFound");
-  return createResponseEntity(message, new HttpHeaders(), HttpStatus.INTERNAL_SERVER_ERROR, request);
-}
 
 ```
