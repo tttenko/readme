@@ -1,155 +1,223 @@
 ```java
 
+/**
+ * Юнит-тесты для CacheGetOrLoadService.
+ * Проверяем только взаимодействие с BatchCacheSupport и BatchLoader.
+ */
 @ExtendWith(MockitoExtension.class)
-class BatchCacheSupportTest {
+class CacheGetOrLoadServiceTest {
 
     private static final String CACHE_NAME = "tb_by_code";
+    private static final String UNKNOWN_CACHE = "unknown_cache";
 
     @Mock
-    CacheManager cacheManager;
+    BatchCacheSupport cache;
 
     @Mock
-    Cache cache;
+    BatchLoader<TestDto> loader;
 
-    BatchCacheSupport support;
+    CacheGetOrLoadService service;
 
     @BeforeEach
     void setUp() {
-        support = new BatchCacheSupport(cacheManager);
-        when(cacheManager.getCache(CACHE_NAME)).thenReturn(cache);
+        // Лоадер привязываем к нашему cacheName
+        when(loader.cacheName()).thenReturn(CACHE_NAME);
+        when(loader.elementType()).thenReturn(TestDto.class);
+
+        // Конструируем сервис с одним лоадером
+        service = new CacheGetOrLoadService(cache, List.of(loader));
+
+        // Эмулируем вызов @PostConstruct
+        service.init();
+
+        // Чистим историю вызовов, чтобы init не мешал verify в тестах
+        clearInvocations(cache, loader);
     }
 
-    // ===== collectMisses =====
+    // ========================================================================
+    // 1. Пустой список ключей
+    // ========================================================================
 
     @Test
-    void collectMisses_emptyKeys_returnsEmptyAndDoesNotHitCacheManager() {
-        List<String> result = support.collectMisses(CACHE_NAME, List.of(), Tb.class);
+    void fetchData_emptyKeys_returnsEmptyAndDoesNotUseCacheOrLoader() {
+        List<TestDto> result = service.fetchData(CACHE_NAME, List.of());
 
+        assertNotNull(result);
         assertTrue(result.isEmpty());
-        verifyNoInteractions(cacheManager);
-    }
 
-    @Test
-    void collectMisses_skipsHitsAndDeduplicatesMisses() {
-        when(cache.get("A", Tb.class)).thenReturn(new Tb("A", "Bank A"));
-        when(cache.get("B", Tb.class)).thenReturn(null);
-        when(cache.get("C", Tb.class)).thenReturn(null);
-
-        List<String> result = support.collectMisses(
-                CACHE_NAME,
-                List.of("A", "B", "B", "C"),
-                Tb.class
-        );
-
-        assertEquals(List.of("B", "C"), result);
-    }
-
-    @Test
-    void collectMisses_cacheNotFound_throwsException() {
-        when(cacheManager.getCache(CACHE_NAME)).thenReturn(null);
-
-        assertThrows(
-                MdaCacheNotFoundException.class,
-                () -> support.collectMisses(CACHE_NAME, List.of("A"), Tb.class)
-        );
-    }
-
-    // ===== putToCache =====
-
-    @Test
-    void putToCache_emptyList_doesNothing() {
-        support.putToCache(CACHE_NAME, List.of(), Tb::getCode);
-
-        verifyNoInteractions(cacheManager);
+        // Никаких обращений к кэшу и лоадеру не должно быть
         verifyNoInteractions(cache);
+        verifyNoInteractions(loader);
     }
 
+    // ========================================================================
+    // 2. Лоадер для cacheName не найден
+    // ========================================================================
+
     @Test
-    void putToCache_putsNonNullItemsWithKeys() {
-        Tb a = new Tb("A", "Bank A");
-        Tb b = new Tb("B", "Bank B");
+    void fetchData_loaderNotFound_throwsBatchLoadExceptionAndDoesNotUseCache() {
+        List<String> keys = List.of("A");
 
-        support.putToCache(CACHE_NAME, List.of(a, b), Tb::getCode);
+        MdaBatchLoadException ex = assertThrows(
+                MdaBatchLoadException.class,
+                () -> service.fetchData(UNKNOWN_CACHE, keys)
+        );
+        assertTrue(ex.getMessage().contains(UNKNOWN_CACHE));
 
-        verify(cache).put("A", a);
-        verify(cache).put("B", b);
-        verifyNoMoreInteractions(cache);
+        // Кэш не должен трогаться
+        verifyNoInteractions(cache);
+        // И лоадер тоже — мы его вообще не достали из byCache
+        verifyNoInteractions(loader);
     }
 
-    @Test
-    void putToCache_skipsNullItems() {
-        Tb b = new Tb("B", "Bank B");
-
-        support.putToCache(CACHE_NAME, Arrays.asList(null, b), Tb::getCode);
-
-        verify(cache).put("B", b);
-        verify(cache, never()).put(anyString(), isNull());
-    }
+    // ========================================================================
+    // 3. Все ключи уже есть в кэше (miss пустой)
+    // ========================================================================
 
     @Test
-    void putToCache_blankKey_throwsInvalidKeyException() {
-        Tb bad = new Tb("", "Bad");
+    void fetchData_allKeysCached_loaderNotCalled_resultFromCache() {
+        List<String> keys = List.of("A", "B");
 
-        assertThrows(
-                MdaInvalidCacheKeyException.class,
-                () -> support.putToCache(CACHE_NAME, List.of(bad), Tb::getCode)
+        List<TestDto> cached = List.of(
+                new TestDto("A"),
+                new TestDto("B")
         );
 
-        // убедимся, что в кэш ничего не положили
-        verify(cache, never()).put(anyString(), any());
+        // Промахов нет
+        when(cache.collectMisses(CACHE_NAME, keys, TestDto.class))
+                .thenReturn(List.of());
+
+        // Читаем из кэша готовые значения
+        when(cache.readFromCache(CACHE_NAME, keys, TestDto.class))
+                .thenReturn(cached);
+
+        List<TestDto> result = service.fetchData(CACHE_NAME, keys);
+
+        assertEquals(cached, result);
+
+        // Проверяем взаимодействия
+        verify(cache).collectMisses(CACHE_NAME, keys, TestDto.class);
+        verify(cache).readFromCache(CACHE_NAME, keys, TestDto.class);
+
+        // loader.fetchByKeys и cache.putToCache вызываться не должны
+        verify(loader, never()).fetchByKeys(anyList());
+        verify(cache, never()).putToCache(anyString(), anyList(), any());
+
+        // elementType() вызывается, т.к. он нужен для collectMisses/readFromCache
+        verify(loader, times(2)).elementType();
     }
 
-    // ===== readFromCache =====
+    // ========================================================================
+    // 4. Есть промахи: loader вызывается только по miss-ам, результат кладётся в кэш
+    // ========================================================================
 
     @Test
-    void readFromCache_returnsNonNullValuesInOrder() {
-        Tb a = new Tb("A", "Bank A");
+    void fetchData_missesPresent_loaderCalledForMisses_andCacheUpdatedAndRead() {
+        List<String> keys = List.of("A", "B", "C");
+        List<String> miss = List.of("B", "C");
 
-        when(cache.get("A", Tb.class)).thenReturn(a);
-        when(cache.get("B", Tb.class)).thenReturn(null);
-        when(cache.get("C", Tb.class)).thenReturn(a);
+        TestDto dtoB = new TestDto("B");
+        TestDto dtoC = new TestDto("C");
+        List<TestDto> loaded = List.of(dtoB, dtoC);
 
-        List<Tb> result = support.readFromCache(
-                CACHE_NAME,
-                List.of("A", "B", "C"),
-                Tb.class
+        // Промахи по двум ключам
+        when(cache.collectMisses(CACHE_NAME, keys, TestDto.class))
+                .thenReturn(miss);
+
+        // Лоадер грузит только промахи
+        when(loader.fetchByKeys(miss)).thenReturn(loaded);
+
+        // extractKey просто возвращает code — нам так удобно проверить функцию
+        when(loader.extractKey(any())).thenAnswer(invocation ->
+                ((TestDto) invocation.getArgument(0)).code()
         );
 
-        assertEquals(List.of(a, a), result); // B выпал как null
+        // После того, как всё положили в кэш, сервис читает из кэша итоговый список
+        List<TestDto> fromCache = List.of(
+                new TestDto("A"),
+                dtoB,
+                dtoC
+        );
+        when(cache.readFromCache(CACHE_NAME, keys, TestDto.class))
+                .thenReturn(fromCache);
+
+        List<TestDto> result = service.fetchData(CACHE_NAME, keys);
+
+        // Сервис должен вернуть то, что вернул readFromCache
+        assertEquals(fromCache, result);
+
+        // --- Проверяем, что loader и cache вызваны правильно ---
+
+        // Промахи собрали один раз
+        verify(cache).collectMisses(CACHE_NAME, keys, TestDto.class);
+
+        // Лоадер вызван ровно по этому списку miss
+        verify(loader).fetchByKeys(miss);
+
+        // Захватываем аргументы putToCache
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<TestDto>> loadedCaptor =
+                ArgumentCaptor.forClass(List.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Function<TestDto, String>> keyFnCaptor =
+                ArgumentCaptor.forClass(Function.class);
+
+        verify(cache).putToCache(eq(CACHE_NAME), loadedCaptor.capture(), keyFnCaptor.capture());
+
+        // В кэш положили именно тот список, который вернул loader
+        assertSame(loaded, loadedCaptor.getValue());
+
+        // Функция ключа действительно делегирует в loader.extractKey
+        Function<TestDto, String> keyFn = keyFnCaptor.getValue();
+        String keyB = keyFn.apply(dtoB);
+        assertEquals("B", keyB);
+        verify(loader).extractKey(dtoB);
+
+        // Затем значения читаются из кэша
+        verify(cache).readFromCache(CACHE_NAME, keys, TestDto.class);
+
+        // elementType() вызван два раза — для collectMisses и readFromCache
+        verify(loader, times(2)).elementType();
     }
+
+    // ========================================================================
+    // 5. Есть промахи, но loader вернул пустой список
+    //    (крайний случай — просто проверим, что putToCache всё равно вызывается)
+    // ========================================================================
 
     @Test
-    void readFromCache_cacheNotFound_throwsException() {
-        when(cacheManager.getCache(CACHE_NAME)).thenReturn(null);
+    void fetchData_missesPresent_butLoaderReturnsEmpty_stillPutsAndReadsFromCache() {
+        List<String> keys = List.of("A", "B");
+        List<String> miss = List.of("B");
 
-        assertThrows(
-                MdaCacheNotFoundException.class,
-                () -> support.readFromCache(CACHE_NAME, List.of("A"), Tb.class)
-        );
+        when(cache.collectMisses(CACHE_NAME, keys, TestDto.class))
+                .thenReturn(miss);
+
+        // Лоадер ничего не нашёл
+        List<TestDto> loaded = List.of();
+        when(loader.fetchByKeys(miss)).thenReturn(loaded);
+
+        when(cache.readFromCache(CACHE_NAME, keys, TestDto.class))
+                .thenReturn(List.of(new TestDto("A")));
+
+        List<TestDto> result = service.fetchData(CACHE_NAME, keys);
+
+        assertEquals(1, result.size());
+        assertEquals("A", result.get(0).code());
+
+        verify(loader).fetchByKeys(miss);
+        verify(cache).putToCache(eq(CACHE_NAME), eq(loaded), any());
+        verify(cache).readFromCache(CACHE_NAME, keys, TestDto.class);
     }
 
-    // ===== Вспомогательный DTO только для тестов =====
+    // ------------------------------------------------------------------------
+    // Вспомогательный DTO для тестов
+    // ------------------------------------------------------------------------
 
-    private static class Tb {
-        private final String code;
-        private final String name;
-
-        Tb(String code, String name) {
-            this.code = code;
-            this.name = name;
-        }
-
-        String getCode() {
-            return code;
-        }
-
-        @Override
-        public String toString() {
-            return "Tb{" +
-                    "code='" + code + '\'' +
-                    ", name='" + name + '\'' +
-                    '}';
-        }
+    /**
+     * Простой иммутабельный объект, чтобы не подтягивать реальные сущности.
+     */
+    private record TestDto(String code) {
     }
 }
 
