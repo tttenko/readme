@@ -1,43 +1,24 @@
 ```java
 
-public <T> List<String> collectMisses(
-    @NonNull String cacheName,
-    @NonNull List<String> keys,
-    @NonNull Class<T> type
-) {
-    if (keys.isEmpty()) return List.of();
+public class MdaCacheNotFoundException extends RuntimeException {
+  private final String cacheName;
 
-    Cache cache = cacheManager.getCache(cacheName);
-    if (cache == null) {
-        throw new IllegalStateException("Unknown cache: " + cacheName);
-    }
+  public MdaCacheNotFoundException(String cacheName) {
+    super("Cache not found: " + cacheName);
+    this.cacheName = cacheName;
+  }
 
-    return keys.stream()
-        .filter(k -> cache.get(k, type) == null)
-        .distinct()
-        .toList();
+  public String getCacheName() { return cacheName; }
 }
 
-public <T> Map<String, T> collectHits(
-    @NonNull String cacheName,
-    @NonNull List<String> keys,
-    @NonNull Class<T> type
-) {
-    if (keys.isEmpty()) return Map.of();
+error.cacheNotFound=Кэш недоступен или не сконфигурирован
 
-    Cache cache = cacheManager.getCache(cacheName);
-    if (cache == null) {
-        throw new IllegalStateException("Unknown cache: " + cacheName);
-    }
-
-    Map<String, T> hits = new HashMap<>();
-    for (String key : keys) {
-        T value = cache.get(key, type);
-        if (value != null) {
-            hits.put(key, value);
-        }
-    }
-    return hits;
+@ExceptionHandler(MdaCacheNotFoundException.class)
+@ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+public ResponseEntity<Object> handleCacheNotFound(MdaCacheNotFoundException ex, WebRequest request) {
+  log.error(ERROR_MESSAGE, ex);
+  String message = getLocalizedErrorMessage("error.cacheNotFound");
+  return createResponseEntity(message, new HttpHeaders(), HttpStatus.INTERNAL_SERVER_ERROR, request);
 }
 
 ```
