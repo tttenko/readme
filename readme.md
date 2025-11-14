@@ -1,268 +1,150 @@
 ```java
 
-@Component
-@RequiredArgsConstructor
-public class SupplierCriteriaBuilder {
+@ExtendWith(MockitoExtension.class)
+class SupplierService2Test {
 
-    private final SearchRequestProperties properties;
+    @Mock
+    private SupplierCacheOps supplierCache;
 
-    /**
-     * Строит карту критериев для поиска контрагентов по ИНН/КПП.
-     */
-    @NonNull
-    public Map<String, List<String>> buildCriteria(
-            @Nullable String inn,
-            @Nullable String kpp
-    ) {
-        Map<String, List<String>> criteria = new HashMap<>(2);
+    @Mock
+    private CacheGetOrLoadService cacheGetOrLoadService;
 
-        if (inn != null && !inn.isBlank()) {
-            criteria.put(properties.getAttributeIdForInn(), List.of(inn));
-        }
-        if (kpp != null && !kpp.isBlank()) {
-            criteria.put(properties.getAttributeIdForKpp(), List.of(kpp));
-        }
+    @Mock
+    private HelperSupplierCriteriaBuilder criteriaBuilder;
 
-        return criteria;
+    @Mock
+    private LoaderSupplierByCriteria loaderSupplierByCriteria;
+
+    @InjectMocks
+    private SupplierService2 supplierService;
+
+    // --------------------------------------------------------------
+    // searchSupplierRequisite
+    // --------------------------------------------------------------
+
+    @Test
+    void givenIdsWithBlanks_whenSearchSupplierRequisite_thenUseSupplierCacheOnlyForValidIds() {
+        // given
+        BankDto b1 = mock(BankDto.class);
+        BankDto b2 = mock(BankDto.class);
+        List<String> ids = Arrays.asList(" ", null, "S1", "");
+
+        when(supplierCache.loadBySupplierId("S1"))
+                .thenReturn(List.of(b1, b2));
+
+        // when
+        ResultObj<List<BankDto>> result = supplierService.searchSupplierRequisite(ids);
+
+        // then
+        verify(supplierCache, times(1)).loadBySupplierId("S1");
+        verifyNoMoreInteractions(supplierCache);
+
+        assertEquals(List.of(b1, b2), result.getData());
     }
 
-    /**
-     * Формирует детерминированный ключ кеша по паре ИНН/КПП.
-     */
-    @NonNull
-    public String buildInnKppKey(@Nullable String inn, @Nullable String kpp) {
-        return String.format("inn:%s:kpp:%s", inn, kpp);
+    // --------------------------------------------------------------
+    // searchCounterpartiesByCriteria: inn + kpp -> кеш
+    // --------------------------------------------------------------
+
+    @Test
+    void givenInnAndKpp_whenSearchCounterpartiesByCriteria_thenUseCacheGetOrLoadService() {
+        // given
+        String inn = "7700000000";
+        String kpp = "770001001";
+        String key = "inn:7700000000:kpp:770001001";
+
+        Map<String, List<String>> criteria = Map.of(
+                "innAttr", List.of(inn),
+                "kppAttr", List.of(kpp)
+        );
+        when(criteriaBuilder.buildCriteria(inn, kpp)).thenReturn(criteria);
+        when(criteriaBuilder.buildInnKppKey(inn, kpp)).thenReturn(key);
+
+        List<CounterpartyDto> cached = List.of(mock(CounterpartyDto.class));
+        when(cacheGetOrLoadService.<CounterpartyDto>fetchData(
+                eq(SupplierService2.SUPPLIER_BY_INN_KPP),
+                eq(List.of(key))
+        )).thenReturn(cached);
+
+        // when
+        ResultObj<List<CounterpartyDto>> result =
+                supplierService.searchCounterpartiesByCriteria(inn, kpp);
+
+        // then
+        assertEquals(cached, result.getData());
+
+        verify(criteriaBuilder).buildCriteria(inn, kpp);
+        verify(criteriaBuilder).buildInnKppKey(inn, kpp);
+        verify(cacheGetOrLoadService).fetchData(
+                SupplierService2.SUPPLIER_BY_INN_KPP,
+                List.of(key)
+        );
+
+        verifyNoInteractions(loaderSupplierByCriteria);
     }
 
-    /**
-     * Восстанавливает criteria из строкового ключа кеша.
-     * Ожидаемый формат ключа: "inn:<ИНН>:kpp:<КПП>".
-     */
-    @NonNull
-    public Map<String, List<String>> buildCriteriaFromKey(@NonNull String key) {
-        String inn = null;
+    // --------------------------------------------------------------
+    // searchCounterpartiesByCriteria: только inn/kpp -> прямой лоадер
+    // --------------------------------------------------------------
+
+    @Test
+    void givenOnlyInn_whenSearchCounterpartiesByCriteria_thenBypassCacheAndCallLoaderByCriteria() {
+        // given
+        String inn = "7700000000";
         String kpp = null;
 
-        if (!key.isBlank()) {
-            String[] parts = key.split(":", 4);
-            if (parts.length == 4) {
-                inn = parts[1];
-                kpp = parts[3];
-            }
-        }
-
-        return buildCriteria(inn, kpp);
-    }
-}
-
-
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class SupplierService2 {
-
-    public static final String SUPPLIER_REQ_BY_SUPPLIER_ID = "supplier_req_by_supplier_id";
-    public static final String SUPPLIER_BY_ID              = "supplier_by_id";
-    public static final String SUPPLIER_BY_INN_KPP         = "supplier_by_inn_kpp";
-
-    private final SupplierCacheOps supplierCache;
-    private final CacheGetOrLoadService cacheGetOrLoadService;
-
-    private final SupplierMapper supplierMapper;
-    private final BaseMasterDataRequestService baseMasterDataRequestService;
-    private final SearchRequestProperties properties;
-    private final SupplierCriteriaBuilder criteriaBuilder;
-
-    /**
-     * Возвращает реквизиты поставщика по списку идентификаторов.
-     */
-    @NonNull
-    public ResultObj<List<BankDto>> searchSupplierRequisite(
-            @NonNull List<String> ids
-    ) {
-        List<BankDto> response = ids.stream()
-                .filter(id -> id != null && !id.isBlank())
-                .map(supplierCache::loadBySupplierId)
-                .flatMap(List::stream)
-                .toList();
-
-        return getSuccessResponse(response);
-    }
-
-    /**
-     * Возвращает список контрагентов по критериям (ИНН и/или КПП).
-     * Если заданы не оба параметра — идём напрямую в мастер-данные без кеша.
-     * Если заданы оба — используем кеш SUPPLIER_BY_INN_KPP через CacheGetOrLoadService.
-     */
-    @NonNull
-    public ResultObj<List<CounterpartyDto>> searchCounterpartiesByCriteria(
-            @Nullable String inn,
-            @Nullable String kpp
-    ) {
-        Map<String, List<String>> criteria = criteriaBuilder.buildCriteria(inn, kpp);
-
-        if (criteria.size() != 2) {
-            // поведение как раньше: прямой поиск без кеша
-            return getSupplierByCriteria(criteria);
-        }
-
-        String key = criteriaBuilder.buildInnKppKey(inn, kpp);
-
-        List<CounterpartyDto> list =
-                cacheGetOrLoadService.<CounterpartyDto>fetchData(SUPPLIER_BY_INN_KPP, List.of(key));
-
-        return getSuccessResponse(list);
-    }
-
-    /**
-     * Возвращает контрагентов по списку идентификаторов, с кешированием по SUPPLIER_BY_ID.
-     */
-    @NonNull
-    public ResultObj<List<CounterpartyDto>> getCounterpartiesById(
-            @NonNull List<String> ids
-    ) {
-        List<CounterpartyDto> list =
-                cacheGetOrLoadService.<CounterpartyDto>fetchData(SUPPLIER_BY_ID, ids);
-
-        return getSuccessResponse(list);
-    }
-
-    /**
-     * Прямой поиск контрагентов по критериям без кеша.
-     */
-    @NonNull
-    private ResultObj<List<CounterpartyDto>> getSupplierByCriteria(
-            @NonNull Map<String, List<String>> criteria
-    ) {
-        return createResultObjWithAttribute(
-                baseMasterDataRequestService.requestDataWithAttribute(
-                        properties.getSlugValueForCounterparty(),
-                        criteria
-                ),
-                supplierMapper
+        Map<String, List<String>> criteria = Map.of(
+                "innAttr", List.of(inn)
         );
-    }
-}
+        when(criteriaBuilder.buildCriteria(inn, kpp)).thenReturn(criteria);
 
+        List<CounterpartyDto> direct = List.of(mock(CounterpartyDto.class));
+        when(loaderSupplierByCriteria.loadByCriteria(criteria)).thenReturn(direct);
 
-@Component
-@RequiredArgsConstructor
-public class LoaderSupplierById implements BatchLoader<CounterpartyDto> {
+        // when
+        ResultObj<List<CounterpartyDto>> result =
+                supplierService.searchCounterpartiesByCriteria(inn, kpp);
 
-    private final BaseMasterDataRequestService baseMasterDataRequestService;
-    private final SupplierMapper supplierMapper;
-    private final SearchRequestProperties properties;
+        // then
+        assertEquals(direct, result.getData());
 
-    @Override
-    public String cacheName() {
-        return SupplierService2.SUPPLIER_BY_ID;
-    }
+        verify(criteriaBuilder).buildCriteria(inn, kpp);
+        verify(loaderSupplierByCriteria).loadByCriteria(criteria);
 
-    @Override
-    public Class<CounterpartyDto> elementType() {
-        return CounterpartyDto.class;
+        verifyNoInteractions(cacheGetOrLoadService);
+        verify(criteriaBuilder, never()).buildInnKppKey(any(), any());
     }
 
-    @Override
-    public String extractKey(CounterpartyDto dto) {
-        return dto.getId();
-    }
+    // --------------------------------------------------------------
+    // getCounterpartiesById
+    // --------------------------------------------------------------
 
-    @Override
-    @NonNull
-    public List<CounterpartyDto> fetchByKeys(@NonNull List<String> ids) {
-        if (ids.isEmpty()) {
-            return List.of();
-        }
+    @Test
+    void givenIds_whenGetCounterpartiesById_thenUseCacheGetOrLoadServiceWithSupplierByIdCache() {
+        // given
+        List<String> ids = List.of("A", "B");
 
-        GetItemsSearchResponse resp =
-                baseMasterDataRequestService.requestDataWithAttribute(
-                        properties.getSlugValueForCounterparty(),
-                        ids,
-                        SearchRequestProperties.Context.BOOK
-                );
-
-        return BaseMasterDataRequestService.createResultWithAttribute(resp, supplierMapper);
-    }
-}
-
-
-@Component
-@RequiredArgsConstructor
-public class LoaderSupplierByInnKpp implements BatchLoader<CounterpartyDto> {
-
-    private final BaseMasterDataRequestService baseMasterDataRequestService;
-    private final SupplierMapper supplierMapper;
-    private final SearchRequestProperties properties;
-    private final SupplierCriteriaBuilder criteriaBuilder;
-
-    @Override
-    public String cacheName() {
-        return SupplierService2.SUPPLIER_BY_INN_KPP;
-    }
-
-    @Override
-    public Class<CounterpartyDto> elementType() {
-        return CounterpartyDto.class;
-    }
-
-    @Override
-    public String extractKey(CounterpartyDto dto) {
-        // формат ключа строго совпадает с тем, что используется в SupplierService2
-        return criteriaBuilder.buildInnKppKey(dto.getInn(), dto.getKpp());
-    }
-
-    @Override
-    @NonNull
-    public List<CounterpartyDto> fetchByKeys(@NonNull List<String> keys) {
-        if (keys.isEmpty()) {
-            return List.of();
-        }
-
-        // В текущей логике SupplierService2 всегда передаёт один ключ,
-        // но даже если их будет несколько — можно расширить реализацию позже.
-        String key = keys.get(0);
-
-        Map<String, List<String>> criteria = criteriaBuilder.buildCriteriaFromKey(key);
-        if (criteria.isEmpty()) {
-            return List.of();
-        }
-
-        GetItemsSearchResponse resp =
-                baseMasterDataRequestService.requestDataWithAttribute(
-                        properties.getSlugValueForCounterparty(),
-                        criteria
-                );
-
-        return BaseMasterDataRequestService.createResultWithAttribute(resp, supplierMapper);
-    }
-}
-
-
-@Component
-@RequiredArgsConstructor
-public class LoaderSupplierByCriteria {
-
-    private final BaseMasterDataRequestService baseMasterDataRequestService;
-    private final SupplierMapper supplierMapper;
-    private final SearchRequestProperties properties;
-
-    /**
-     * Прямой поиск контрагентов в мастер-данных по критериям (ИНН/КПП) без кеша.
-     */
-    @NonNull
-    public ResultObj<List<CounterpartyDto>> loadByCriteria(
-            @NonNull Map<String, List<String>> criteria
-    ) {
-        return createResultObjWithAttribute(
-                baseMasterDataRequestService.requestDataWithAttribute(
-                        properties.getSlugValueForCounterparty(),
-                        criteria
-                ),
-                supplierMapper
+        List<CounterpartyDto> list = List.of(
+                mock(CounterpartyDto.class),
+                mock(CounterpartyDto.class)
         );
+        when(cacheGetOrLoadService.<CounterpartyDto>fetchData(
+                eq(SupplierService2.SUPPLIER_BY_ID),
+                eq(ids)
+        )).thenReturn(list);
+
+        // when
+        ResultObj<List<CounterpartyDto>> result =
+                supplierService.getCounterpartiesById(ids);
+
+        // then
+        assertEquals(list, result.getData());
+
+        verify(cacheGetOrLoadService).fetchData(
+                SupplierService2.SUPPLIER_BY_ID,
+                ids
+        );
+        verifyNoInteractions(loaderSupplierByCriteria);
     }
 }
-
-
 ```
