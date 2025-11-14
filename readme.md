@@ -1,223 +1,124 @@
 ```java
 
-/**
- * Юнит-тесты для CacheGetOrLoadService.
- * Проверяем только взаимодействие с BatchCacheSupport и BatchLoader.
- */
 @ExtendWith(MockitoExtension.class)
-class CacheGetOrLoadServiceTest {
-
-    private static final String CACHE_NAME = "tb_by_code";
-    private static final String UNKNOWN_CACHE = "unknown_cache";
+class LoaderTerBankByCodeTest {
 
     @Mock
-    BatchCacheSupport cache;
+    BaseMasterDataRequestService master;
 
     @Mock
-    BatchLoader<TestDto> loader;
+    TerBankMapper mapper;
 
-    CacheGetOrLoadService service;
+    @Mock
+    SearchRequestProperties props;
+
+    LoaderTerBankByCode loader;
 
     @BeforeEach
     void setUp() {
-        // Лоадер привязываем к нашему cacheName
-        when(loader.cacheName()).thenReturn(CACHE_NAME);
-        when(loader.elementType()).thenReturn(TestDto.class);
-
-        // Конструируем сервис с одним лоадером
-        service = new CacheGetOrLoadService(cache, List.of(loader));
-
-        // Эмулируем вызов @PostConstruct
-        service.init();
-
-        // Чистим историю вызовов, чтобы init не мешал verify в тестах
-        clearInvocations(cache, loader);
+        loader = new LoaderTerBankByCode(master, mapper, props);
     }
 
-    // ========================================================================
-    // 1. Пустой список ключей
-    // ========================================================================
+    // -----------------------------------------------------------------------
+    // cacheName / elementType / extractKey
+    // -----------------------------------------------------------------------
 
     @Test
-    void fetchData_emptyKeys_returnsEmptyAndDoesNotUseCacheOrLoader() {
-        List<TestDto> result = service.fetchData(CACHE_NAME, List.of());
-
-        assertNotNull(result);
-        assertTrue(result.isEmpty());
-
-        // Никаких обращений к кэшу и лоадеру не должно быть
-        verifyNoInteractions(cache);
-        verifyNoInteractions(loader);
+    void cacheName_returnsTerBankServiceConstant() {
+        assertEquals(TerBankService2.TB_BY_CODE, loader.cacheName());
     }
-
-    // ========================================================================
-    // 2. Лоадер для cacheName не найден
-    // ========================================================================
 
     @Test
-    void fetchData_loaderNotFound_throwsBatchLoadExceptionAndDoesNotUseCache() {
-        List<String> keys = List.of("A");
-
-        MdaBatchLoadException ex = assertThrows(
-                MdaBatchLoadException.class,
-                () -> service.fetchData(UNKNOWN_CACHE, keys)
-        );
-        assertTrue(ex.getMessage().contains(UNKNOWN_CACHE));
-
-        // Кэш не должен трогаться
-        verifyNoInteractions(cache);
-        // И лоадер тоже — мы его вообще не достали из byCache
-        verifyNoInteractions(loader);
+    void elementType_returnsTerBankDtoClass() {
+        assertEquals(TerBankDto.class, loader.elementType());
     }
-
-    // ========================================================================
-    // 3. Все ключи уже есть в кэше (miss пустой)
-    // ========================================================================
 
     @Test
-    void fetchData_allKeysCached_loaderNotCalled_resultFromCache() {
-        List<String> keys = List.of("A", "B");
+    void extractKey_returnsTbCodeFromDto() {
+        TerBankDto dto = mock(TerBankDto.class);
+        when(dto.getTbCode()).thenReturn("TB001");
 
-        List<TestDto> cached = List.of(
-                new TestDto("A"),
-                new TestDto("B")
-        );
+        String key = loader.extractKey(dto);
 
-        // Промахов нет
-        when(cache.collectMisses(CACHE_NAME, keys, TestDto.class))
-                .thenReturn(List.of());
-
-        // Читаем из кэша готовые значения
-        when(cache.readFromCache(CACHE_NAME, keys, TestDto.class))
-                .thenReturn(cached);
-
-        List<TestDto> result = service.fetchData(CACHE_NAME, keys);
-
-        assertEquals(cached, result);
-
-        // Проверяем взаимодействия
-        verify(cache).collectMisses(CACHE_NAME, keys, TestDto.class);
-        verify(cache).readFromCache(CACHE_NAME, keys, TestDto.class);
-
-        // loader.fetchByKeys и cache.putToCache вызываться не должны
-        verify(loader, never()).fetchByKeys(anyList());
-        verify(cache, never()).putToCache(anyString(), anyList(), any());
-
-        // elementType() вызывается, т.к. он нужен для collectMisses/readFromCache
-        verify(loader, times(2)).elementType();
+        assertEquals("TB001", key);
+        verify(dto).getTbCode();
     }
 
-    // ========================================================================
-    // 4. Есть промахи: loader вызывается только по miss-ам, результат кладётся в кэш
-    // ========================================================================
+    // -----------------------------------------------------------------------
+    // Вариант А: "минимальный" тест fetchByKeys — только взаимодействие
+    // -----------------------------------------------------------------------
 
     @Test
-    void fetchData_missesPresent_loaderCalledForMisses_andCacheUpdatedAndRead() {
-        List<String> keys = List.of("A", "B", "C");
-        List<String> miss = List.of("B", "C");
+    void fetchByKeys_callsMasterWithSlugCodesAndBookContext() {
+        List<String> codes = List.of("A", "B");
+        when(props.getSlugValueForTerBank()).thenReturn("slug");
 
-        TestDto dtoB = new TestDto("B");
-        TestDto dtoC = new TestDto("C");
-        List<TestDto> loaded = List.of(dtoB, dtoC);
+        // ВАЖНО: здесь мы не проверяем результат, только verify, что master вызван
+        // Если createResult внутри требует не-null ответа, подставь здесь реальный тип.
+        // TODO: замените Object на тип, который реально возвращает master.requestData(...)
+        Object response = new Object();
+        when(master.requestData("slug", codes, SearchRequestProperties.Context.BOOK))
+                .thenReturn(response);
 
-        // Промахи по двум ключам
-        when(cache.collectMisses(CACHE_NAME, keys, TestDto.class))
-                .thenReturn(miss);
+        // Результат нас не интересует — важно, что метод не падает и дергает master
+        loader.fetchByKeys(codes);
 
-        // Лоадер грузит только промахи
-        when(loader.fetchByKeys(miss)).thenReturn(loaded);
-
-        // extractKey просто возвращает code — нам так удобно проверить функцию
-        when(loader.extractKey(any())).thenAnswer(invocation ->
-                ((TestDto) invocation.getArgument(0)).code()
-        );
-
-        // После того, как всё положили в кэш, сервис читает из кэша итоговый список
-        List<TestDto> fromCache = List.of(
-                new TestDto("A"),
-                dtoB,
-                dtoC
-        );
-        when(cache.readFromCache(CACHE_NAME, keys, TestDto.class))
-                .thenReturn(fromCache);
-
-        List<TestDto> result = service.fetchData(CACHE_NAME, keys);
-
-        // Сервис должен вернуть то, что вернул readFromCache
-        assertEquals(fromCache, result);
-
-        // --- Проверяем, что loader и cache вызваны правильно ---
-
-        // Промахи собрали один раз
-        verify(cache).collectMisses(CACHE_NAME, keys, TestDto.class);
-
-        // Лоадер вызван ровно по этому списку miss
-        verify(loader).fetchByKeys(miss);
-
-        // Захватываем аргументы putToCache
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<TestDto>> loadedCaptor =
-                ArgumentCaptor.forClass(List.class);
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<Function<TestDto, String>> keyFnCaptor =
-                ArgumentCaptor.forClass(Function.class);
-
-        verify(cache).putToCache(eq(CACHE_NAME), loadedCaptor.capture(), keyFnCaptor.capture());
-
-        // В кэш положили именно тот список, который вернул loader
-        assertSame(loaded, loadedCaptor.getValue());
-
-        // Функция ключа действительно делегирует в loader.extractKey
-        Function<TestDto, String> keyFn = keyFnCaptor.getValue();
-        String keyB = keyFn.apply(dtoB);
-        assertEquals("B", keyB);
-        verify(loader).extractKey(dtoB);
-
-        // Затем значения читаются из кэша
-        verify(cache).readFromCache(CACHE_NAME, keys, TestDto.class);
-
-        // elementType() вызван два раза — для collectMisses и readFromCache
-        verify(loader, times(2)).elementType();
+        verify(props).getSlugValueForTerBank();
+        verify(master).requestData("slug", codes, SearchRequestProperties.Context.BOOK);
     }
 
-    // ========================================================================
-    // 5. Есть промахи, но loader вернул пустой список
-    //    (крайний случай — просто проверим, что putToCache всё равно вызывается)
-    // ========================================================================
+    // -----------------------------------------------------------------------
+    // Вариант B: тест fetchByKeys с проверкой результата
+    // (его нужно чуть адаптировать под твой проект)
+    // -----------------------------------------------------------------------
 
     @Test
-    void fetchData_missesPresent_butLoaderReturnsEmpty_stillPutsAndReadsFromCache() {
-        List<String> keys = List.of("A", "B");
-        List<String> miss = List.of("B");
+    void fetchByKeys_returnsResultFromCreateResult() {
+        List<String> codes = List.of("A", "B");
+        when(props.getSlugValueForTerBank()).thenReturn("slug");
 
-        when(cache.collectMisses(CACHE_NAME, keys, TestDto.class))
-                .thenReturn(miss);
+        // TODO: замените РеальныйТипОтвета на тот тип, который возвращает master.requestData
+        РеальныйТипОтвета response = mock(РеальныйТипОтвета.class);
 
-        // Лоадер ничего не нашёл
-        List<TestDto> loaded = List.of();
-        when(loader.fetchByKeys(miss)).thenReturn(loaded);
+        when(master.requestData("slug", codes, SearchRequestProperties.Context.BOOK))
+                .thenReturn(response);
 
-        when(cache.readFromCache(CACHE_NAME, keys, TestDto.class))
-                .thenReturn(List.of(new TestDto("A")));
+        // ожидаемый результат из createResult
+        TerBankDto dto1 = new TerBankDto(); // или билдерами, как у тебя принято
+        TerBankDto dto2 = new TerBankDto();
+        List<TerBankDto> expected = List.of(dto1, dto2);
 
-        List<TestDto> result = service.fetchData(CACHE_NAME, keys);
+        // === Вариант 1: createResult — статический метод утилитного класса ===
+        // Предположим, что он лежит в классе BaseMasterDataRequestServiceUtils:
+        //
+        // try (MockedStatic<BaseMasterDataRequestServiceUtils> utils =
+        //          Mockito.mockStatic(BaseMasterDataRequestServiceUtils.class)) {
+        //
+        //     utils.when(() -> BaseMasterDataRequestServiceUtils
+        //             .createResult(response, mapper))
+        //           .thenReturn(expected);
+        //
+        //     List<TerBankDto> result = loader.fetchByKeys(codes);
+        //     assertEquals(expected, result);
+        // }
+        //
+        // === Вариант 2: createResult — protected / package-private метод базового класса
+        // Тогда его можно замокать через spy на LoaderTerBankByCode.
+        //
+        // Например, если createResult определён в LoaderTerBankByCode как:
+        // protected List<TerBankDto> createResult(РеальныйТипОтвета resp, TerBankMapper mapper)
+        //
+        // LoaderTerBankByCode spyLoader = spy(loader);
+        // doReturn(expected).when(spyLoader).createResult(response, mapper);
+        //
+        // List<TerBankDto> result = spyLoader.fetchByKeys(codes);
+        // assertEquals(expected, result);
+        //
+        // Здесь оставляю TODO, потому что точная сигнатура и расположение createResult
+        // зависят от твоего кода.
 
-        assertEquals(1, result.size());
-        assertEquals("A", result.get(0).code());
-
-        verify(loader).fetchByKeys(miss);
-        verify(cache).putToCache(eq(CACHE_NAME), eq(loaded), any());
-        verify(cache).readFromCache(CACHE_NAME, keys, TestDto.class);
-    }
-
-    // ------------------------------------------------------------------------
-    // Вспомогательный DTO для тестов
-    // ------------------------------------------------------------------------
-
-    /**
-     * Простой иммутабельный объект, чтобы не подтягивать реальные сущности.
-     */
-    private record TestDto(String code) {
+        // TODO: вставь сюда один из вариантов выше и удали этот fail
+        // fail("Доделай мокинг createResult в соответствии с реализацией.");
     }
 }
 
