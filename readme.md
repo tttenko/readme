@@ -239,5 +239,30 @@ public class LoaderSupplierByInnKpp implements BatchLoader<CounterpartyDto> {
 }
 
 
+@Component
+@RequiredArgsConstructor
+public class LoaderSupplierByCriteria {
+
+    private final BaseMasterDataRequestService baseMasterDataRequestService;
+    private final SupplierMapper supplierMapper;
+    private final SearchRequestProperties properties;
+
+    /**
+     * Прямой поиск контрагентов в мастер-данных по критериям (ИНН/КПП) без кеша.
+     */
+    @NonNull
+    public ResultObj<List<CounterpartyDto>> loadByCriteria(
+            @NonNull Map<String, List<String>> criteria
+    ) {
+        return createResultObjWithAttribute(
+                baseMasterDataRequestService.requestDataWithAttribute(
+                        properties.getSlugValueForCounterparty(),
+                        criteria
+                ),
+                supplierMapper
+        );
+    }
+}
+
 
 ```
