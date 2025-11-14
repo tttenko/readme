@@ -4,151 +4,163 @@
 
 
 @ExtendWith(MockitoExtension.class)
-class LoaderSupplierByInnKppTest {
-
-    @Mock
-    private BaseMasterDataRequestService baseMasterDataRequestService;
-
-    @Mock
-    private SupplierMapper supplierMapper;
+class HelperSupplierCriteriaBuilderTest {
 
     @Mock
     private SearchRequestProperties properties;
 
-    @Mock
-    private HelperSupplierCriteriaBuilder criteriaBuilder;
-
     @InjectMocks
-    private LoaderSupplierByInnKpp loader;
+    private HelperSupplierCriteriaBuilder builder;
 
-    // -------------------------------------------------------
-    // Простые методы: cacheName / elementType / extractKey
-    // -------------------------------------------------------
-
-    @Test
-    void givenLoader_whenCacheNameCalled_thenReturnSupplierByInnKppConstant() {
-        // when
-        String name = loader.cacheName();
-
-        // then
-        assertEquals(SupplierService2.SUPPLIER_BY_INN_KPP, name);
-    }
+    // --------------------------------------------------------------------
+    // buildCriteria
+    // --------------------------------------------------------------------
 
     @Test
-    void givenLoader_whenElementTypeCalled_thenReturnCounterpartyDtoClass() {
-        // when
-        Class<CounterpartyDto> type = loader.elementType();
-
-        // then
-        assertEquals(CounterpartyDto.class, type);
-    }
-
-    @Test
-    void givenDto_whenExtractKeyCalled_thenUseCriteriaBuilderAndReturnKey() {
+    void givenInnAndKpp_whenBuildCriteria_thenReturnMapWithBothAttributes() {
         // given
-        CounterpartyDto dto = mock(CounterpartyDto.class);
-        when(dto.getInn()).thenReturn("7700000000");
-        when(dto.getKpp()).thenReturn("770001001");
+        String inn = "7700000000";
+        String kpp = "770001001";
 
-        String expectedKey = "inn:7700000000:kpp:770001001";
-        when(criteriaBuilder.buildInnKppKey("7700000000", "770001001"))
-                .thenReturn(expectedKey);
+        when(properties.getAttributeIdForInn()).thenReturn("innAttr");
+        when(properties.getAttributeIdForKpp()).thenReturn("kppAttr");
 
         // when
-        String key = loader.extractKey(dto);
+        Map<String, List<String>> result = builder.buildCriteria(inn, kpp);
 
         // then
-        assertEquals(expectedKey, key);
+        assertEquals(
+                Map.of(
+                        "innAttr", List.of(inn),
+                        "kppAttr", List.of(kpp)
+                ),
+                result
+        );
 
-        verify(dto).getInn();
-        verify(dto).getKpp();
-        verify(criteriaBuilder).buildInnKppKey("7700000000", "770001001");
-    }
-
-    // -------------------------------------------------------
-    // fetchByKeys
-    // -------------------------------------------------------
-
-    @Test
-    void givenEmptyKeys_whenFetchByKeys_thenReturnEmptyAndDoNotCallDependencies() {
-        // when
-        List<CounterpartyDto> result = loader.fetchByKeys(List.of());
-
-        // then
-        assertNotNull(result);
-        assertTrue(result.isEmpty());
-
-        verifyNoInteractions(baseMasterDataRequestService, properties, criteriaBuilder, supplierMapper);
+        verify(properties).getAttributeIdForInn();
+        verify(properties).getAttributeIdForKpp();
     }
 
     @Test
-    void givenKeys_whenCriteriaFromKeyIsEmpty_thenReturnEmptyAndDoNotCallBaseService() {
+    void givenOnlyInn_whenBuildCriteria_thenReturnMapWithInnOnly() {
         // given
-        String key = "inn:null:kpp:null";
-        List<String> keys = List.of(key);
+        String inn = "7700000000";
+        String kpp = null;
 
-        when(criteriaBuilder.buildCriteriaFromKey(key))
-                .thenReturn(Map.of()); // пустая map
+        when(properties.getAttributeIdForInn()).thenReturn("innAttr");
 
         // when
-        List<CounterpartyDto> result = loader.fetchByKeys(keys);
+        Map<String, List<String>> result = builder.buildCriteria(inn, kpp);
 
         // then
-        assertNotNull(result);
-        assertTrue(result.isEmpty());
+        assertEquals(
+                Map.of("innAttr", List.of(inn)),
+                result
+        );
 
-        verify(criteriaBuilder).buildCriteriaFromKey(key);
-        verifyNoInteractions(baseMasterDataRequestService, properties, supplierMapper);
+        verify(properties).getAttributeIdForInn();
+        verify(properties, never()).getAttributeIdForKpp();
     }
 
     @Test
-    void givenKeysAndCriteria_whenFetchByKeys_thenCallBaseServiceAndMapResult() {
+    void givenNullOrBlankInnAndKpp_whenBuildCriteria_thenReturnEmptyMapAndDoNotUseProperties() {
+        // given
+        String inn = "   ";   // isBlank() == true
+        String kpp = null;
+
+        // when
+        Map<String, List<String>> result = builder.buildCriteria(inn, kpp);
+
+        // then
+        assertTrue(result.isEmpty());
+        verifyNoInteractions(properties);
+    }
+
+    // --------------------------------------------------------------------
+    // buildInnKppKey
+    // --------------------------------------------------------------------
+
+    @Test
+    void givenInnAndKpp_whenBuildInnKppKey_thenReturnFormattedKey() {
+        // given
+        String inn = "7700000000";
+        String kpp = "770001001";
+
+        // when
+        String key = builder.buildInnKppKey(inn, kpp);
+
+        // then
+        assertEquals("inn:7700000000:kpp:770001001", key);
+        verifyNoInteractions(properties);
+    }
+
+    @Test
+    void givenNullValues_whenBuildInnKppKey_thenNullsAreIncludedInFormat() {
+        // given
+        String inn = null;
+        String kpp = null;
+
+        // when
+        String key = builder.buildInnKppKey(inn, kpp);
+
+        // then
+        assertEquals("inn:null:kpp:null", key);
+        verifyNoInteractions(properties);
+    }
+
+    // --------------------------------------------------------------------
+    // buildCriteriaFromKey
+    // --------------------------------------------------------------------
+
+    @Test
+    void givenValidKey_whenBuildCriteriaFromKey_thenReturnCriteriaForInnAndKpp() {
         // given
         String key = "inn:7700000000:kpp:770001001";
-        List<String> keys = List.of(key);
 
-        Map<String, List<String>> criteria = Map.of(
-                "innAttr", List.of("7700000000"),
-                "kppAttr", List.of("770001001")
-        );
-        when(criteriaBuilder.buildCriteriaFromKey(key)).thenReturn(criteria);
+        when(properties.getAttributeIdForInn()).thenReturn("innAttr");
+        when(properties.getAttributeIdForKpp()).thenReturn("kppAttr");
 
-        String slug = "counterpartySlug";
-        when(properties.getSlugValueForCounterparty()).thenReturn(slug);
+        // when
+        Map<String, List<String>> result = builder.buildCriteriaFromKey(key);
 
-        GetItemsSearchResponse resp = mock(GetItemsSearchResponse.class);
-        when(baseMasterDataRequestService.requestDataWithAttribute(
-                slug,
-                criteria
-        )).thenReturn(resp);
-
-        List<CounterpartyDto> mapped = List.of(
-                mock(CounterpartyDto.class),
-                mock(CounterpartyDto.class)
+        // then
+        assertEquals(
+                Map.of(
+                        "innAttr", List.of("7700000000"),
+                        "kppAttr", List.of("770001001")
+                ),
+                result
         );
 
-        // мок статического метода BaseMasterDataRequestService.createResultWithAttribute
-        try (MockedStatic<BaseMasterDataRequestService> statics =
-                     mockStatic(BaseMasterDataRequestService.class)) {
+        // под капотом вызывается buildCriteria(inn, kpp), поэтому оба метода дергаются
+        verify(properties).getAttributeIdForInn();
+        verify(properties).getAttributeIdForKpp();
+    }
 
-            statics.when(() ->
-                    BaseMasterDataRequestService.createResultWithAttribute(resp, supplierMapper)
-            ).thenReturn(mapped);
+    @Test
+    void givenBlankKey_whenBuildCriteriaFromKey_thenReturnEmptyMapAndDoNotUseProperties() {
+        // given
+        String key = "   ";
 
-            // when
-            List<CounterpartyDto> result = loader.fetchByKeys(keys);
+        // when
+        Map<String, List<String>> result = builder.buildCriteriaFromKey(key);
 
-            // then
-            assertEquals(mapped, result);
+        // then
+        assertTrue(result.isEmpty());
+        verifyNoInteractions(properties);
+    }
 
-            verify(criteriaBuilder).buildCriteriaFromKey(key);
-            verify(properties).getSlugValueForCounterparty();
-            verify(baseMasterDataRequestService).requestDataWithAttribute(slug, criteria);
+    @Test
+    void givenMalformedKey_whenBuildCriteriaFromKey_thenReturnEmptyMapAndDoNotUseProperties() {
+        // given
+        String key = "inn:7700000000"; // parts.length != 4
 
-            statics.verify(() ->
-                    BaseMasterDataRequestService.createResultWithAttribute(resp, supplierMapper)
-            );
-        }
+        // when
+        Map<String, List<String>> result = builder.buildCriteriaFromKey(key);
+
+        // then
+        assertTrue(result.isEmpty());
+        verifyNoInteractions(properties);
     }
 }
 ```
