@@ -1,150 +1,116 @@
 ```java
 
 @ExtendWith(MockitoExtension.class)
-class SupplierService2Test {
+class LoaderSupplierByIdTest {
 
     @Mock
-    private SupplierCacheOps supplierCache;
+    private BaseMasterDataRequestService baseMasterDataRequestService;
 
     @Mock
-    private CacheGetOrLoadService cacheGetOrLoadService;
+    private SupplierMapper supplierMapper;
 
     @Mock
-    private HelperSupplierCriteriaBuilder criteriaBuilder;
-
-    @Mock
-    private LoaderSupplierByCriteria loaderSupplierByCriteria;
+    private SearchRequestProperties properties;
 
     @InjectMocks
-    private SupplierService2 supplierService;
+    private LoaderSupplierById loader;
 
-    // --------------------------------------------------------------
-    // searchSupplierRequisite
-    // --------------------------------------------------------------
+    // -------------------------------------------------------
+    // Простые методы: cacheName / elementType / extractKey
+    // -------------------------------------------------------
 
     @Test
-    void givenIdsWithBlanks_whenSearchSupplierRequisite_thenUseSupplierCacheOnlyForValidIds() {
-        // given
-        BankDto b1 = mock(BankDto.class);
-        BankDto b2 = mock(BankDto.class);
-        List<String> ids = Arrays.asList(" ", null, "S1", "");
-
-        when(supplierCache.loadBySupplierId("S1"))
-                .thenReturn(List.of(b1, b2));
-
+    void givenLoader_whenCacheNameCalled_thenReturnSupplierByIdConstant() {
         // when
-        ResultObj<List<BankDto>> result = supplierService.searchSupplierRequisite(ids);
+        String name = loader.cacheName();
 
         // then
-        verify(supplierCache, times(1)).loadBySupplierId("S1");
-        verifyNoMoreInteractions(supplierCache);
-
-        assertEquals(List.of(b1, b2), result.getData());
+        assertEquals(SupplierService2.SUPPLIER_BY_ID, name);
     }
 
-    // --------------------------------------------------------------
-    // searchCounterpartiesByCriteria: inn + kpp -> кеш
-    // --------------------------------------------------------------
-
     @Test
-    void givenInnAndKpp_whenSearchCounterpartiesByCriteria_thenUseCacheGetOrLoadService() {
-        // given
-        String inn = "7700000000";
-        String kpp = "770001001";
-        String key = "inn:7700000000:kpp:770001001";
-
-        Map<String, List<String>> criteria = Map.of(
-                "innAttr", List.of(inn),
-                "kppAttr", List.of(kpp)
-        );
-        when(criteriaBuilder.buildCriteria(inn, kpp)).thenReturn(criteria);
-        when(criteriaBuilder.buildInnKppKey(inn, kpp)).thenReturn(key);
-
-        List<CounterpartyDto> cached = List.of(mock(CounterpartyDto.class));
-        when(cacheGetOrLoadService.<CounterpartyDto>fetchData(
-                eq(SupplierService2.SUPPLIER_BY_INN_KPP),
-                eq(List.of(key))
-        )).thenReturn(cached);
-
+    void givenLoader_whenElementTypeCalled_thenReturnCounterpartyDtoClass() {
         // when
-        ResultObj<List<CounterpartyDto>> result =
-                supplierService.searchCounterpartiesByCriteria(inn, kpp);
+        Class<CounterpartyDto> type = loader.elementType();
 
         // then
-        assertEquals(cached, result.getData());
-
-        verify(criteriaBuilder).buildCriteria(inn, kpp);
-        verify(criteriaBuilder).buildInnKppKey(inn, kpp);
-        verify(cacheGetOrLoadService).fetchData(
-                SupplierService2.SUPPLIER_BY_INN_KPP,
-                List.of(key)
-        );
-
-        verifyNoInteractions(loaderSupplierByCriteria);
+        assertEquals(CounterpartyDto.class, type);
     }
 
-    // --------------------------------------------------------------
-    // searchCounterpartiesByCriteria: только inn/kpp -> прямой лоадер
-    // --------------------------------------------------------------
-
     @Test
-    void givenOnlyInn_whenSearchCounterpartiesByCriteria_thenBypassCacheAndCallLoaderByCriteria() {
+    void givenDto_whenExtractKeyCalled_thenReturnDtoId() {
         // given
-        String inn = "7700000000";
-        String kpp = null;
-
-        Map<String, List<String>> criteria = Map.of(
-                "innAttr", List.of(inn)
-        );
-        when(criteriaBuilder.buildCriteria(inn, kpp)).thenReturn(criteria);
-
-        List<CounterpartyDto> direct = List.of(mock(CounterpartyDto.class));
-        when(loaderSupplierByCriteria.loadByCriteria(criteria)).thenReturn(direct);
+        CounterpartyDto dto = mock(CounterpartyDto.class);
+        when(dto.getId()).thenReturn("ID1");
 
         // when
-        ResultObj<List<CounterpartyDto>> result =
-                supplierService.searchCounterpartiesByCriteria(inn, kpp);
+        String key = loader.extractKey(dto);
 
         // then
-        assertEquals(direct, result.getData());
-
-        verify(criteriaBuilder).buildCriteria(inn, kpp);
-        verify(loaderSupplierByCriteria).loadByCriteria(criteria);
-
-        verifyNoInteractions(cacheGetOrLoadService);
-        verify(criteriaBuilder, never()).buildInnKppKey(any(), any());
+        assertEquals("ID1", key);
+        verify(dto).getId();
     }
 
-    // --------------------------------------------------------------
-    // getCounterpartiesById
-    // --------------------------------------------------------------
+    // -------------------------------------------------------
+    // fetchByKeys
+    // -------------------------------------------------------
 
     @Test
-    void givenIds_whenGetCounterpartiesById_thenUseCacheGetOrLoadServiceWithSupplierByIdCache() {
+    void givenEmptyIds_whenFetchByKeys_thenReturnEmptyAndDoNotCallBaseService() {
+        // when
+        List<CounterpartyDto> result = loader.fetchByKeys(List.of());
+
+        // then
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+
+        // ни одного вызова сервисов
+        verifyNoInteractions(baseMasterDataRequestService, properties, supplierMapper);
+    }
+
+    @Test
+    void givenIds_whenFetchByKeys_thenCallBaseServiceAndMapResult() {
         // given
         List<String> ids = List.of("A", "B");
+        String slug = "counterpartySlug";
 
-        List<CounterpartyDto> list = List.of(
+        when(properties.getSlugValueForCounterparty()).thenReturn(slug);
+
+        GetItemsSearchResponse resp = mock(GetItemsSearchResponse.class);
+        when(baseMasterDataRequestService.requestDataWithAttribute(
+                slug,
+                ids,
+                SearchRequestProperties.Context.BOOK
+        )).thenReturn(resp);
+
+        List<CounterpartyDto> mapped = List.of(
                 mock(CounterpartyDto.class),
                 mock(CounterpartyDto.class)
         );
-        when(cacheGetOrLoadService.<CounterpartyDto>fetchData(
-                eq(SupplierService2.SUPPLIER_BY_ID),
-                eq(ids)
-        )).thenReturn(list);
 
-        // when
-        ResultObj<List<CounterpartyDto>> result =
-                supplierService.getCounterpartiesById(ids);
+        // мок статического метода BaseMasterDataRequestService.createResultWithAttribute
+        try (MockedStatic<BaseMasterDataRequestService> statics =
+                     mockStatic(BaseMasterDataRequestService.class, CALLS_REAL_METHODS)) {
 
-        // then
-        assertEquals(list, result.getData());
+            statics.when(() ->
+                    BaseMasterDataRequestService.createResultWithAttribute(resp, supplierMapper)
+            ).thenReturn(mapped);
 
-        verify(cacheGetOrLoadService).fetchData(
-                SupplierService2.SUPPLIER_BY_ID,
-                ids
-        );
-        verifyNoInteractions(loaderSupplierByCriteria);
+            // when
+            List<CounterpartyDto> result = loader.fetchByKeys(ids);
+
+            // then
+            assertEquals(mapped, result);
+
+            verify(properties).getSlugValueForCounterparty();
+            verify(baseMasterDataRequestService).requestDataWithAttribute(
+                    slug, ids, SearchRequestProperties.Context.BOOK
+            );
+
+            statics.verify(() ->
+                    BaseMasterDataRequestService.createResultWithAttribute(resp, supplierMapper)
+            );
+        }
     }
 }
 ```
