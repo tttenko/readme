@@ -168,4 +168,31 @@ void givenDirtyRates_whenGetBasicVatRate_thenKeyBuiltOnlyForValidRates() {
                 .build();
     }
 }
+
+@Test
+void givenPropsAndDate_whenFetch_thenDictionaryAndDateApplied() {
+    String dateString = "2025-07-21T10:00:00+03:00";
+    String key = dateString + "|5";
+
+    GetItemsSearchResponse response = new GetItemsSearchResponse();
+
+    try (MockedStatic<BaseMasterDataRequestService> st =
+                 mockStatic(BaseMasterDataRequestService.class)) {
+
+        when(baseService.requestData(reqCaptor.capture(),
+                eq(SearchRequestProperties.Context.BOOK)))
+                .thenReturn(response);
+        st.when(() -> BaseMasterDataRequestService.createResultWithAttribute(response, ndsMapper))
+                .thenReturn(List.of()); // можно пустой список
+
+        loader.fetchByKeys(List.of(key));
+
+        ItemsSearchCriteriaRequest req = reqCaptor.getValue();
+        assertThat(req).isNotNull();
+        // slug словаря
+        assertThat(req.getReference().getSlug()).isEqualTo("vat");
+        // где-то в критериях фигурирует дата (можно проще через toString)
+        assertThat(req.toString()).contains("2025-07-21");
+    }
+}
 ```
