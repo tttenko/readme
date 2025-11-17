@@ -130,6 +130,27 @@ public class LoaderNdsByRate implements BatchLoader<NdsService2.RateBucket> {
     }
 }
 
-
+@NonNull
+    private ItemsSearchCriteriaRequest buildRequest(@NonNull String dateString) {
+        return RequestFactory.getByAttrValuesBuilder()
+                .dictionaryName(properties.getSlugValueForVat())
+                .addAttributesAndRefItemSlug(
+                        properties.getAttributeIdForTaxRateType(),
+                        NdsService2.BASIC_RATE_TYPE
+                )
+                .addAttributesAndValue(
+                        properties.getAttributeIdForTaxRateActive(),
+                        Pair.of(NdsService2.ACTIVE_RATE, RequestFactory.BOOLEAN_OPERATION)
+                )
+                .addAttributesAndValue(
+                        properties.getAttributeIdForTaxRateEndDate(),
+                        Pair.of(List.of(dateString), RequestFactory.MORE_OPERATION)
+                )
+                .addAttributesAndValue(
+                        properties.getAttributeIdForTaxRateStartDate(),
+                        Pair.of(List.of(dateString), RequestFactory.LESS_OPERATION)
+                )
+                .build();
+    }
 
 ```
