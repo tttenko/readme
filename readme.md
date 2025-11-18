@@ -1,20 +1,45 @@
 ```java
 
- // первый вызов — все ставки по указанной дате
-    checkResult(performGetOk(mockMvc,
-            "/api/v1/main-nds-code?date=" + date), 6);
+ private String anyValidDateForNovat0(GetItemsSearchResponse response) {
+    // Преобразуем ответ МД в список NdsFullDto так же, как в боевом коде
+    List<NdsFullDto> items =
+            BaseMasterDataRequestService.createResultWithAttribute(response, ndsMapper);
 
-    // фильтр по коду
-    checkResult(performGetOk(mockMvc,
-            "/api/v1/main-nds-code?code=NOVAT&date=" + date), 1);
+    NdsFullDto novat0 = items.stream()
+            .filter(e -> "NOVAT".equals(e.getCode()) && "0".equals(e.getRate()))
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException("NOVAT with rate=0 not found in fixture"));
 
-    // фильтр по коду и ставке
-    checkResult(performGetOk(mockMvc,
-            "/api/v1/main-nds-code?code=NOVAT&rate=0&date=" + date), 1);
+    ZonedDateTime start = novat0.getRateDateStartZoned();
+    ZonedDateTime end   = novat0.getRateDateEndZoned();
 
-    // проверка работы кеша
-    service.cleanCache();
-    checkResult(performGetOk(mockMvc,
-            "/api/v1/main-nds-code?code=NOVAT&rate=0&date=" + date), 1);
+    // Берём дату заведомо внутри интервала действия ставки
+    ZonedDateTime target;
+    if (start != null && end != null) {
+        target = start.plusSeconds(1);
+        if (target.isAfter(end)) {
+            // на случай, если start == end
+            target = start;
+        }
+    } else if (start != null) {
+        target = start.plusSeconds(1);
+    } else if (end != null) {
+        target = end.minusSeconds(1);
+    } else {
+        // если оба null — ставка «всегда активна», можно взять любое время
+        target = ZonedDateTime.now();
+    }
+
+    return target.format(NDS_DATE_FORMATTER);
+}
+
+
+@Autowired
+private NdsMapper ndsMapper;
+
+private static final DateTimeFormatter NDS_DATE_FORMATTER =
+        DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mmXXX");
+
+        
 
 ```
