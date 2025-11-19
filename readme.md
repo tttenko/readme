@@ -1,48 +1,23 @@
 ```java
 
-@ExtendWith(MockitoExtension.class)
-class ServiceCallExecutorTest {
+/**
+ * Универсальный хелпер для работы с ответами сервисов.
+ * <p>
+ * Выполняет переданный вызов, ожидая, что он вернёт {@link ResultObj}
+ * c коллекцией данных. Если коллекция пустая ( {@code getCount() == 0} ),
+ * выбрасывается {@link MdaDataNotFoundException}.
+ * <p>
+ * Предназначен для использования в контроллерах, чтобы не дублировать
+ * проверку результата и генерацию одинакового исключения.
+ */
 
-    @InjectMocks
-    private ServiceCallExecutor executor;
-
-    @Mock
-    private Supplier<ResultObj<List<String>>> supplier;
-
-    @Mock
-    private ResultObj<List<String>> resultObj;
-
-    @Test
-    void executeOrThrow_shouldReturnResult_whenCountGreaterThanZero() {
-        // given
-        when(supplier.get()).thenReturn(resultObj);
-        when(resultObj.getCount()).thenReturn(1);
-
-        // when
-        ResultObj<List<String>> actual = executor.executeOrThrow(supplier);
-
-        // then
-        assertSame(resultObj, actual);
-        verify(supplier).get();
-        verify(resultObj).getCount();
-        verifyNoMoreInteractions(supplier, resultObj);
-    }
-
-    @Test
-    void executeOrThrow_shouldThrowException_whenCountIsZero() {
-        // given
-        when(supplier.get()).thenReturn(resultObj);
-        when(resultObj.getCount()).thenReturn(0);
-
-        // when / then
-        assertThrows(
-                MdaDataNotFoundException.class,
-                () -> executor.executeOrThrow(supplier)
-        );
-
-        verify(supplier).get();
-        verify(resultObj).getCount();
-        verifyNoMoreInteractions(supplier, resultObj);
-    }
-}
+/**
+ * Модульные тесты для {@link ResponseHandler}.
+ * <p>
+ * Проверяется два сценария:
+ * <ul>
+ *     <li>если {@code getCount() > 0}, возвращается исходный {@link ResultObj};</li>
+ *     <li>если {@code getCount() == 0}, выбрасывается {@link MdaDataNotFoundException}.</li>
+ * </ul>
+ */
 ```
