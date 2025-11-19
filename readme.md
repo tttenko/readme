@@ -1,82 +1,139 @@
 ```java
 
-/**
- * Batch-загрузчик валют по их коду для использования в {@link CacheGetOrLoadService}.
- * <p>
- * Реализует контракт {@link BatchLoader}:
- * <ul>
- *   <li>знает имя кеша, к которому привязан ({@link #cacheName()});</li>
- *   <li>определяет тип элементов кеша ({@link #elementType()});</li>
- *   <li>умеет извлекать ключ кеширования из доменного объекта ({@link #extractKey(CurrencyDto)});</li>
- *   <li>умеет батчом подгружать данные по списку ключей ({@link #fetchByKeys(List)}).</li>
- * </ul>
- */
-@Component
-@RequiredArgsConstructor
-public class LoaderCurrencyByCode implements BatchLoader<CurrencyDto> {
+@ExtendWith(MockitoExtension.class)
+class LoaderCurrencyByCodeTest {
 
-    private final BaseMasterDataRequestService baseMasterDataRequestService;
-    private final SearchRequestProperties properties;
-    private final CurrencyMapper currencyMapper;
+    @Mock
+    private BaseMasterDataRequestService baseMasterDataRequestService;
 
-    /**
-     * Имя кеша, с которым работает данный лоадер.
-     * <p>
-     * Должно совпадать с именем, под которым кеш регистрируется в
-     * {@link org.springframework.cache.CacheManager} и которое использует
-     * {@link CurrencyService2}.
-     */
-    @Override
-    public String cacheName() {
-        return CurrencyService2.CURRENCY_BY_CODE;
+    @Mock
+    private SearchRequestProperties properties;
+
+    @Mock
+    private CurrencyMapper currencyMapper;
+
+    @InjectMocks
+    private LoaderCurrencyByCode loader;
+
+    // --- простые "конфигурационные" методы ---
+
+    @Test
+    void givenLoader_whenCacheName_thenReturnCurrencyByCode() {
+        assertEquals(CurrencyService2.CURRENCY_BY_CODE, loader.cacheName());
     }
 
-    /**
-     * Тип элементов, которые возвращает лоадер и которые будут храниться в кеше.
-     */
-    @Override
-    public Class<CurrencyDto> elementType() {
-        return CurrencyDto.class;
+    @Test
+    void givenLoader_whenElementType_thenReturnCurrencyDtoClass() {
+        assertEquals(CurrencyDto.class, loader.elementType());
     }
 
-    /**
-     * Извлекает ключ кеширования из доменного объекта валюты.
-     * <p>
-     * Здесь в качестве ключа используется код валюты.
-     *
-     * @param value объект валюты
-     * @return строковый ключ для кеша (код валюты)
-     */
-    @Override
-    public String extractKey(CurrencyDto value) {
-        return value.getCurrencyCode();
+    @Test
+    void givenCurrencyDto_whenExtractKey_thenReturnCurrencyCode() {
+        CurrencyDto dto = new CurrencyDto();
+        dto.setCurrencyCode("USD");
+
+        String key = loader.extractKey(dto);
+
+        assertEquals("USD", key);
     }
 
-    /**
-     * Загружает список валют из мастер-данных по переданным кодам.
-     * <p>
-     * Метод вызывается {@link CacheGetOrLoadService}, когда в кеше отсутствуют
-     * значения для запрошенных ключей. Возвращённые объекты будут сохранены в кеш
-     * под ключами, полученными через {@link #extractKey(CurrencyDto)}.
-     *
-     * @param keys список кодов валют (ключи кеша)
-     * @return список найденных валют; пустой список, если список ключей пуст
-     */
-    @Override
-    @NonNull
-    public List<CurrencyDto> fetchByKeys(@NonNull List<String> keys) {
-        if (keys.isEmpty()) {
-            return List.of();
+    // --- основная логика fetchByKeys ---
+
+    @Test
+    void givenEmptyKeys_whenFetchByKeys_thenReturnEmptyAndSkipBackend() {
+        // given
+        List<String> keys = List.of();
+
+        // when
+        List<CurrencyDto> result = loader.fetchByKeys(keys);
+
+        // then
+        assertTrue(result.isEmpty());
+        verifyNoInteractions(baseMasterDataRequestService, properties, currencyMapper);
+    }
+
+    @Test
+    void givenCodes_whenFetchByKeys_thenDelegateToBackendAndMapResult() {
+        // given
+        List<String> codes = List.of("USD", "EUR");
+        String slug = "currency";
+        String attrId = "currencyCode";
+
+        when(properties.getSlugValueForCurrency()).thenReturn(slug);
+        when(properties.getCurrencyAttributeId()).thenReturn(attrId);
+
+        GetItemsSearchResponse resp = new GetItemsSearchResponse();
+        when(baseMasterDataRequestService.requestDataByAttributes(slug, attrId, codes))
+                .thenReturn(resp);
+
+        List<CurrencyDto> mapped = List.of(
+                CurrencyDto.builder().currencyCode("USD").build(),
+                CurrencyDto.builder().currencyCode("EUR").build()
+        );
+
+        try (MockedStatic<BaseMasterDataRequestService> statics =
+                     mockStatic(BaseMasterDataRequestService.class)) {
+
+            statics.when(() ->
+                    BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper)
+            ).thenReturn(mapped);
+
+            // when
+            List<CurrencyDto> result = loader.fetchByKeys(codes);
+
+            // then
+            assertEquals(mapped, result);
+
+            verify(properties).getSlugValueForCurrency();
+            verify(properties).getCurrencyAttributeId();
+            verify(baseMasterDataRequestService, times(1))
+                    .requestDataByAttributes(slug, attrId, codes);
+
+            statics.verify(() ->
+                    BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper),
+                    times(1));
         }
+    }
 
-        GetItemsSearchResponse resp =
-                baseMasterDataRequestService.requestDataByAttributes(
-                        properties.getSlugValueForCurrency(),
-                        properties.getCurrencyAttributeId(),
-                        keys
-                );
+    @Test
+    void givenTwoSequentialCalls_whenFetchByKeys_thenBackendInvokedTwice_noCaching() {
+        // given
+        List<String> codes = List.of("JPY");
+        String slug = "currency";
+        String attrId = "currencyCode";
 
-        return BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper);
+        when(properties.getSlugValueForCurrency()).thenReturn(slug);
+        when(properties.getCurrencyAttributeId()).thenReturn(attrId);
+
+        GetItemsSearchResponse resp = new GetItemsSearchResponse();
+        when(baseMasterDataRequestService.requestDataByAttributes(slug, attrId, codes))
+                .thenReturn(resp);
+
+        List<CurrencyDto> mapped =
+                List.of(CurrencyDto.builder().currencyCode("JPY").build());
+
+        try (MockedStatic<BaseMasterDataRequestService> statics =
+                     mockStatic(BaseMasterDataRequestService.class)) {
+
+            statics.when(() ->
+                    BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper)
+            ).thenReturn(mapped);
+
+            // when
+            List<CurrencyDto> r1 = loader.fetchByKeys(codes);
+            List<CurrencyDto> r2 = loader.fetchByKeys(codes);
+
+            // then
+            assertEquals(mapped, r1);
+            assertEquals(mapped, r2);
+
+            verify(baseMasterDataRequestService, times(2))
+                    .requestDataByAttributes(slug, attrId, codes);
+
+            statics.verify(() ->
+                    BaseMasterDataRequestService.createResultWithAttribute(resp, currencyMapper),
+                    times(2));
+        }
     }
 }
 ```
