@@ -136,4 +136,102 @@ class LoaderCurrencyByCodeTest {
         }
     }
 }
+
+@ExtendWith(MockitoExtension.class)
+class CurrencyCacheOpsTest {
+
+    @Mock
+    private BaseMasterDataRequestService baseMasterDataRequestService;
+
+    @Mock
+    private SearchRequestProperties properties;
+
+    @Mock
+    private CurrencyMapper currencyMapper;
+
+    @InjectMocks
+    private CurrencyCacheOps currencyCacheOps;
+
+    /**
+     * given: backend возвращает данные  
+     * when:  вызываем loadAllCurrencies  
+     * then:  запрос уходит в BaseMasterDataRequestService, результат мапится и отдается наружу
+     */
+    @Test
+    void givenBackendResponse_whenLoadAllCurrencies_thenReturnMappedList() {
+        // given
+        String slug = "currency";
+        String attrId = "currencyCode";
+
+        when(properties.getSlugValueForCurrency()).thenReturn(slug);
+        when(properties.getCurrencyAttributeId()).thenReturn(attrId);
+
+        GetItemsSearchResponse resp = mock(GetItemsSearchResponse.class);
+        when(baseMasterDataRequestService.requestDataByAttributes(slug, attrId, null))
+                .thenReturn(resp);
+
+        List<CurrencyDto> mapped = List.of(
+                CurrencyDto.builder().currencyCode("USD").build(),
+                CurrencyDto.builder().currencyCode("EUR").build()
+        );
+
+        try (MockedStatic<BaseMasterDataRequestService> statics =
+                     Mockito.mockStatic(BaseMasterDataRequestService.class)) {
+
+            statics.when(() -> BaseMasterDataRequestService
+                            .createResultWithAttribute(resp, currencyMapper))
+                   .thenReturn(mapped);
+
+            // when
+            List<CurrencyDto> result = currencyCacheOps.loadAllCurrencies();
+
+            // then
+            assertEquals(mapped, result);
+
+            verify(properties).getSlugValueForCurrency();
+            verify(properties).getCurrencyAttributeId();
+            verify(baseMasterDataRequestService)
+                    .requestDataByAttributes(slug, attrId, null);
+            statics.verify(() -> BaseMasterDataRequestService
+                    .createResultWithAttribute(resp, currencyMapper));
+
+            verifyNoMoreInteractions(baseMasterDataRequestService, properties, currencyMapper);
+        }
+    }
+
+    /**
+     * given: backend вернул пустой результат  
+     * when:  вызываем loadAllCurrencies  
+     * then:  наружу тоже уходит пустой список
+     */
+    @Test
+    void givenEmptyBackendResponse_whenLoadAllCurrencies_thenReturnEmptyList() {
+        // given
+        String slug = "currency";
+        String attrId = "currencyCode";
+
+        when(properties.getSlugValueForCurrency()).thenReturn(slug);
+        when(properties.getCurrencyAttributeId()).thenReturn(attrId);
+
+        GetItemsSearchResponse resp = mock(GetItemsSearchResponse.class);
+        when(baseMasterDataRequestService.requestDataByAttributes(slug, attrId, null))
+                .thenReturn(resp);
+
+        List<CurrencyDto> mapped = List.of(); // пустой список
+
+        try (MockedStatic<BaseMasterDataRequestService> statics =
+                     Mockito.mockStatic(BaseMasterDataRequestService.class)) {
+
+            statics.when(() -> BaseMasterDataRequestService
+                            .createResultWithAttribute(resp, currencyMapper))
+                   .thenReturn(mapped);
+
+            // when
+            List<CurrencyDto> result = currencyCacheOps.loadAllCurrencies();
+
+            // then
+            assertEquals(mapped, result);
+        }
+    }
+}
 ```
