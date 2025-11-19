@@ -1,16 +1,48 @@
 ```java
 
-GetItemsSearchResponse searchResponse =
-                baseMasterDataRequestService.requestDataWithAttribute(
-                        properties.getSlugValueForCounterparty(),
-                        criteria
-                );
+@ExtendWith(MockitoExtension.class)
+class ServiceCallExecutorTest {
 
-        try {
-            byte[] bytes = objectMapper.writeValueAsBytes(searchResponse);
-            log.info("GetItemsSearchResponse size ~= {} bytes ({} KB)",
-                    bytes.length, bytes.length / 1024);
-        } catch (JsonProcessingException e) {
-            log.warn("Cannot calculate response size", e);
-        }
+    @InjectMocks
+    private ServiceCallExecutor executor;
+
+    @Mock
+    private Supplier<ResultObj<List<String>>> supplier;
+
+    @Mock
+    private ResultObj<List<String>> resultObj;
+
+    @Test
+    void executeOrThrow_shouldReturnResult_whenCountGreaterThanZero() {
+        // given
+        when(supplier.get()).thenReturn(resultObj);
+        when(resultObj.getCount()).thenReturn(1);
+
+        // when
+        ResultObj<List<String>> actual = executor.executeOrThrow(supplier);
+
+        // then
+        assertSame(resultObj, actual);
+        verify(supplier).get();
+        verify(resultObj).getCount();
+        verifyNoMoreInteractions(supplier, resultObj);
+    }
+
+    @Test
+    void executeOrThrow_shouldThrowException_whenCountIsZero() {
+        // given
+        when(supplier.get()).thenReturn(resultObj);
+        when(resultObj.getCount()).thenReturn(0);
+
+        // when / then
+        assertThrows(
+                MdaDataNotFoundException.class,
+                () -> executor.executeOrThrow(supplier)
+        );
+
+        verify(supplier).get();
+        verify(resultObj).getCount();
+        verifyNoMoreInteractions(supplier, resultObj);
+    }
+}
 ```
