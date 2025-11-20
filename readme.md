@@ -1,28 +1,24 @@
 ```java
 
-Mockito.lenient().doAnswer(invocation -> {
-        String cacheName = invocation.getArgument(0);
+ Mockito.lenient().doAnswer(invocation -> {
+        // 0-й аргумент – имя кэша
+        String cacheName = invocation.getArgument(0, String.class);
+        // 1-й аргумент – список ключей
         @SuppressWarnings("unchecked")
-        List<String> keys = invocation.getArgument(1);
+        List<String> keys = invocation.getArgument(1, List.class);
 
-        if (AdapterService2.UOM_BY_CODE.equals(cacheName)) {
-            return loaderUomByCode.fetchByKeys(keys);
-        }
-        if (AdapterService2.MATERIAL_TYPE_BY_ID.equals(cacheName)) {
-            return loaderMaterialTypeById.fetchByKeys(keys);
-        }
-        if (AdapterService2.MATERIAL_BY_CODE.equals(cacheName)) {
-            return loaderMaterialByCode.fetchByKeys(keys);
+        // небольшие проверки на всякий случай
+        assertNotNull(cacheName, "cacheName must not be null");
+        assertNotNull(keys, "keys must not be null");
+
+        if (CurrencyService2.CURRENCY_BY_CODE.equals(cacheName)) {
+            // ведём себя так, как в реальном CacheGetOrLoadService:
+            // делегируем в лоадер
+            return loaderCurrencyByCode.fetchByKeys(keys);
         }
 
-        return List.of(); // на всякий случай
+        // если вдруг кто-то в тесте позвал кэш с другим именем — сразу падать
+        fail("Unexpected cacheName in stub: " + cacheName);
+        return List.of(); // для компилятора, реально не дойдём
     }).when(cacheGetOrLoadService).fetchData(Mockito.anyString(), Mockito.anyList());
-
-
-    @Autowired
-    private LoaderUomByCode loaderUomByCode;               // 👈 реальные лоадеры
-    @Autowired
-    private LoaderMaterialTypeById loaderMaterialTypeById;
-    @Autowired
-    private LoaderMaterialByCode loaderMaterialByCode;
 ```
