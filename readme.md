@@ -17,4 +17,12 @@ Mockito.lenient().doAnswer(invocation -> {
 
         return List.of(); // на всякий случай
     }).when(cacheGetOrLoadService).fetchData(Mockito.anyString(), Mockito.anyList());
+
+
+    @Autowired
+    private LoaderUomByCode loaderUomByCode;               // 👈 реальные лоадеры
+    @Autowired
+    private LoaderMaterialTypeById loaderMaterialTypeById;
+    @Autowired
+    private LoaderMaterialByCode loaderMaterialByCode;
 ```
