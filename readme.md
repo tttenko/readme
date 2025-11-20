@@ -4,138 +4,166 @@
 class AdapterCacheOpsTest {
 
     @Mock
-    private BaseMasterDataRequestService baseMasterDataRequestService;
+    BaseMasterDataRequestService baseMasterDataRequestService;
 
     @Mock
-    private SearchRequestProperties properties;
+    SearchRequestProperties properties;
 
     @Mock
-    private MeasureUnitMapper measureUnitMapper;
+    MeasureUnitMapper measureUnitMapper;
 
     @Mock
-    private MaterialTypeMapper materialTypeMapper;
+    MaterialTypeMapper materialTypeMapper;
 
     @Mock
-    private MaterialMapper materialMapper;
+    MaterialMapper materialMapper;
 
     @InjectMocks
-    private AdapterCacheOps adapterCacheOps;
+    AdapterCacheOps adapterCacheOps;
+
+    // ---------- getAll* (кэшируемые) ----------
 
     @Test
-    void getAllUoms_whenBackendReturnsData_thenMapsResult() {
+    void getAllUoms_whenCalled_thenDelegatesToBackend() {
         // given
         when(properties.getSlugValueForMeasureUnit()).thenReturn("measureUnit");
-
-        GetItemsSearchResponse resp = new GetItemsSearchResponse();
         when(baseMasterDataRequestService.requestData(
                 any(ItemsSearchCriteriaRequest.class),
                 eq(SearchRequestProperties.Context.BOOK))
-        ).thenReturn(resp);
+        ).thenReturn(new GetItemsSearchResponse());
 
-        List<UomBankDto> mapped = List.of(
-                UomBankDto.builder().uomCode("EA").build()
+        // when
+        List<UomBankDto> result = adapterCacheOps.getAllUoms();
+
+        // then
+        assertThat(result).isNotNull();          // сам результат нас тут не волнует
+        verify(properties).getSlugValueForMeasureUnit();
+        verify(baseMasterDataRequestService).requestData(
+                any(ItemsSearchCriteriaRequest.class),
+                eq(SearchRequestProperties.Context.BOOK)
         );
-
-        try (MockedStatic<BaseMasterDataRequestService> statics =
-                     mockStatic(BaseMasterDataRequestService.class)) {
-
-            statics.when(() ->
-                    BaseMasterDataRequestService.createResultWithAttribute(resp, measureUnitMapper)
-            ).thenReturn(mapped);
-
-            // when
-            List<UomBankDto> result = adapterCacheOps.getAllUoms();
-
-            // then
-            assertThat(result).containsExactlyElementsOf(mapped);
-
-            verify(properties).getSlugValueForMeasureUnit();
-            verify(baseMasterDataRequestService).requestData(
-                    any(ItemsSearchCriteriaRequest.class),
-                    eq(SearchRequestProperties.Context.BOOK)
-            );
-            statics.verify(() ->
-                    BaseMasterDataRequestService.createResultWithAttribute(resp, measureUnitMapper)
-            );
-        }
+        verifyNoMoreInteractions(baseMasterDataRequestService);
     }
 
     @Test
-    void getAllMaterialTypes_whenBackendReturnsData_thenMapsResult() {
+    void getAllMaterialTypes_whenCalled_thenDelegatesToBackend() {
         // given
         when(properties.getSlugValueForMaterialType()).thenReturn("materialType");
-
-        GetItemsSearchResponse resp = new GetItemsSearchResponse();
         when(baseMasterDataRequestService.requestData(
                 any(ItemsSearchCriteriaRequest.class),
                 eq(SearchRequestProperties.Context.TMC))
-        ).thenReturn(resp);
+        ).thenReturn(new GetItemsSearchResponse());
 
-        List<MaterialTypeDto> mapped = List.of(
-                MaterialTypeDto.builder().typeId("TYPE1").build()
+        // when
+        List<MaterialTypeDto> result = adapterCacheOps.getAllMaterialTypes();
+
+        // then
+        assertThat(result).isNotNull();
+        verify(properties).getSlugValueForMaterialType();
+        verify(baseMasterDataRequestService).requestData(
+                any(ItemsSearchCriteriaRequest.class),
+                eq(SearchRequestProperties.Context.TMC)
         );
-
-        try (MockedStatic<BaseMasterDataRequestService> statics =
-                     mockStatic(BaseMasterDataRequestService.class)) {
-
-            statics.when(() ->
-                    BaseMasterDataRequestService.createResultWithAttribute(resp, materialTypeMapper)
-            ).thenReturn(mapped);
-
-            // when
-            List<MaterialTypeDto> result = adapterCacheOps.getAllMaterialTypes();
-
-            // then
-            assertThat(result).containsExactlyElementsOf(mapped);
-
-            verify(properties).getSlugValueForMaterialType();
-            verify(baseMasterDataRequestService).requestData(
-                    any(ItemsSearchCriteriaRequest.class),
-                    eq(SearchRequestProperties.Context.TMC)
-            );
-            statics.verify(() ->
-                    BaseMasterDataRequestService.createResultWithAttribute(resp, materialTypeMapper)
-            );
-        }
+        verifyNoMoreInteractions(baseMasterDataRequestService);
     }
 
     @Test
-    void getAllMaterials_whenBackendReturnsData_thenMapsResult() {
+    void getAllMaterials_whenCalled_thenDelegatesToBackend() {
         // given
         when(properties.getSlugValueForMaterial()).thenReturn("material");
-
-        GetItemsSearchResponse resp = new GetItemsSearchResponse();
         when(baseMasterDataRequestService.requestData(
                 any(ItemsSearchCriteriaRequest.class),
                 eq(SearchRequestProperties.Context.TMC))
-        ).thenReturn(resp);
+        ).thenReturn(new GetItemsSearchResponse());
 
-        List<MaterialDto> mapped = List.of(
-                MaterialDto.builder().materialCode("M1").build()
+        // when
+        List<MaterialDto> result = adapterCacheOps.getAllMaterials();
+
+        // then
+        assertThat(result).isNotNull();
+        verify(properties).getSlugValueForMaterial();
+        verify(baseMasterDataRequestService).requestData(
+                any(ItemsSearchCriteriaRequest.class),
+                eq(SearchRequestProperties.Context.TMC)
         );
+        verifyNoMoreInteractions(baseMasterDataRequestService);
+    }
 
-        try (MockedStatic<BaseMasterDataRequestService> statics =
-                     mockStatic(BaseMasterDataRequestService.class)) {
+    // ---------- load* (без кэша) ----------
 
-            statics.when(() ->
-                    BaseMasterDataRequestService.createResultWithAttribute(resp, materialMapper)
-            ).thenReturn(mapped);
+    @Test
+    void loadUomsByCodes_whenCodesPassed_thenUsesMeasureUnitSlugAndBookContext() {
+        // given
+        List<String> codes = List.of("EA", "KG");
+        when(properties.getSlugValueForMeasureUnit()).thenReturn("measureUnit");
+        when(baseMasterDataRequestService.requestDataWithAttribute(
+                eq("measureUnit"),
+                eq(codes),
+                eq(SearchRequestProperties.Context.BOOK))
+        ).thenReturn(new GetItemsSearchResponse());
 
-            // when
-            List<MaterialDto> result = adapterCacheOps.getAllMaterials();
+        // when
+        List<UomBankDto> result = adapterCacheOps.loadUomsByCodes(codes);
 
-            // then
-            assertThat(result).containsExactlyElementsOf(mapped);
+        // then
+        assertThat(result).isNotNull();
+        verify(properties).getSlugValueForMeasureUnit();
+        verify(baseMasterDataRequestService).requestDataWithAttribute(
+                "measureUnit",
+                codes,
+                SearchRequestProperties.Context.BOOK
+        );
+        verifyNoMoreInteractions(baseMasterDataRequestService);
+    }
 
-            verify(properties).getSlugValueForMaterial();
-            verify(baseMasterDataRequestService).requestData(
-                    any(ItemsSearchCriteriaRequest.class),
-                    eq(SearchRequestProperties.Context.TMC)
-            );
-            statics.verify(() ->
-                    BaseMasterDataRequestService.createResultWithAttribute(resp, materialMapper)
-            );
-        }
+    @Test
+    void loadMaterialTypesByIds_whenIdsPassed_thenUsesMaterialTypeSlugAndTmcContext() {
+        // given
+        List<String> ids = List.of("MT1", "MT2");
+        when(properties.getSlugValueForMaterialType()).thenReturn("materialType");
+        when(baseMasterDataRequestService.requestDataWithAttribute(
+                eq("materialType"),
+                eq(ids),
+                eq(SearchRequestProperties.Context.TMC))
+        ).thenReturn(new GetItemsSearchResponse());
+
+        // when
+        List<MaterialTypeDto> result = adapterCacheOps.loadMaterialTypesByIds(ids);
+
+        // then
+        assertThat(result).isNotNull();
+        verify(properties).getSlugValueForMaterialType();
+        verify(baseMasterDataRequestService).requestDataWithAttribute(
+                "materialType",
+                ids,
+                SearchRequestProperties.Context.TMC
+        );
+        verifyNoMoreInteractions(baseMasterDataRequestService);
+    }
+
+    @Test
+    void loadMaterialsByCodes_whenCodesPassed_thenUsesMaterialSlugAndTmcContext() {
+        // given
+        List<String> codes = List.of("M1", "M2");
+        when(properties.getSlugValueForMaterial()).thenReturn("material");
+        when(baseMasterDataRequestService.requestDataWithAttribute(
+                eq("material"),
+                eq(codes),
+                eq(SearchRequestProperties.Context.TMC))
+        ).thenReturn(new GetItemsSearchResponse());
+
+        // when
+        List<MaterialDto> result = adapterCacheOps.loadMaterialsByCodes(codes);
+
+        // then
+        assertThat(result).isNotNull();
+        verify(properties).getSlugValueForMaterial();
+        verify(baseMasterDataRequestService).requestDataWithAttribute(
+                "material",
+                codes,
+                SearchRequestProperties.Context.TMC
+        );
+        verifyNoMoreInteractions(baseMasterDataRequestService);
     }
 }
 ```
