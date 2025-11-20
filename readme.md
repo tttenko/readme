@@ -186,4 +186,59 @@ public class AdapterService2 {
     }
 }
 
+
+-----------------------------------------------
+
+/**
+ * Сервис-адаптер для справочников адаптера:
+ * единиц измерения (UOM), типов материалов и материалов.
+ * Работает с кэшем через {@code CacheGetOrLoadService} и {@link AdapterCacheOps}.
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class AdapterService2 {
+    ...
+}
+LoaderUomByCode
+java
+Копировать код
+/**
+ * Batch-загрузчик единиц измерения (UOM) по их кодам.
+ * Используется {@link CacheGetOrLoadService} с кэшем {@link AdapterService2#UOM_BY_CODE}.
+ * Ходит в мастер-данные и маппит результат в {@link UomBankDto}.
+ */
+@Component
+@RequiredArgsConstructor
+public class LoaderUomByCode implements BatchLoader<UomBankDto> {
+    ...
+}
+LoaderMaterialTypeById
+java
+Копировать код
+/**
+ * Batch-загрузчик типов материалов по их идентификаторам.
+ * Привязан к кэшу {@link AdapterService2#MATERIAL_TYPE_BY_ID} и
+ * загружает данные из мастер-данных в виде {@link MaterialTypeDto}.
+ */
+@Component
+@RequiredArgsConstructor
+public class LoaderMaterialTypeById implements BatchLoader<MaterialTypeDto> {
+    ...
+}
+LoaderMaterialByCode
+java
+Копировать код
+/**
+ * Batch-загрузчик материалов по их кодам.
+ * Используется кэш {@link AdapterService2#MATERIAL_BY_CODE};
+ * запрашивает данные из мастер-данных и маппит их в {@link MaterialDto}.
+ */
+@Component
+@RequiredArgsConstructor
+public class LoaderMaterialByCode implements BatchLoader<MaterialDto> {
+    ...
+}
+
+
 ```
