@@ -1,13 +1,13 @@
 ```java
 
 /**
- * Batch-загрузчик материалов по их кодам.
- * Использует кэш {@link AdapterService2#MATERIAL_BY_CODE};
- * запрашивает данные из мастер-данных и маппит их в {@link MaterialDto}.
+ * Batch-загрузчик единиц измерения (UOM) по их кодам.
+ * Используется {@link CacheGetOrLoadService} с кэшем {@link AdapterService2#UOM_BY_CODE}.
+ * Ходит в мастер-данные и маппит результат в {@link UomBankDto}.
  */
 @Component
 @RequiredArgsConstructor
-public class LoaderMaterialByCode implements BatchLoader<MaterialDto> {
+public class LoaderUomByCode implements BatchLoader<UomBankDto> {
 
 private final BaseMasterDataRequestService baseMasterDataRequestService;
     private final SearchRequestProperties properties;
@@ -50,105 +50,8 @@ private final BaseMasterDataRequestService baseMasterDataRequestService;
     }
 }
 
-/**
- * Batch-загрузчик типов материалов по их идентификаторам.
- * Привязан к кэшу {@link AdapterService2#MATERIAL_TYPE_BY_ID} и
- * загружает данные из мастер-данных в виде {@link MaterialTypeDto}.
- */
-@Component
-@RequiredArgsConstructor
-public class LoaderMaterialTypeById implements BatchLoader<MaterialTypeDto> {
 
-private final BaseMasterDataRequestService baseMasterDataRequestService;
-    private final SearchRequestProperties properties;
-    private final MaterialTypeMapper materialTypeMapper;
 
-    /** Имя кэша типов материалов, с которым работает лоадер. */
-    @Override
-    public String cacheName() {
-        return AdapterService2.MATERIAL_TYPE_BY_ID;
-    }
-
-    /** Тип элементов, которые возвращает лоадер и которые хранятся в кэше. */
-    @Override
-    public Class<MaterialTypeDto> elementType() {
-        return MaterialTypeDto.class;
-    }
-
-    /** Извлекает ключ кэширования из DTO типа материала. */
-    @Override
-    public String extractKey(MaterialTypeDto value) {
-        return value.getTypeId();
-    }
-
-    /** Загружает типы материалов из мастер-данных по их идентификаторам. */
-    @Override
-    @NonNull
-    public List<MaterialTypeDto> fetchByKeys(@NonNull List<String> keys) {
-        if (keys.isEmpty()) {
-            return List.of();
-        }
-
-        final GetItemsSearchResponse resp =
-                baseMasterDataRequestService.requestData(
-                        properties.getSlugValueForMaterialType(),
-                        keys,
-                        SearchRequestProperties.Context.TMC
-                );
-
-        return BaseMasterDataRequestService.createResult(resp, materialTypeMapper);
-    }
-}
-
-/**
- * Batch-загрузчик материалов по их кодам.
- * Используется кэш {@link AdapterService2#MATERIAL_BY_CODE};
- * запрашивает данные из мастер-данных и маппит их в {@link MaterialDto}.
- */
-@Component
-@RequiredArgsConstructor
-public class LoaderMaterialByCode implements BatchLoader<MaterialDto> {
-
- private final BaseMasterDataRequestService baseMasterDataRequestService;
-    private final SearchRequestProperties properties;
-    private final MaterialMapper materialMapper;
-
-    /** Имя кэша материалов, с которым работает лоадер. */
-    @Override
-    public String cacheName() {
-        return AdapterService2.MATERIAL_BY_CODE;
-    }
-
-    /** Тип элементов, которые возвращает лоадер и которые хранятся в кэше. */
-    @Override
-    public Class<MaterialDto> elementType() {
-        return MaterialDto.class;
-    }
-
-    /** Извлекает ключ кэширования из DTO материала. */
-    @Override
-    public String extractKey(MaterialDto value) {
-        return value.getMaterialCode();
-    }
-
-    /** Загружает материалы из мастер-данных по списку кодов. */
-    @Override
-    @NonNull
-    public List<MaterialDto> fetchByKeys(@NonNull List<String> keys) {
-        if (keys.isEmpty()) {
-            return List.of();
-        }
-
-        final GetItemsSearchResponse resp =
-                baseMasterDataRequestService.requestDataWithAttribute(
-                        properties.getSlugValueForMaterial(),
-                        keys,
-                        SearchRequestProperties.Context.TMC
-                );
-
-        return BaseMasterDataRequestService.createResultWithAttribute(resp, materialMapper);
-    }
-}
 
 
 
