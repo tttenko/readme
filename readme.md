@@ -1,6 +1,6 @@
 ```java
-@Test
-    void getAllMaterialTypes_whenBackendReturnsData_thenDelegatesToBackend() {
+ @Test
+    void getAllMaterialTypes_whenBackendResponseIsInvalid_thenThrowsAndCallsBackend() {
         // given
         when(properties.getSlugValueForMaterialType()).thenReturn("materialType");
 
@@ -10,13 +10,13 @@
                 eq(SearchRequestProperties.Context.TMC))
         ).thenReturn(resp);
 
-        // when
-        List<MaterialTypeDto> result = adapterCacheOps.getAllMaterialTypes();
+        // when + then: реальный createResult(..) кидает MdaMdErrorResponseException
+        assertThrows(
+                MdaMdErrorResponseException.class,
+                () -> adapterCacheOps.getAllMaterialTypes()
+        );
 
-        // then
-        assertNotNull(result); // просто убеждаемся, что вызов отработал
-
-        // проверяем, что правильно подготовлен запрос и вызван backend
+        // и при этом мы проверяем, что сервис корректно сформировал запрос и дернул backend
         verify(properties).getSlugValueForMaterialType();
 
         ArgumentCaptor<ItemsSearchCriteriaRequest> requestCaptor =
@@ -29,5 +29,7 @@
 
         ItemsSearchCriteriaRequest actualRequest = requestCaptor.getValue();
         assertEquals("materialType", actualRequest.getDictionaryName());
+
+        verifyNoMoreInteractions(baseMasterDataRequestService, properties);
     }
 ```
