@@ -9,9 +9,9 @@ void fetchByKeys_givenIds_delegatesToBackendWithSlugAndContext_andPropagatesExce
             "msg", "description", "semantic"
     );
 
-    // если мок всё же срабатывает – пусть кидает именно наш кастомный эксепшн
+    // если бекенд падает — лоадер должен просто пробросить это исключение
     doThrow(backendError).when(baseMasterDataRequestService)
-            .requestDataWithAttribute(
+            .requestData(
                     eq("materialType"),
                     eq(ids),
                     eq(SearchRequestProperties.Context.TMC)
@@ -23,12 +23,10 @@ void fetchByKeys_givenIds_delegatesToBackendWithSlugAndContext_andPropagatesExce
                     () -> loader.fetchByKeys(ids));
 
     // then
-    // нам важно, что наружу вылетает именно кастомное исключение
-    // (не обязательно тот же самый объект, поэтому assertSame не нужен)
-    assertThat(thrown).isInstanceOf(MdaMdErrorResponseException.class);
+    assertSame(backendError, thrown); // именно тот же объект проброшен наружу
 
     verify(properties).getSlugValueForMaterialType();
-    verify(baseMasterDataRequestService).requestDataWithAttribute(
+    verify(baseMasterDataRequestService).requestData(
             eq("materialType"),
             eq(ids),
             eq(SearchRequestProperties.Context.TMC)
