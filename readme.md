@@ -135,4 +135,55 @@ public class LoaderMaterialByCode implements BatchLoader<MaterialDto> {
     }
 }
 
+
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class AdapterService2 {
+
+    public static final String UOM_BY_CODE = "uom_by_code";
+    public static final String MATERIAL_TYPE_BY_ID = "material_type_by_id";
+    public static final String MATERIAL_BY_CODE = "material_by_code";
+
+    private final AdapterCacheOps adapterCacheOps;
+    private final CacheGetOrLoadService cacheGetOrLoadService;
+
+    /** Возвращает список единиц измерения (UOM) по их кодам или все UOM, если список пустой. */
+    @NonNull
+    public ResultObj<List<UomBankDto>> getUom(@Nullable final List<String> uomCodes) {
+        final boolean requestAll = (uomCodes == null || uomCodes.isEmpty());
+
+        final List<UomBankDto> data = requestAll
+                ? adapterCacheOps.getAllUoms()
+                : cacheGetOrLoadService.fetchData(UOM_BY_CODE, uomCodes);
+
+        return getSuccessResponse(data);
+    }
+
+    /** Возвращает список типов материалов по их идентификаторам или все типы, если список пустой. */
+    @NonNull
+    public ResultObj<List<MaterialTypeDto>> getMaterialType(@Nullable final List<String> typeIds) {
+        final boolean requestAll = (typeIds == null || typeIds.isEmpty());
+
+        final List<MaterialTypeDto> data = requestAll
+                ? adapterCacheOps.getAllMaterialTypes()
+                : cacheGetOrLoadService.fetchData(MATERIAL_TYPE_BY_ID, typeIds);
+
+        return getSuccessResponse(data);
+    }
+
+    /** Возвращает список материалов по их кодам или все материалы, если список пустой. */
+    @NonNull
+    public ResultObj<List<MaterialDto>> getMaterial(@Nullable final List<String> materialCodes) {
+        final boolean requestAll = (materialCodes == null || materialCodes.isEmpty());
+
+        final List<MaterialDto> data = requestAll
+                ? adapterCacheOps.getAllMaterials()
+                : cacheGetOrLoadService.fetchData(MATERIAL_BY_CODE, materialCodes);
+
+        return getSuccessResponse(data);
+    }
+}
+
 ```
