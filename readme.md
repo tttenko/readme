@@ -1,31 +1,22 @@
 ```java
-public static <T> void mockPostResponse(
-        String url,
-        Class<T> clazz,
-        HttpRequestHelper httpRequestHelper,
-        java.util.function.Predicate<String> bodyPredicate,
-        T whenMatches,
-        T otherwise) {
+// полный набор (как сейчас в фикстуре)
+    GetItemsSearchResponse full =
+        reader.readResource("mdresponse/terbanks/tb-all.json", GetItemsSearchResponse.class);
+    // новый файл с уже отфильтрованными по DZO=false ТБ (12 штук)
+    GetItemsSearchResponse filtered =
+        reader.readResource("mdresponse/terbanks/tb-all-dzo-false.json", GetItemsSearchResponse.class);
 
-    when(httpRequestHelper.sendPostRequest(contains(url), anyString(), eq(clazz)))
-        .thenAnswer(inv -> {
-            String body = inv.getArgument(1);
-            return bodyPredicate.test(body) ? whenMatches : otherwise;
-        });
-}
+    MvcTestUtils.mockPostResponse(
+        "/v1/items/byAttrValues",
+        GetItemsSearchResponse.class,
+        httpRequestHelper,
+        MvcTestUtils.hasBoolEquals(
+            searchRequestProperties.getAttributeIdForTbDzo(),
+            searchRequestProperties.isDzoAttributeValue()
+        ),
+        filtered,   // когда в body есть критерий DZO=false
+        full        // во всех остальных случаях
+    );
 
-public static java.util.function.Predicate<String> hasBoolEquals(String attributeId, boolean value) {
-    String id  = "\"attributeId\":\"" + attributeId + "\"";
-    String op  = "\"operation\":\"BOOL_EQ\"";
-    String val = "\"value\":[\"" + Boolean.toString(value) + "\"]";
-    return body -> body.contains(id) && body.contains(op) && body.contains(val);
-}
-
-@TestPropertySource(properties = {
-        "master-data.stub.terBank=false",
-        "master-data.search.slugValueForTerBank=be",
-        "master-data.search.attributeIdForTbDzo=<UUID_АТРИБУТА_DZO>",
-        "master-data.search.dzoAttributeValue=false"
-})
-
+    checkResult(performGetOk(mockMvc, "/api/v1/info/tb"), 12);
 ```
