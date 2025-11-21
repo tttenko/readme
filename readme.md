@@ -21,8 +21,11 @@ public static java.util.function.Predicate<String> hasBoolEquals(String attribut
     return body -> body.contains(id) && body.contains(op) && body.contains(val);
 }
 
-В requestDataImpl добавлен критерий BOOL_EQ по DZO только для словаря ТерБанков, фильтрация происходит на стороне master-data.
-
-В application.yml заведены свойства attributeIdForTbDzo (UUID атрибута DZO) и dzoAttributeValue для конфигурирования фильтра
+@TestPropertySource(properties = {
+        "master-data.stub.terBank=false",
+        "master-data.search.slugValueForTerBank=be",
+        "master-data.search.attributeIdForTbDzo=<UUID_АТРИБУТА_DZO>",
+        "master-data.search.dzoAttributeValue=false"
+})
 
 ```
