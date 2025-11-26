@@ -109,4 +109,35 @@ class CountryControllerMvcTest {
     // + тест на пустой параметр/отсутствие параметра, который должен вернуть 400
 }
 
+
+@Test
+@DisplayName("test GET {host}/api/v1/info/country?countryCode= – пустой параметр -> MdaIncorrectRequestException / 400")
+void searchCountryByCode_whenCountryCodeEmpty_thenBadRequest() {
+
+    var ex = assertThrows(
+            ServletException.class,
+            () -> MvcTestUtils.performGet(
+                    mockMvc,
+                    "/api/v1/info/country",
+                    "countryCode", ""     // пустой параметр
+            )
+    );
+
+    assertEquals(MdaIncorrectRequestException.class, ex.getCause().getClass());
+}
+
+@Test
+@DisplayName("test GET {host}/api/v1/info/country без параметра countryCode -> MdaIncorrectRequestException / 400")
+void searchCountryByCode_whenCountryCodeMissing_thenBadRequest() {
+
+    var ex = assertThrows(
+            ServletException.class,
+            () -> MvcTestUtils.performGet(
+                    mockMvc,
+                    "/api/v1/info/country" // без параметров вообще
+            )
+    );
+
+    assertEquals(MdaIncorrectRequestException.class, ex.getCause().getClass());
+}
 ```
