@@ -1,40 +1,98 @@
 ```java
-/**
- * Исключение, выбрасываемое при некорректном запросе к адаптеру МД.
- *
- * Используется для случаев, когда входные параметры API
- * не соответствуют требованиям спецификации.
- */
-public class MdaIncorrectRequestException extends RuntimeException {
+@ExtendWith(MockitoExtension.class)
+class CountryCacheOpsTest {
 
-    /**
-     * Создаёт новое исключение с указанием причины.
-     *
-     * @param message сообщение с описанием ошибки
-     */
-    public MdaIncorrectRequestException(String message) {
-        super(message);
+    @Mock
+    private BaseMasterDataRequestService baseMasterDataRequestService;
+
+    @Mock
+    private SearchRequestProperties properties;
+
+    @Mock
+    private CountryMapper countryMapper;
+
+    @InjectMocks
+    private CountryCacheOps countryCacheOps;
+
+    @Test
+    void givenBackendResponse_whenLoadAllCountries_thenReturnMappedList() {
+        // given
+        String slug = "country";
+        String attrId = "countryCode";
+
+        when(properties.getSlugValueForCountry()).thenReturn(slug);
+        when(properties.getAttributeIdCountry()).thenReturn(attrId);
+
+        GetItemsSearchResponse resp = mock(GetItemsSearchResponse.class);
+        when(baseMasterDataRequestService.requestDataByAttributes(slug, attrId, null))
+                .thenReturn(resp);
+
+        List<CountryDto> mapped = List.of(
+                CountryDto.builder().alpha2Code("RU").build(),
+                CountryDto.builder().alpha2Code("DE").build()
+        );
+
+        try (MockedStatic<BaseMasterDataRequestService> statics =
+                     Mockito.mockStatic(BaseMasterDataRequestService.class)) {
+
+            statics.when(() -> BaseMasterDataRequestService
+                            .createResultWithAttribute(resp, countryMapper))
+                    .thenReturn(mapped);
+
+            // when
+            List<CountryDto> result = countryCacheOps.loadAllCountries();
+
+            // then
+            assertEquals(mapped, result);
+
+            verify(properties).getSlugValueForCountry();
+            verify(properties).getAttributeIdCountry();
+            verify(baseMasterDataRequestService)
+                    .requestDataByAttributes(slug, attrId, null);
+            statics.verify(() -> BaseMasterDataRequestService
+                    .createResultWithAttribute(resp, countryMapper));
+
+            verifyNoMoreInteractions(baseMasterDataRequestService, properties, countryMapper);
+        }
     }
 
-    /**
-     * Создаёт новое исключение без сообщения.
-     */
-    public MdaIncorrectRequestException() {
-        super();
+    @Test
+    void givenEmptyBackendResponse_whenLoadAllCountries_thenReturnEmptyList() {
+        // given
+        String slug = "country";
+        String attrId = "countryCode";
+
+        when(properties.getSlugValueForCountry()).thenReturn(slug);
+        when(properties.getAttributeIdCountry()).thenReturn(attrId);
+
+        GetItemsSearchResponse resp = mock(GetItemsSearchResponse.class);
+        when(baseMasterDataRequestService.requestDataByAttributes(slug, attrId, null))
+                .thenReturn(resp);
+
+        List<CountryDto> mapped = List.of(); // пустой список
+
+        try (MockedStatic<BaseMasterDataRequestService> statics =
+                     Mockito.mockStatic(BaseMasterDataRequestService.class)) {
+
+            statics.when(() -> BaseMasterDataRequestService
+                            .createResultWithAttribute(resp, countryMapper))
+                    .thenReturn(mapped);
+
+            // when
+            List<CountryDto> result = countryCacheOps.loadAllCountries();
+
+            // then
+            assertEquals(mapped, result);
+
+            verify(properties).getSlugValueForCountry();
+            verify(properties).getAttributeIdCountry();
+            verify(baseMasterDataRequestService)
+                    .requestDataByAttributes(slug, attrId, null);
+            statics.verify(() -> BaseMasterDataRequestService
+                    .createResultWithAttribute(resp, countryMapper));
+
+            verifyNoMoreInteractions(baseMasterDataRequestService, properties, countryMapper);
+        }
     }
-}
-
-
-@ExceptionHandler(MdaIncorrectRequestException.class)
-@ResponseStatus(value = HttpStatus.BAD_REQUEST)
-public ResponseEntity<Object> handleMdaIncorrectRequestException(Exception ex, WebRequest request) {
-    log.error(ERROR_MESSAGE, ex);
-
-    return createResponseEntity(
-            getLocalizedErrorMessage("error.incorrectRequest"),
-            new HttpHeaders(),
-            HttpStatus.BAD_REQUEST,
-            request
-    );
 }
 ```
