@@ -1,55 +1,26 @@
 ```java
-@ExtendWith(MockitoExtension.class)
-class CountryServiceTest {
+@Test
+void handleIncorrectRequestException_shouldReturnBadRequestWithLocalizedMessage() {
+    // given
+    when(messageSource.getMessage(eq("error.incorrectRequest"), any(), any()))
+            .thenReturn("Некорректный запрос к Адаптеру МД");
 
-    @Mock
-    private CountryCacheOps countryCacheOps;
+    WebRequest request = mock(WebRequest.class);
+    var ex = new MdaIncorrectRequestException();
 
-    @Mock
-    private CacheGetOrLoadService cacheGetOrLoadService;
+    // when
+    var response = globalExceptionHandler.handleMdaIncorrectRequestException(ex, request);
 
-    @InjectMocks
-    private CountryService countryService;
+    // then
+    assertThat(response).isNotNull();
+    assertNotNull(response.getBody());
 
-    @Test
-    void givenCodes_whenSearchCountriesByCode_thenUseCacheGetOrLoadService() {
-        // given
-        List<String> codes = List.of("RU", "DE");
-        List<CountryDto> loaded = List.of(
-                new CountryDto(),
-                new CountryDto()
-        );
+    MessageObj body = (MessageObj) response.getBody();
 
-        when(cacheGetOrLoadService.fetchData(CountryService.COUNTRY_BY_CODE, codes))
-                .thenReturn(loaded);
-
-        // when
-        List<CountryDto> result = countryService.searchCountriesByCode(codes);
-
-        // then
-        assertEquals(loaded, result);
-        verify(cacheGetOrLoadService)
-                .fetchData(CountryService.COUNTRY_BY_CODE, codes);
-        verifyNoInteractions(countryCacheOps);
-    }
-
-    @Test
-    void whenGetAllCountries_thenLoadAllFromCountryCacheOps() {
-        // given
-        List<CountryDto> all = List.of(
-                new CountryDto(),
-                new CountryDto()
-        );
-
-        when(countryCacheOps.loadAllCountries()).thenReturn(all);
-
-        // when
-        List<CountryDto> result = countryService.getAllCountries();
-
-        // then
-        assertEquals(all, result);
-        verify(countryCacheOps).loadAllCountries();
-        verifyNoInteractions(cacheGetOrLoadService);
-    }
+    assertEquals("Некорректный запрос к Адаптеру МД",
+            body.getMessages().get(0).getMessage());
+    assertEquals(AppMessageSemantic.E,
+            body.getMessages().get(0).getSemantic());
+    assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
 }
 ```
