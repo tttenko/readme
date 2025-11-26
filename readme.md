@@ -1,31 +1,40 @@
 ```java
-@Test
-void givenOnlyInn_whenSearchCounterpartiesByCriteria_thenBypassCacheAndCallLoaderByCriteria() {
-    // given
-    String inn = "7700000000";
-    String kpp = null;
+/**
+ * Исключение, выбрасываемое при некорректном запросе к адаптеру МД.
+ *
+ * Используется для случаев, когда входные параметры API
+ * не соответствуют требованиям спецификации.
+ */
+public class MdaIncorrectRequestException extends RuntimeException {
 
-    Map<String, List<String>> criteria = Map.of(
-            "innAttr", List.of(inn)
-    );
-    when(criteriaBuilder.buildCriteria(inn, kpp)).thenReturn(criteria);
+    /**
+     * Создаёт новое исключение с указанием причины.
+     *
+     * @param message сообщение с описанием ошибки
+     */
+    public MdaIncorrectRequestException(String message) {
+        super(message);
+    }
 
-    List<CounterpartyDto> directData = List.of(mock(CounterpartyDto.class));
-    // loader теперь возвращает просто List<CounterpartyDto>
-    when(loaderSupplierByCriteria.loadByCriteria(criteria)).thenReturn(directData);
-
-    // when
-    List<CounterpartyDto> result =
-            supplierService.searchCounterpartiesByCriteria(inn, kpp);
-
-    // then
-    assertEquals(directData, result);
-
-    verify(criteriaBuilder).buildCriteria(inn, kpp);
-    verify(loaderSupplierByCriteria).loadByCriteria(criteria);
-
-    verifyNoInteractions(cacheGetOrLoadService);
-    verify(criteriaBuilder, never()).buildInnKppKey(any(), any());
+    /**
+     * Создаёт новое исключение без сообщения.
+     */
+    public MdaIncorrectRequestException() {
+        super();
+    }
 }
 
+
+@ExceptionHandler(MdaIncorrectRequestException.class)
+@ResponseStatus(value = HttpStatus.BAD_REQUEST)
+public ResponseEntity<Object> handleMdaIncorrectRequestException(Exception ex, WebRequest request) {
+    log.error(ERROR_MESSAGE, ex);
+
+    return createResponseEntity(
+            getLocalizedErrorMessage("error.incorrectRequest"),
+            new HttpHeaders(),
+            HttpStatus.BAD_REQUEST,
+            request
+    );
+}
 ```
