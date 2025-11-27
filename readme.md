@@ -1,58 +1,78 @@
 ```java
 
-@Operation(
-        operationId = "searchCountry",
-        summary = "Получение перечня стран по массиву кодов ALPHA-2"
-)
-@ApiResponses({
-        @ApiResponse(
-                responseCode = "200",
-                description = "Успешный поиск стран"
-        ),
-        @ApiResponse(
-                responseCode = "400",
-                description = "Некорректные параметры запроса (валидация, пустой/отсутствующий countryCode)",
-                content = @Content(
-                        mediaType = "application/json"
-                        // при желании можно указать схему ошибки:
-                        // schema = @Schema(implementation = MessageObj.class)
-                )
-        ),
-        @ApiResponse(
-                responseCode = "500",
-                description = "Внутренняя ошибка сервиса",
-                content = @Content(mediaType = "application/json")
-        )
-})
+@Service
+@RequiredArgsConstructor
+public class CacheManagerService {
 
-@Operation(
-        operationId = "searchCountryByCode",
-        summary = "Предоставление информации о стране по коду ALPHA-2"
-)
-@ApiResponses({
-        @ApiResponse(responseCode = "200", description = "Успешное получение информации о стране"),
-        @ApiResponse(
-                responseCode = "400",
-                description = "Некорректный код страны (валидация параметра)",
-                content = @Content(mediaType = "application/json")
-        ),
-        @ApiResponse(
-                responseCode = "500",
-                description = "Внутренняя ошибка сервиса",
-                content = @Content(mediaType = "application/json")
-        )
-})
+    private static final DateTimeFormatter DATE_FORMAT =
+            DateTimeFormatter.ofPattern("HH:mm:ss dd-MM-yyyy");
 
-@Operation(
-        operationId = "getAllCountries",
-        summary = "Получение полного перечня стран"
-)
-@ApiResponses({
-        @ApiResponse(responseCode = "200", description = "Успешное получение списка стран"),
-        @ApiResponse(
-                responseCode = "500",
-                description = "Внутренняя ошибка сервиса",
-                content = @Content(mediaType = "application/json")
-        )
-})
+    private final CacheManager cacheManager;
+
+    // последнее время ручной инвалидации (через /invalidate)
+    private volatile LocalDateTime lastManualInvalidate;
+
+    /**
+     * Ручная инвалидация всех кэшей Caffeine.
+     * Вызывается из контроллера.
+     */
+    public void invalidateCache() {
+        lastManualInvalidate = LocalDateTime.now();
+
+        for (String cacheName : cacheManager.getCacheNames()) {
+            Cache cache = cacheManager.getCache(cacheName);
+            if (cache != null) {
+                cache.clear();       // Spring Cache: очистка кэша целиком
+            }
+        }
+    }
+
+    /**
+     * Возвращает агрегированный статус всех кэшей.
+     */
+   public Map<String, Serializable> getCacheStatus() {
+    Map<String, Serializable> result = new LinkedHashMap<>();
+
+    Map<String, Map<String, Serializable>> caches = new LinkedHashMap<>();
+    for (String cacheName : cacheManager.getCacheNames()) {
+        Cache cache = cacheManager.getCache(cacheName);
+        if (cache != null) {
+            caches.put(cacheName, buildCacheStatus(cache));
+        }
+    }
+
+    String lastInvalidateStr = lastManualInvalidate == null
+            ? "ещё не выполнялась"
+            : lastManualInvalidate.format(DATE_FORMAT);
+
+    result.put("Последняя ручная инвалидация", lastInvalidateStr);
+    result.put("TTL (минуты)", CacheConst.TTL);
+    result.put("Статус кэшей", (Serializable) caches);
+
+    return result;
+}
+
+private Map<String, Serializable> buildCacheStatus(Cache springCache) {
+    Map<String, Serializable> status = new LinkedHashMap<>();
+
+    if (springCache instanceof CaffeineCache caffeineCache) {
+        var nativeCache = caffeineCache.getNativeCache();
+        CacheStats stats = nativeCache.stats();
+
+        status.put("Размер (estimatedSize)", nativeCache.estimatedSize());
+        status.put("Попадания (hitCount)", stats.hitCount());
+        status.put("Промахи (missCount)", stats.missCount());
+        status.put("Hit rate", stats.hitRate());
+        status.put("Miss rate", stats.missRate());
+        status.put("Успешные загрузки (loadSuccess)", stats.loadSuccessCount());
+        status.put("Ошибки загрузки (loadFailure)", stats.loadFailureCount());
+        status.put("Удаления (evictionCount)", stats.evictionCount());
+    } else {
+        status.put("Тип", springCache.getClass().getSimpleName());
+    }
+
+    return status;
+}
+}
+
 ```
