@@ -1,13 +1,19 @@
 ```java
 
 @Test
-@DisplayName("Get /api/v1/info/country без параметров")
-void searchCountriesWithoutCodesReturnsBadRequest() throws Exception {
-    MvcResult result = performGet(mockMvc, "/api/v1/info/country").andReturn();
+@DisplayName("test GET {host}/api/v1/info/country?countryCode=null")
+void searchCountryByCode_whenCountryCodeEmpty_thenBadRequest() throws Exception {
+    // when
+    MvcResult result = MvcTestUtils.performGet(
+            mockMvc,
+            "/api/v1/info/country",
+            "countryCode", ""          // есть параметр, но пустой
+    );
 
+    // then
     assertEquals(400, result.getResponse().getStatus());
     assertEquals(
-            MissingServletRequestParameterException.class,
+            ConstraintViolationException.class,   // jakarta.validation.ConstraintViolationException
             result.getResolvedException().getClass()
     );
 }
