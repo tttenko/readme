@@ -1,78 +1,54 @@
 ```java
 
-@Service
-@RequiredArgsConstructor
-public class CacheManagerService {
+@AutoConfigureMockMvc
+@SpringBootTest(classes = {
+        SearchRequestProperties.class,
+        CacheConfig.class,
+        CacheController.class,
+        CacheManagerService2.class
+})
+class CacheControllerMvcTest {
 
-    private static final DateTimeFormatter DATE_FORMAT =
-            DateTimeFormatter.ofPattern("HH:mm:ss dd-MM-yyyy");
+    @Autowired
+    private MockMvc mockMvc;
 
-    private final CacheManager cacheManager;
+    // ВАЖНО: именно @MockBean, а не @Mock — подменяем бин в контексте Spring
+    @MockBean
+    private CacheManagerService2 cacheManagerService;
 
-    // последнее время ручной инвалидации (через /invalidate)
-    private volatile LocalDateTime lastManualInvalidate;
+    @Test
+    @DisplayName("тест GET {host}/api/v1/cache/status")
+    void statusTest() throws Exception {
+        // заглушка для сервиса
+        when(cacheManagerService.getCacheStatus())
+                .thenReturn(Collections.emptyMap());
 
-    /**
-     * Ручная инвалидация всех кэшей Caffeine.
-     * Вызывается из контроллера.
-     */
-    public void invalidateCache() {
-        lastManualInvalidate = LocalDateTime.now();
+        mockMvc.perform(get("/api/v1/cache/status")
+                        .header(CONTENT_TYPE, APPLICATION_JSON_UTF8_VALUE))
+                .andDo(print())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.messages[0].message").value("Статус кэшей"))
+                .andExpect(jsonPath("$.messages[0].semantic").value("S"));
 
-        for (String cacheName : cacheManager.getCacheNames()) {
-            Cache cache = cacheManager.getCache(cacheName);
-            if (cache != null) {
-                cache.clear();       // Spring Cache: очистка кэша целиком
-            }
-        }
+        // проверяем, что контроллер действительно дернул сервис
+        verify(cacheManagerService).getCacheStatus();
+        verifyNoMoreInteractions(cacheManagerService);
     }
 
-    /**
-     * Возвращает агрегированный статус всех кэшей.
-     */
-   public Map<String, Serializable> getCacheStatus() {
-    Map<String, Serializable> result = new LinkedHashMap<>();
+    @Test
+    @DisplayName("тест GET {host}/api/v1/cache/invalidate")
+    void invalidateTest() throws Exception {
+        mockMvc.perform(get("/api/v1/cache/invalidate")
+                        .header(CONTENT_TYPE, APPLICATION_JSON_UTF8_VALUE))
+                .andDo(print())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.messages[0].message")
+                        .value("Инвалидация кэшей выполнена."))
+                .andExpect(jsonPath("$.messages[0].semantic").value("S"));
 
-    Map<String, Map<String, Serializable>> caches = new LinkedHashMap<>();
-    for (String cacheName : cacheManager.getCacheNames()) {
-        Cache cache = cacheManager.getCache(cacheName);
-        if (cache != null) {
-            caches.put(cacheName, buildCacheStatus(cache));
-        }
+        // здесь важно проверить вызов invalidateCache()
+        verify(cacheManagerService).invalidateCache();
+        verifyNoMoreInteractions(cacheManagerService);
     }
-
-    String lastInvalidateStr = lastManualInvalidate == null
-            ? "ещё не выполнялась"
-            : lastManualInvalidate.format(DATE_FORMAT);
-
-    result.put("Последняя ручная инвалидация", lastInvalidateStr);
-    result.put("TTL (минуты)", CacheConst.TTL);
-    result.put("Статус кэшей", (Serializable) caches);
-
-    return result;
 }
-
-private Map<String, Serializable> buildCacheStatus(Cache springCache) {
-    Map<String, Serializable> status = new LinkedHashMap<>();
-
-    if (springCache instanceof CaffeineCache caffeineCache) {
-        var nativeCache = caffeineCache.getNativeCache();
-        CacheStats stats = nativeCache.stats();
-
-        status.put("Размер (estimatedSize)", nativeCache.estimatedSize());
-        status.put("Попадания (hitCount)", stats.hitCount());
-        status.put("Промахи (missCount)", stats.missCount());
-        status.put("Hit rate", stats.hitRate());
-        status.put("Miss rate", stats.missRate());
-        status.put("Успешные загрузки (loadSuccess)", stats.loadSuccessCount());
-        status.put("Ошибки загрузки (loadFailure)", stats.loadFailureCount());
-        status.put("Удаления (evictionCount)", stats.evictionCount());
-    } else {
-        status.put("Тип", springCache.getClass().getSimpleName());
-    }
-
-    return status;
-}
-}
-
 ```
