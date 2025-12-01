@@ -1,70 +1,97 @@
 ```java
 
-@WebMvcTest(CacheController.class)
-class CacheControllerMvcTest {
+@ExtendWith(MockitoExtension.class)
+class CacheManagerServiceTest {
 
-    @Autowired
-    private MockMvc mockMvc;
+    @Mock
+    private CacheManager cacheManager;
 
-    @MockitoBean
-    private CacheManagerService cacheManagerService;
+    @InjectMocks
+    private CacheManagerService service;
 
     @Test
-    @DisplayName("тест GET {host}/api/v1/cache/status")
-    void statusTest() throws Exception {
-        // given: подготавливаем DTO, которое вернёт сервис
-        CacheStatusDto cacheDto = CacheStatusDto.builder()
-                .name("tb_req_all")
-                .type("CaffeineCache")
-                .estimatedSize(0L)
-                .hitCount(0L)
-                .missCount(0L)
-                .hitRate(0.0)
-                .missRate(0.0)
-                .loadSuccess(0L)
-                .loadFailure(0L)
-                .evictionCount(0L)
-                .build();
+    void getCacheStatus_whenNoCachesAndNoInvalidate_returnsDefaults() {
+        // given
+        when(cacheManager.getCacheNames()).thenReturn(Collections.emptyList());
 
-        CacheStatusResponse response = CacheStatusResponse.builder()
-                .lastManualInvalidation("test-time")
-                .ttl(123L)
-                .caches(List.of(cacheDto))
-                .build();
+        // when
+        CacheStatusResponse status = service.getCacheStatus();
 
-        when(cacheManagerService.getCacheStatus()).thenReturn(response);
-
-        // when / then
-        mockMvc.perform(get("/api/v1/cache/status")
-                        .header(CONTENT_TYPE, APPLICATION_JSON_UTF8_VALUE))
-                .andDo(print())
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.messages[0].message").value("Cache status"))
-                .andExpect(jsonPath("$.messages[0].semantic").value("S"))
-                // проверяем, что DTO корректно улетело в data
-                .andExpect(jsonPath("$.data.lastManualInvalidation").value("test-time"))
-                .andExpect(jsonPath("$.data.ttl").value(123))
-                .andExpect(jsonPath("$.data.caches").isArray())
-                .andExpect(jsonPath("$.data.caches[0].name").value("tb_req_all"))
-                .andExpect(jsonPath("$.data.caches[0].type").value("CaffeineCache"));
-
-        verify(cacheManagerService).getCacheStatus();
-        verifyNoMoreInteractions(cacheManagerService);
+        // then
+        assertEquals("Not yet completed", status.getLastManualInvalidation());
+        assertEquals(CacheConst.TTL, status.getTtl());
+        assertNotNull(status.getCaches());
+        assertTrue(status.getCaches().isEmpty());
     }
 
     @Test
-    @DisplayName("тест GET {host}/api/v1/cache/invalidate")
-    void invalidateTest() throws Exception {
-        mockMvc.perform(get("/api/v1/cache/invalidate")
-                        .header(CONTENT_TYPE, APPLICATION_JSON_UTF8_VALUE))
-                .andDo(print())
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.messages[0].message").value("Cache invalidation completed."))
-                .andExpect(jsonPath("$.messages[0].semantic").value("S"));
+    void getCacheStatus_withCaffeineCache_fillsBasicFields() {
+        // given
+        var nativeCache = Caffeine.newBuilder()
+                .recordStats()
+                .build();
+        nativeCache.put("k1", "v1");
 
-        verify(cacheManagerService).invalidateCache();
-        verifyNoMoreInteractions(cacheManagerService);
+        Cache springCache = new CaffeineCache("testCache", nativeCache);
+
+        when(cacheManager.getCacheNames()).thenReturn(List.of("testCache"));
+        when(cacheManager.getCache("testCache")).thenReturn(springCache);
+
+        // when
+        CacheStatusResponse status = service.getCacheStatus();
+
+        // then
+        assertEquals(1, status.getCaches().size());
+        CacheStatusDto cacheStatus = status.getCaches().get(0);
+
+        assertEquals("testCache", cacheStatus.getName());
+        assertEquals("CaffeineCache", cacheStatus.getType());
+        // ключевой показатель, что статистика реально берётся из nativeCache
+        assertEquals(1L, cacheStatus.getEstimatedSize());
+    }
+
+    @Test
+    void getCacheStatus_withNonCaffeineCache_usesElseBranch() {
+        // given
+        Cache otherCache = mock(Cache.class);
+
+        when(cacheManager.getCacheNames()).thenReturn(List.of("other"));
+        when(cacheManager.getCache("other")).thenReturn(otherCache);
+
+        // when
+        CacheStatusResponse status = service.getCacheStatus();
+
+        // then
+        assertEquals(1, status.getCaches().size());
+        CacheStatusDto cacheStatus = status.getCaches().get(0);
+
+        assertEquals("other", cacheStatus.getName());
+        assertEquals(otherCache.getClass().getSimpleName(), cacheStatus.getType());
+        // статистика не должна заполняться для non-Caffeine
+        assertNull(cacheStatus.getEstimatedSize());
+    }
+
+    @Test
+    void invalidateCache_clearsAllCachesAndUpdatesLastInvalidate() {
+        // given
+        Cache cache1 = mock(Cache.class);
+        Cache cache2 = mock(Cache.class);
+
+        when(cacheManager.getCacheNames()).thenReturn(List.of("c1", "c2"));
+        when(cacheManager.getCache("c1")).thenReturn(cache1);
+        when(cacheManager.getCache("c2")).thenReturn(cache2);
+
+        // when
+        service.invalidateCache();
+
+        // then: оба кэша очищены
+        verify(cache1).clear();
+        verify(cache2).clear();
+
+        // после этого статус должен показывать, что инвалидация уже была
+        when(cacheManager.getCacheNames()).thenReturn(Collections.emptyList());
+        CacheStatusResponse status = service.getCacheStatus();
+        assertNotEquals("Not yet completed", status.getLastManualInvalidation());
     }
 }
-
 ```
