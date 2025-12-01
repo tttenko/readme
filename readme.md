@@ -1,58 +1,70 @@
 ```java
 
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-@Schema(description = "Статистика по одному кэшу")
-public class CacheStatusDto {
+@WebMvcTest(CacheController.class)
+class CacheControllerMvcTest {
 
-    @Schema(description = "Имя кэша")
-    private String name;
+    @Autowired
+    private MockMvc mockMvc;
 
-    @Schema(description = "Тип кэша (класс Spring Cache)")
-    private String type;
+    @MockitoBean
+    private CacheManagerService cacheManagerService;
 
-    @Schema(description = "Текущий размер (estimatedSize)")
-    private Long estimatedSize;
+    @Test
+    @DisplayName("тест GET {host}/api/v1/cache/status")
+    void statusTest() throws Exception {
+        // given: подготавливаем DTO, которое вернёт сервис
+        CacheStatusDto cacheDto = CacheStatusDto.builder()
+                .name("tb_req_all")
+                .type("CaffeineCache")
+                .estimatedSize(0L)
+                .hitCount(0L)
+                .missCount(0L)
+                .hitRate(0.0)
+                .missRate(0.0)
+                .loadSuccess(0L)
+                .loadFailure(0L)
+                .evictionCount(0L)
+                .build();
 
-    @Schema(description = "Кол-во попаданий (hitCount)")
-    private Long hitCount;
+        CacheStatusResponse response = CacheStatusResponse.builder()
+                .lastManualInvalidation("test-time")
+                .ttl(123L)
+                .caches(List.of(cacheDto))
+                .build();
 
-    @Schema(description = "Кол-во промахов (missCount)")
-    private Long missCount;
+        when(cacheManagerService.getCacheStatus()).thenReturn(response);
 
-    @Schema(description = "Доля попаданий (hitRate)")
-    private Double hitRate;
+        // when / then
+        mockMvc.perform(get("/api/v1/cache/status")
+                        .header(CONTENT_TYPE, APPLICATION_JSON_UTF8_VALUE))
+                .andDo(print())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.messages[0].message").value("Cache status"))
+                .andExpect(jsonPath("$.messages[0].semantic").value("S"))
+                // проверяем, что DTO корректно улетело в data
+                .andExpect(jsonPath("$.data.lastManualInvalidation").value("test-time"))
+                .andExpect(jsonPath("$.data.ttl").value(123))
+                .andExpect(jsonPath("$.data.caches").isArray())
+                .andExpect(jsonPath("$.data.caches[0].name").value("tb_req_all"))
+                .andExpect(jsonPath("$.data.caches[0].type").value("CaffeineCache"));
 
-    @Schema(description = "Доля промахов (missRate)")
-    private Double missRate;
+        verify(cacheManagerService).getCacheStatus();
+        verifyNoMoreInteractions(cacheManagerService);
+    }
 
-    @Schema(description = "Успешные загрузки (loadSuccessCount)")
-    private Long loadSuccess;
+    @Test
+    @DisplayName("тест GET {host}/api/v1/cache/invalidate")
+    void invalidateTest() throws Exception {
+        mockMvc.perform(get("/api/v1/cache/invalidate")
+                        .header(CONTENT_TYPE, APPLICATION_JSON_UTF8_VALUE))
+                .andDo(print())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.messages[0].message").value("Cache invalidation completed."))
+                .andExpect(jsonPath("$.messages[0].semantic").value("S"));
 
-    @Schema(description = "Неуспешные загрузки (loadFailureCount)")
-    private Long loadFailure;
-
-    @Schema(description = "Удаления по политике кэша (evictionCount)")
-    private Long evictionCount;
-}
-
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-@Schema(description = "Общий статус кэшей приложения")
-public class CacheStatusResponse {
-
-    @Schema(description = "Последняя ручная инвалидация всех кэшей")
-    private String lastManualInvalidation;
-
-    @Schema(description = "TTL кэшей (в минутах)")
-    private long ttl;
-
-    @Schema(description = "Статистика по каждому кэшу")
-    private List<CacheStatusDto> caches;
+        verify(cacheManagerService).invalidateCache();
+        verifyNoMoreInteractions(cacheManagerService);
+    }
 }
 
 ```
