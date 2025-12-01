@@ -1,54 +1,58 @@
 ```java
 
-@AutoConfigureMockMvc
-@SpringBootTest(classes = {
-        SearchRequestProperties.class,
-        CacheConfig.class,
-        CacheController.class,
-        CacheManagerService2.class
-})
-class CacheControllerMvcTest {
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@Schema(description = "Статистика по одному кэшу")
+public class CacheStatusDto {
 
-    @Autowired
-    private MockMvc mockMvc;
+    @Schema(description = "Имя кэша")
+    private String name;
 
-    // ВАЖНО: именно @MockBean, а не @Mock — подменяем бин в контексте Spring
-    @MockBean
-    private CacheManagerService2 cacheManagerService;
+    @Schema(description = "Тип кэша (класс Spring Cache)")
+    private String type;
 
-    @Test
-    @DisplayName("тест GET {host}/api/v1/cache/status")
-    void statusTest() throws Exception {
-        // заглушка для сервиса
-        when(cacheManagerService.getCacheStatus())
-                .thenReturn(Collections.emptyMap());
+    @Schema(description = "Текущий размер (estimatedSize)")
+    private Long estimatedSize;
 
-        mockMvc.perform(get("/api/v1/cache/status")
-                        .header(CONTENT_TYPE, APPLICATION_JSON_UTF8_VALUE))
-                .andDo(print())
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.messages[0].message").value("Статус кэшей"))
-                .andExpect(jsonPath("$.messages[0].semantic").value("S"));
+    @Schema(description = "Кол-во попаданий (hitCount)")
+    private Long hitCount;
 
-        // проверяем, что контроллер действительно дернул сервис
-        verify(cacheManagerService).getCacheStatus();
-        verifyNoMoreInteractions(cacheManagerService);
-    }
+    @Schema(description = "Кол-во промахов (missCount)")
+    private Long missCount;
 
-    @Test
-    @DisplayName("тест GET {host}/api/v1/cache/invalidate")
-    void invalidateTest() throws Exception {
-        mockMvc.perform(get("/api/v1/cache/invalidate")
-                        .header(CONTENT_TYPE, APPLICATION_JSON_UTF8_VALUE))
-                .andDo(print())
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.messages[0].message")
-                        .value("Инвалидация кэшей выполнена."))
-                .andExpect(jsonPath("$.messages[0].semantic").value("S"));
+    @Schema(description = "Доля попаданий (hitRate)")
+    private Double hitRate;
 
-        // здесь важно проверить вызов invalidateCache()
-        verify(cacheManagerService).invalidateCache();
-        verifyNoMoreInteractions(cacheManagerService);
-    }
+    @Schema(description = "Доля промахов (missRate)")
+    private Double missRate;
+
+    @Schema(description = "Успешные загрузки (loadSuccessCount)")
+    private Long loadSuccess;
+
+    @Schema(description = "Неуспешные загрузки (loadFailureCount)")
+    private Long loadFailure;
+
+    @Schema(description = "Удаления по политике кэша (evictionCount)")
+    private Long evictionCount;
 }
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@Schema(description = "Общий статус кэшей приложения")
+public class CacheStatusResponse {
+
+    @Schema(description = "Последняя ручная инвалидация всех кэшей")
+    private String lastManualInvalidation;
+
+    @Schema(description = "TTL кэшей (в минутах)")
+    private long ttl;
+
+    @Schema(description = "Статистика по каждому кэшу")
+    private List<CacheStatusDto> caches;
+}
+
 ```
