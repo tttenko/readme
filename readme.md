@@ -1,17 +1,5 @@
 ```java
 
-@SuppressWarnings("unchecked")
-private static Map<String, String> unwrapItemIfNeeded(Map<String, String> values) {
-    // values на самом деле может быть {"item": {...}, "values": [...]}
-    Map<String, Object> raw = (Map<String, Object>) (Map<?, ?>) values;
-
-    Object maybeItem = raw.get(ITEM); // ITEM = "item"
-    if (maybeItem instanceof Map) {
-        return (Map<String, String>) maybeItem; // отдаем только item
-    }
-
-    // для старых словарей (тербанки и т.п.) ничего не меняем
-    return values;
-}
+Согласен, по сигнатуре тут Map<String, String>, но из BaseMasterDataRequestService.createResult фактически прилетает raw-Map вида {"item": {...}, "values": [...]} — тип подрезан до Map<String, String> ради совместимости с остальными мапперами. Я как раз и делаю unwrap по ключу item, чтобы вытащить реальные поля (name/slug) и при этом не переписывать общий сервис.
 
 ```
