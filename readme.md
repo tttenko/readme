@@ -1,18 +1,18 @@
 ```java
 
-/** Все единицы измерения */
-    @NonNull
-    public List<UomBankDto> getAllUoms() {
-        return adapterCacheOps.getAllUoms();
-    }
+// все материалы
+@NonNull
+public List<MaterialDto> getAllMaterials() {
+    return adapterCacheOps.getAllMaterials();
+}
 
-    /** Единицы измерения по списку кодов */
-    @NonNull
-    public List<UomBankDto> getUomByCodes(@NonNull List<String> uomCodes) {
-        if (uomCodes.isEmpty()) {
-            // на твой выбор: вернуть пустой список или кинуть BadRequest
-            return List.of();
-        }
-        return cacheGetOrLoadService.fetchData(UOM_BY_CODE, uomCodes);
+// материалы по списку кодов
+@NonNull
+public List<MaterialDto> getMaterialByCodes(@NonNull List<String> materialCodes) {
+    if (materialCodes.isEmpty()) {
+        // на выбор: вернуть пустой список или бросить исключение
+        return List.of();
     }
+    return cacheGetOrLoadService.fetchData(MATERIAL_BY_CODE, materialCodes);
+}
 ```
