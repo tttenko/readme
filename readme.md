@@ -1,25 +1,31 @@
 ```java
 
-// Все валюты
-@GetMapping(value = "/all", produces = APPLICATION_JSON_UTF8_VALUE)
-@Operation(
-        operationId = "getAllCurrencies",
-        summary = "Предоставление информации обо всех доступных валютах"
-)
-public ResultObj<List<CurrencyDto>> getAllCurrencies() {
-    return getSuccessResponse(currencyService.getAllCurrencies());
-}
+@NonNull
+    public List<TerBankDto> getAllTerBanks() {
+        return terBankCache.getAllBanks();
+    }
 
-// Валюты по списку кодов
-@GetMapping(produces = APPLICATION_JSON_UTF8_VALUE)
-@Operation(
-        operationId = "searchCurrenciesByCodes",
-        summary = "Предоставление информации о валютах по списку кодов"
-)
-public ResultObj<List<CurrencyDto>> searchCurrenciesByCodes(
-        @RequestParam(name = "currencyCode") List<String> currencyCodes) {
+    /** Тербанки по списку кодов */
+    @NonNull
+    public List<TerBankDto> getTerBanksByCodes(@NonNull List<String> tbCodes) {
+        if (tbCodes.isEmpty()) {
+            return List.of(); // или кинуть BadRequestException — как у вас принято
+        }
+        return batchLoad.fetchData(TB_BY_CODE, tbCodes);
+    }
 
-    return getSuccessResponse(currencyService.getCurrenciesByCodes(currencyCodes));
-}
+ @NonNull
+    public List<TerBankWithRequisiteDto> getAllTerBanksWithRequisite() {
+        return terBankCache.getAllBanksWithRequisite();
+    }
+
+    /** Тербанки с реквизитами по списку кодов */
+    @NonNull
+    public List<TerBankWithRequisiteDto> getTerBanksWithRequisiteByCodes(@NonNull List<String> tbCodes) {
+        if (tbCodes.isEmpty()) {
+            return List.of();
+        }
+        return batchLoad.fetchData(TB_REQ_BY_CODE, tbCodes);
+    }
 
 ```
