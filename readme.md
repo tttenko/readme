@@ -1,25 +1,57 @@
 ```java
 
+@Test
+void getAllUoms_thenUsesAllFromCacheOps() {
+    // given
+    List<UomBankDto> all = List.of(
+            UomBankDto.builder().uomCode("EA").build()
+    );
+    when(adapterCacheOps.getAllUoms()).thenReturn(all);
 
-// все ТБ
-@GetMapping("/tb/all")
-@Operation(
-        operationId = "getAllTerBanks",
-        summary = "Получение списка всех Территориальных банков"
-)
-public ResultObj<List<TerBankDto>> getAllTerBanks() {
-    return responseHandler.executeOrThrow(() ->
-            getSuccessResponse(terBankService.getAllTerBanks()));
+    // when
+    List<UomBankDto> result = adapterService2.getAllUoms();
+
+    // then
+    assertThat(result).containsExactlyElementsOf(all);
+    verify(adapterCacheOps).getAllUoms();
+    verifyNoInteractions(cacheGetOrLoadService);
 }
 
-@GetMapping("/tb-requisite/all")
-@Operation(
-        operationId = "getAllTerBanksRequisite",
-        summary = "Получение списка всех Территориальных банков с реквизитами"
-)
-public ResultObj<List<TerBankWithRequisiteDto>> getTerBanksRequisiteAll() {
-    return responseHandler.executeOrThrow(() ->
-            getSuccessResponse(terBankService.getAllTerBanksWithRequisite()));
+@Test
+void getUomByCodes_whenCodesEmpty_thenReturnsEmptyListAndDoesNotCallDependencies() {
+    // given
+    List<String> codes = List.of();
+
+    // when
+    List<UomBankDto> result = adapterService2.getUomByCodes(codes);
+
+    // then
+    assertThat(result).isEmpty();
+    verifyNoInteractions(adapterCacheOps, cacheGetOrLoadService);
+}
+
+@SuppressWarnings("unchecked")
+@Test
+void getUomByCodes_whenCodesNotEmpty_thenUsesCacheGetOrLoadService() {
+    // given
+    List<String> codes = List.of("EA", "KG");
+    List<UomBankDto> loaded = List.of(
+            UomBankDto.builder().uomCode("EA").build(),
+            UomBankDto.builder().uomCode("KG").build()
+    );
+
+    when(cacheGetOrLoadService.fetchData(
+            eq(AdapterService.UOM_BY_CODE),
+            eq(codes)
+    )).thenReturn((List) loaded);
+
+    // when
+    List<UomBankDto> result = adapterService2.getUomByCodes(codes);
+
+    // then
+    assertThat(result).containsExactlyElementsOf(loaded);
+    verify(cacheGetOrLoadService).fetchData(AdapterService.UOM_BY_CODE, codes);
+    verifyNoInteractions(adapterCacheOps);
 }
 
 @Test
@@ -129,4 +161,5 @@ void getMaterialByCodes_whenCodesNotEmpty_thenUsesCacheGetOrLoadService() {
     verify(cacheGetOrLoadService).fetchData(AdapterService.MATERIAL_BY_CODE, codes);
     verifyNoInteractions(adapterCacheOps);
 }
+
 ```
