@@ -1,28 +1,36 @@
 ```java
+<dependencies>
+    <!-- Spring: http, web, format, validation.annotation -->
+    <dependency>
+        <groupId>org.springframework</groupId>
+        <artifactId>spring-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework</groupId>
+        <artifactId>spring-context</artifactId>
+    </dependency>
 
-@SpringBootTest
-@EnableAutoConfiguration
-@ContextConfiguration(classes = ConnectionProperties.class)
-@TestPropertySource(properties = {
-        "master-data.connection.keyStoreType=PKCS12",
-        "master-data.connection.keyStoreAlgorithm=SunX509",
-        "master-data.connection.filePathKeyStore=cert.pfx",
-        "master-data.connection.filePathTrustStore=cert.pfx",
-        "master-data.connection.keyStorePassword=q1w2e3r4",
-        "master-data.connection.bufferSize=40000"
-})
-class ConnectionPropertiesTest {
+    <!-- Jakarta Validation / Annotation (так как в генераторе useJakartaEe=true) -->
+    <dependency>
+        <groupId>jakarta.validation</groupId>
+        <artifactId>jakarta.validation-api</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>jakarta.annotation</groupId>
+        <artifactId>jakarta.annotation-api</artifactId>
+    </dependency>
 
-    @Autowired
-    private ConnectionProperties connectionProperties;
+    <!-- Jackson аннотации: @JsonProperty, @JsonInclude и т.п. -->
+    <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-annotations</artifactId>
+    </dependency>
 
-    @Test
-    void shouldLoadPropertiesFromYml() {
-        assertNotNull(connectionProperties.getFilePathKeyStore());
-        assertNotNull(connectionProperties.getFilePathTrustStore());
-        assertNotNull(connectionProperties.getKeyStoreType());
-        assertNotNull(connectionProperties.getKeyStorePassword());
-        assertNotNull(connectionProperties.getKeyStoreAlgorithm());
-    }
-}
+    <!-- Swagger / OpenAPI аннотации (@Operation, @Parameter, …) -->
+    <dependency>
+        <groupId>io.swagger.core.v3</groupId>
+        <artifactId>swagger-annotations</artifactId>
+    </dependency>
+</dependencies>
+
 ```
