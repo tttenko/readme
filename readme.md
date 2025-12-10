@@ -1,36 +1,12 @@
 ```java
-<dependencies>
-    <!-- Spring: http, web, format, validation.annotation -->
-    <dependency>
-        <groupId>org.springframework</groupId>
-        <artifactId>spring-web</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework</groupId>
-        <artifactId>spring-context</artifactId>
-    </dependency>
+<!-- для openapi-generator, как в соседнем модуле -->
+    <openapi-generator-maven-plugin.version>7.7.0</openapi-generator-maven-plugin.version>
 
-    <!-- Jakarta Validation / Annotation (так как в генераторе useJakartaEe=true) -->
-    <dependency>
-        <groupId>jakarta.validation</groupId>
-        <artifactId>jakarta.validation-api</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>jakarta.annotation</groupId>
-        <artifactId>jakarta.annotation-api</artifactId>
-    </dependency>
+    <!-- Группа/артефакт клиента -->
+    <openapi-generator.groupId>ru.sber.cs.supplier.portal.masterdata</openapi-generator.groupId>
+    <openapi-generator.artifactId>masterdata-openapi-client</openapi-generator.artifactId>
 
-    <!-- Jackson аннотации: @JsonProperty, @JsonInclude и т.п. -->
-    <dependency>
-        <groupId>com.fasterxml.jackson.core</groupId>
-        <artifactId>jackson-annotations</artifactId>
-    </dependency>
-
-    <!-- Swagger / OpenAPI аннотации (@Operation, @Parameter, …) -->
-    <dependency>
-        <groupId>io.swagger.core.v3</groupId>
-        <artifactId>swagger-annotations</artifactId>
-    </dependency>
-</dependencies>
+    <!-- Базовый пакет для сгенерированного кода -->
+    <openapi-generator.base-package>ru.sber.cs.supplier.portal.masterdata</openapi-generator.base-package>
 
 ```
