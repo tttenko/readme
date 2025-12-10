@@ -1,42 +1,55 @@
 ```java
- class ApplicationConfigLocalTest {
+ class CommonApplicationConfigTest {
+
+    private final CommonApplicationConfig config = new CommonApplicationConfig();
 
     @Test
-    void objectMapper() {
-        CommonApplicationConfig commonConfig = new CommonApplicationConfig();
-        ObjectMapper objectMapper = commonConfig.objectMapper();
-
-        assertNotNull(objectMapper);
-    }
-    
-    @Test
-    void webClient_withCorrectKeystore() {
-        ConnectionProperties props = new ConnectionProperties();
-        props.setFilePathKeyStore("empty-test-keystore.jks");
-        props.setFilePathTrustStore("empty-test-keystore.jks");
-        props.setKeyStorePassword("testpass");
-        props.setKeyStoreType("JKS");
-        props.setBufferSize("1000000");
-
-        ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
-        WebClient webClient = applicationConfig.webClient(props);
-
-        assertNotNull(webClient);
+    void objectMapperBeanCreated() {
+        ObjectMapper mapper = config.objectMapper();
+        assertNotNull(mapper);
     }
 
     @Test
-    void webClient_withIncorrectKeystore() {
+    void prepareRequestBeanCreated() {
+        ObjectMapper mapper = new ObjectMapper();
+        WebClient webClient = WebClient.create("http://localhost");
+
+        HttpRequestHelper helper = config.prepareRequest(mapper, webClient);
+
+        assertNotNull(helper);
+    }
+
+    @Test
+    void getBufferSizeWhenConfigured() {
         ConnectionProperties props = new ConnectionProperties();
-        props.setFilePathKeyStore("empty-test-keystore1.jks");
-        props.setFilePathTrustStore("empty-test-keystore1.jks");
-        props.setKeyStorePassword("testpass");
-        props.setKeyStoreType("JKS");
-        props.setBufferSize("1000000");
+        props.setBufferSize("2");
 
-        ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
-        WebClient webClient = applicationConfig.webClient(props);
+        int bufferSize = CommonApplicationConfig.getBufferSize(props);
 
-        // даже при неправильном пути к хранилищу метод должен вернуть WebClient (падает только SSL-конфиг)
+        assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE * 2, bufferSize);
+    }
+
+    @Test
+    void getBufferSizeWhenNotConfigured() {
+        ConnectionProperties props = new ConnectionProperties();
+
+        int bufferSize = CommonApplicationConfig.getBufferSize(props);
+
+        assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE, bufferSize);
+    }
+}
+
+class ApplicationConfigTest {
+
+    private final ApplicationConfig config = new ApplicationConfig();
+
+    @Test
+    void webClientBeanCreated() {
+        ConnectionProperties props = new ConnectionProperties();
+        props.setBufferSize("2"); // чтобы прошёл расчёт буфера
+
+        WebClient webClient = config.webClient(props);
+
         assertNotNull(webClient);
     }
 }
