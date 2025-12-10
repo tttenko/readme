@@ -1,40 +1,52 @@
 ```java
-static final int INITIAL_BUFFER_SIZE = 1024;
-
-    /**
-     * Создает и настраивает экземпляр ObjectMapper.
+/**
+     * WebClient с использованием сертификата (бывшая if-ветка).
      */
     @Bean
-    public ObjectMapper objectMapper() {
-        return new ObjectMapper()
-                .configure(ALLOW_SINGLE_QUOTES, true)
-                .configure(FAIL_ON_EMPTY_BEANS, false)
-                .registerModules(new JavaTimeModule())
-                .registerModules(new Jdk8Module())
-                .enable(ACCEPT_EMPTY_STRING_AS_NULL_OBJECT)
-                .disable(ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
-                .disable(FAIL_ON_UNKNOWN_PROPERTIES)
-                .setSerializationInclusion(NON_NULL)
-                .registerModule(new JavaTimeModule())
-                .setSerializationInclusion(NON_EMPTY);
-    }
+    public WebClient webClient(ConnectionProperties props) {
+        if (isNotEmpty(props.getFilePathTrustStore())) {
+            ClassPathResource resource = new ClassPathResource(props.getFilePathKeyStore());
+            HttpClient httpClient = HttpClient.create();
 
-    /**
-     * Создает и возвращает экземпляр HttpRequestHelper, используя переданные зависимости.
-     */
-    @Bean
-    public HttpRequestHelper prepareRequest(ObjectMapper mapper, WebClient webClient) {
-        return new HttpRequestHelper(mapper, webClient);
-    }
+            try {
+                InputStream pfxStream = resource.getInputStream(); // Получаем поток ресурса
 
-    /**
-     * Общий метод расчета размера буфера.
-     */
-    static int getBufferSize(ConnectionProperties props) {
-        if (isNotEmpty(props.getBufferSize())) {
-            return INITIAL_BUFFER_SIZE * Integer.parseInt(props.getBufferSize());
+                KeyStore keyStore = KeyStore.getInstance(
+                        defaultIfNull(props.getKeyStoreType(), KeyStore.getDefaultType())
+                );
+                keyStore.load(pfxStream, props.getKeyStorePassword().toCharArray()); // Загружаем данные из потока
+
+                KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(
+                        defaultIfNull(props.getKeyStoreAlgorithm(), KeyManagerFactory.getDefaultAlgorithm())
+                );
+                keyManagerFactory.init(keyStore, props.getKeyStorePassword().toCharArray());
+
+                SslContext sslContext = SslContextBuilder.forClient()
+                        .keyManager(keyManagerFactory)
+                        .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                        .build();
+
+                httpClient = HttpClient.create()
+                        .secure(t -> t.sslContext(sslContext));
+            } catch (Exception e) {
+                log.error(e.getMessage(), e);
+            }
+
+            return WebClient.builder()
+                    .codecs(configure -> configure
+                            .defaultCodecs()
+                            .maxInMemorySize(getBufferSize(props)))
+                    .clientConnector(new ReactorClientHttpConnector(httpClient))
+                    .build();
         }
-        return INITIAL_BUFFER_SIZE;
+
+        // fallback если вдруг сертификат не задан
+        return WebClient.builder()
+                .codecs(configure -> configure
+                        .defaultCodecs()
+                        .maxInMemorySize(getBufferSize(props)))
+                .build();
     }
+}
 
 ```
