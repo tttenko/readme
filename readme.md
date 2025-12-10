@@ -1,75 +1,40 @@
 ```java
-<plugin>
-    <groupId>org.openapitools</groupId>
-    <artifactId>openapi-generator-maven-plugin</artifactId>
-    <version>${openapi-generator-maven-plugin.version}</version>
+static final int INITIAL_BUFFER_SIZE = 1024;
 
-    <executions>
-        <execution>
-            <id>generate-masterdata-client</id>
-            <goals>
-                <goal>generate</goal>
-            </goals>
+    /**
+     * Создает и настраивает экземпляр ObjectMapper.
+     */
+    @Bean
+    public ObjectMapper objectMapper() {
+        return new ObjectMapper()
+                .configure(ALLOW_SINGLE_QUOTES, true)
+                .configure(FAIL_ON_EMPTY_BEANS, false)
+                .registerModules(new JavaTimeModule())
+                .registerModules(new Jdk8Module())
+                .enable(ACCEPT_EMPTY_STRING_AS_NULL_OBJECT)
+                .disable(ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
+                .disable(FAIL_ON_UNKNOWN_PROPERTIES)
+                .setSerializationInclusion(NON_NULL)
+                .registerModule(new JavaTimeModule())
+                .setSerializationInclusion(NON_EMPTY);
+    }
 
-            <configuration>
-                <!-- метаданные артефакта, как в соседнем модуле -->
-                <groupId>${openapi-generator.groupId}</groupId>
-                <artifactId>${openapi-generator.artifactId}</artifactId>
-                <artifactVersion>${project.version}</artifactVersion>
+    /**
+     * Создает и возвращает экземпляр HttpRequestHelper, используя переданные зависимости.
+     */
+    @Bean
+    public HttpRequestHelper prepareRequest(ObjectMapper mapper, WebClient webClient) {
+        return new HttpRequestHelper(mapper, webClient);
+    }
 
-                <!-- твой YAML -->
-                <inputSpec>
-                    ${project.basedir}/src/main/resources/ewm-reference-tmc.yaml
-                </inputSpec>
-
-                <!-- куда класть сгенерённый код -->
-                <output>${project.build.directory}/generated-sources/swagger/masterdata</output>
-
-                <!-- тип генератора -->
-                <generatorName>spring</generatorName>
-                <library>spring-http-interface</library>
-
-                <!-- пакеты такие же, как были, чтобы не ломать импорт в master-data -->
-                <apiPackage>${openapi-generator.base-package}.api</apiPackage>
-                <invokerPackage>${openapi-generator.base-package}.invoker</invokerPackage>
-                <modelPackage>${openapi-generator.base-package}.models.md</modelPackage>
-
-                <!-- что генерим -->
-                <generateApis>true</generateApis>
-                <generateModels>true</generateModels>
-                <generateApiTests>false</generateApiTests>
-                <generateModelTests>false</generateModelTests>
-                <generateSupportingFiles>false</generateSupportingFiles>
-                <configHelp>false</configHelp>
-
-                <configOptions>
-                    <useJakartaEe>true</useJakartaEe>
-                    <reactive>false</reactive>
-
-                    <!-- только интерфейсы клиента, без контроллеров -->
-                    <interfaceOnly>true</interfaceOnly>
-
-                    <useRuntimeException>true</useRuntimeException>
-
-                    <!-- тот же basePackage, что и выше -->
-                    <basePackage>${openapi-generator.base-package}</basePackage>
-                    <configPackage>${openapi-generator.base-package}.config</configPackage>
-
-                    <!-- nullable через jackson-databind-nullable -->
-                    <openApiNullable>true</openApiNullable>
-
-                    <!-- даты как в твоём варианте -->
-                    <dateLibrary>java8-localdatetime</dateLibrary>
-
-                    <hideGenerationTimestamp>true</hideGenerationTimestamp>
-                    <hideGeneratorVersion>true</hideGeneratorVersion>
-
-                    <!-- важен для пути: .../src/main/java -->
-                    <sourceFolder>src/main/java</sourceFolder>
-                </configOptions>
-            </configuration>
-        </execution>
-    </executions>
-</plugin>
+    /**
+     * Общий метод расчета размера буфера.
+     */
+    static int getBufferSize(ConnectionProperties props) {
+        if (isNotEmpty(props.getBufferSize())) {
+            return INITIAL_BUFFER_SIZE * Integer.parseInt(props.getBufferSize());
+        }
+        return INITIAL_BUFFER_SIZE;
+    }
 
 ```
