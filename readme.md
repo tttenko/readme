@@ -3,12 +3,17 @@
 
     private final CommonApplicationConfig config = new CommonApplicationConfig();
 
-    @BeforeEach
-    void setUp() throws Exception {
-        // Эмулируем подстановку @Value("${master-data.search.bufferSize}")
+    // Хелпер: устанавливаем значение статического поля bufferSize через рефлексию
+    private void setBufferSize(String value) throws Exception {
         Field field = CommonApplicationConfig.class.getDeclaredField("bufferSize");
         field.setAccessible(true);
-        field.setInt(null, 2); // как будто master-data.search.bufferSize=2
+        field.set(null, value); // т.к. поле static
+    }
+
+    @BeforeEach
+    void init() throws Exception {
+        // по умолчанию очищаем bufferSize (как будто настройки нет)
+        setBufferSize(null);
     }
 
     @Test
@@ -28,23 +33,20 @@
     }
 
     @Test
-    void getBufferSizeWhenConfigured() {
-        ConnectionProperties props = new ConnectionProperties();
-        // значение внутри props теперь используется только как флаг "задано/не задано"
-        props.setBufferSize("any");
+    void getBufferSizeWhenConfigured() throws Exception {
+        // эмулируем master-data.search.bufferSize=2
+        setBufferSize("2");
 
-        int bufferSize = CommonApplicationConfig.getBufferSize(props);
+        int bufferSize = CommonApplicationConfig.getBufferSize();
 
-        // ожидаем INITIAL_BUFFER_SIZE * master-data.search.bufferSize (2)
         assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE * 2, bufferSize);
     }
 
     @Test
     void getBufferSizeWhenNotConfigured() {
-        ConnectionProperties props = new ConnectionProperties();
-        // bufferSize в props пустой -> возвращаем дефолт
+        // bufferSize = null (из @BeforeEach)
 
-        int bufferSize = CommonApplicationConfig.getBufferSize(props);
+        int bufferSize = CommonApplicationConfig.getBufferSize();
 
         assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE, bufferSize);
     }
