@@ -1,61 +1,60 @@
 ```java
-class CommonApplicationConfigTest {
+@Slf4j
+@Configuration
+@Profile("local")
+public class ApplicationConfigLocal {
 
-    private final CommonApplicationConfig config = new CommonApplicationConfig();
+    /**
+     * Создаёт и настраивает {@link WebClient} для взаимодействия с сервисом
+     * мастер-данных в локальной среде с поддержкой SSL.
+     *
+     * @param props      свойства подключения (keystore)
+     * @param properties свойства запросов (размер буфера и т.п.)
+     * @return настроенный экземпляр WebClient
+     */
+    @Bean
+    public WebClient webClient(ConnectionProperties props, SearchRequestProperties properties) {
+        // SSL обязательно для local → если не задан путь, падаем сразу
+        if (isEmpty(props.getFilePathTrustStore()) || isEmpty(props.getFilePathKeyStore())) {
+            throw new IllegalStateException(
+                    "SSL is required for 'local' profile: master-data.connection.filePathKeyStore/filePathTrustStore must be set");
+        }
 
-    // хелпер для установки статического поля bufferSize (эмулируем @Value)
-    private void setBufferSize(String value) throws Exception {
-        Field field = CommonApplicationConfig.class.getDeclaredField("bufferSize");
-        field.setAccessible(true);
-        field.set(null, value); // static -> объект = null
-    }
+        ClassPathResource resource = new ClassPathResource(props.getFilePathKeyStore());
+        HttpClient httpClient;
 
-    @BeforeEach
-    void init() throws Exception {
-        // по умолчанию — будто настройки master-data.search.bufferSize нет
-        setBufferSize(null);
-    }
+        try {
+            InputStream pfxStream = resource.getInputStream(); // Получаем поток ресурса
 
-    @Test
-    void objectMapperBeanCreated() {
-        ObjectMapper mapper = config.objectMapper();
-        assertNotNull(mapper);
-    }
+            KeyStore keyStore = KeyStore.getInstance(
+                    defaultIfNull(props.getKeyStoreType(), KeyStore.getDefaultType())
+            );
+            keyStore.load(pfxStream, props.getKeyStorePassword().toCharArray()); // Загружаем данные из потока
 
-    @Test
-    void prepareRequestBeanCreated() {
-        ObjectMapper mapper = new ObjectMapper();
-        WebClient webClient = WebClient.create("http://localhost");
+            KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(
+                    defaultIfNull(props.getKeyStoreAlgorithm(), KeyManagerFactory.getDefaultAlgorithm())
+            );
+            keyManagerFactory.init(keyStore, props.getKeyStorePassword().toCharArray());
 
-        HttpRequestHelper helper = config.prepareRequest(mapper, webClient);
+            SslContext sslContext = SslContextBuilder.forClient()
+                    .keyManager(keyManagerFactory)
+                    .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                    .build();
 
-        assertNotNull(helper);
-    }
+            httpClient = HttpClient.create()
+                    .secure(t -> t.sslContext(sslContext));
+        } catch (Exception e) {
+            log.error("Failed to configure SSL for local WebClient", e);
+            // для локалки это критичный косяк — падаем
+            throw new IllegalStateException("Failed to configure SSL for local WebClient", e);
+        }
 
-    @Test
-    void getBufferSizeWhenConfigured() throws Exception {
-        // эмулируем наличие master-data.search.bufferSize в конфиге
-        setBufferSize("any");
-
-        SearchRequestProperties properties = new SearchRequestProperties();
-        properties.setBufferSize("2");
-
-        int bufferSize = CommonApplicationConfig.getBufferSize(properties);
-
-        // ожидаем INITIAL_BUFFER_SIZE * properties.bufferSize
-        assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE * 2, bufferSize);
-    }
-
-    @Test
-    void getBufferSizeWhenNotConfigured() {
-        // bufferSize == null (установлено в @BeforeEach)
-        SearchRequestProperties properties = new SearchRequestProperties();
-        properties.setBufferSize("2"); // даже если значение есть, оно игнорируется
-
-        int bufferSize = CommonApplicationConfig.getBufferSize(properties);
-
-        // ожидаем дефолтный размер
-        assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE, bufferSize);
+        return WebClient.builder()
+                .codecs(configure -> configure
+                        .defaultCodecs()
+                        .maxInMemorySize(Integer.parseInt(properties.getBufferSize())))
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                .build();
     }
 }
 ```
