@@ -1,19 +1,14 @@
 ```java
- class CommonApplicationConfigTest {
+class CommonApplicationConfigTest {
 
-    private final CommonApplicationConfig config = new CommonApplicationConfig();
-
-    // Хелпер: устанавливаем значение статического поля bufferSize через рефлексию
-    private void setBufferSize(String value) throws Exception {
-        Field field = CommonApplicationConfig.class.getDeclaredField("bufferSize");
-        field.setAccessible(true);
-        field.set(null, value); // т.к. поле static
-    }
+    private CommonApplicationConfig config;
+    private SearchRequestProperties searchProps;
 
     @BeforeEach
-    void init() throws Exception {
-        // по умолчанию очищаем bufferSize (как будто настройки нет)
-        setBufferSize(null);
+    void setUp() {
+        searchProps = new SearchRequestProperties();
+        // если у класса другой пакет/конструктор — подправь импорт/вызов
+        config = new CommonApplicationConfig(searchProps);
     }
 
     @Test
@@ -33,20 +28,21 @@
     }
 
     @Test
-    void getBufferSizeWhenConfigured() throws Exception {
-        // эмулируем master-data.search.bufferSize=2
-        setBufferSize("2");
+    void getBufferSizeWhenConfigured() {
+        // в properties пришло значение "2"
+        searchProps.setBufferSize("2");
 
-        int bufferSize = CommonApplicationConfig.getBufferSize();
+        int bufferSize = config.getBufferSize();
 
         assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE * 2, bufferSize);
     }
 
     @Test
     void getBufferSizeWhenNotConfigured() {
-        // bufferSize = null (из @BeforeEach)
+        // значение не задано (null) — должен вернуться дефолт
+        searchProps.setBufferSize(null);
 
-        int bufferSize = CommonApplicationConfig.getBufferSize();
+        int bufferSize = config.getBufferSize();
 
         assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE, bufferSize);
     }
