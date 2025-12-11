@@ -1,55 +1,61 @@
 ```java
-class ApplicationConfigLocalTest {
+class CommonApplicationConfigTest {
 
-    @Test
-    void objectMapper() {
-        // ObjectMapper теперь создаётся в CommonApplicationConfig без зависимостей
-        CommonApplicationConfig commonConfig = new CommonApplicationConfig();
+    private final CommonApplicationConfig config = new CommonApplicationConfig();
 
-        ObjectMapper objectMapper = commonConfig.objectMapper();
+    // хелпер для установки статического поля bufferSize (эмулируем @Value)
+    private void setBufferSize(String value) throws Exception {
+        Field field = CommonApplicationConfig.class.getDeclaredField("bufferSize");
+        field.setAccessible(true);
+        field.set(null, value); // static -> объект = null
+    }
 
-        assertNotNull(objectMapper);
+    @BeforeEach
+    void init() throws Exception {
+        // по умолчанию — будто настройки master-data.search.bufferSize нет
+        setBufferSize(null);
     }
 
     @Test
-    void webClient_withCorrectKeystore() {
-        // настройки подключения (keystore ок)
-        ConnectionProperties props = new ConnectionProperties();
-        props.setFilePathKeyStore("empty-test-keystore.jks");
-        props.setFilePathTrustStore("empty-test-keystore.jks");
-        props.setKeyStorePassword("testpass");
-        props.setKeyStoreType("JKS");
-
-        // настройки поиска (bufferSize для WebClient)
-        SearchRequestProperties searchProps = new SearchRequestProperties();
-        searchProps.setBufferSize("1000000");
-
-        ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
-
-        WebClient webClient = applicationConfig.webClient(props, searchProps);
-
-        assertNotNull(webClient);
+    void objectMapperBeanCreated() {
+        ObjectMapper mapper = config.objectMapper();
+        assertNotNull(mapper);
     }
 
     @Test
-    void webClient_withIncorrectKeystore() {
-        // настройки подключения (keystore с неверным путём,
-        // но метод должен вернуть WebClient даже при исключении внутри try)
-        ConnectionProperties props = new ConnectionProperties();
-        props.setFilePathKeyStore("empty-test-keystore1.jks");
-        props.setFilePathTrustStore("empty-test-keystore1.jks");
-        props.setKeyStorePassword("testpass");
-        props.setKeyStoreType("JKS");
+    void prepareRequestBeanCreated() {
+        ObjectMapper mapper = new ObjectMapper();
+        WebClient webClient = WebClient.create("http://localhost");
 
-        // настройки поиска
-        SearchRequestProperties searchProps = new SearchRequestProperties();
-        searchProps.setBufferSize("1000000");
+        HttpRequestHelper helper = config.prepareRequest(mapper, webClient);
 
-        ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
+        assertNotNull(helper);
+    }
 
-        WebClient webClient = applicationConfig.webClient(props, searchProps);
+    @Test
+    void getBufferSizeWhenConfigured() throws Exception {
+        // эмулируем наличие master-data.search.bufferSize в конфиге
+        setBufferSize("any");
 
-        assertNotNull(webClient);
+        SearchRequestProperties properties = new SearchRequestProperties();
+        properties.setBufferSize("2");
+
+        int bufferSize = CommonApplicationConfig.getBufferSize(properties);
+
+        // ожидаем INITIAL_BUFFER_SIZE * properties.bufferSize
+        assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE * 2, bufferSize);
+    }
+
+    @Test
+    void getBufferSizeWhenNotConfigured() {
+        // bufferSize == null (установлено в @BeforeEach)
+        SearchRequestProperties properties = new SearchRequestProperties();
+        properties.setBufferSize("2"); // даже если значение есть, оно игнорируется
+
+        int bufferSize = CommonApplicationConfig.getBufferSize(properties);
+
+        // ожидаем дефолтный размер
+        assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE, bufferSize);
     }
 }
 ```
