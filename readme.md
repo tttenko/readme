@@ -1,50 +1,46 @@
 ```java
-class CommonApplicationConfigTest {
+class ApplicationConfigLocalTest {
 
-    private CommonApplicationConfig config;
-    private SearchRequestProperties searchProps;
+    @Test
+    void objectMapper() {
+        // теперь CommonApplicationConfig зависит от SearchRequestProperties
+        SearchRequestProperties searchProps = new SearchRequestProperties();
+        // при желании можешь задать searchProps.setBufferSize("2");
+        CommonApplicationConfig commonConfig = new CommonApplicationConfig(searchProps);
 
-    @BeforeEach
-    void setUp() {
-        searchProps = new SearchRequestProperties();
-        // если у класса другой пакет/конструктор — подправь импорт/вызов
-        config = new CommonApplicationConfig(searchProps);
+        ObjectMapper objectMapper = commonConfig.objectMapper();
+
+        assertNotNull(objectMapper);
     }
 
     @Test
-    void objectMapperBeanCreated() {
-        ObjectMapper mapper = config.objectMapper();
-        assertNotNull(mapper);
+    void webClient_withCorrectKeystore() {
+        ConnectionProperties props = new ConnectionProperties();
+        props.setFilePathKeyStore("empty-test-keystore.jks");
+        props.setFilePathTrustStore("empty-test-keystore.jks");
+        props.setKeyStorePassword("testpass");
+        props.setKeyStoreType("JKS");
+        props.setBufferSize("1000000");
+
+        ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
+        WebClient webClient = applicationConfig.webClient(props);
+
+        assertNotNull(webClient);
     }
 
     @Test
-    void prepareRequestBeanCreated() {
-        ObjectMapper mapper = new ObjectMapper();
-        WebClient webClient = WebClient.create("http://localhost");
+    void webClient_withIncorrectKeystore() {
+        ConnectionProperties props = new ConnectionProperties();
+        props.setFilePathKeyStore("empty-test-keystore1.jks");
+        props.setFilePathTrustStore("empty-test-keystore1.jks");
+        props.setKeyStorePassword("testpass");
+        props.setKeyStoreType("JKS");
+        props.setBufferSize("1000000");
 
-        HttpRequestHelper helper = config.prepareRequest(mapper, webClient);
+        ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
+        WebClient webClient = applicationConfig.webClient(props);
 
-        assertNotNull(helper);
-    }
-
-    @Test
-    void getBufferSizeWhenConfigured() {
-        // в properties пришло значение "2"
-        searchProps.setBufferSize("2");
-
-        int bufferSize = config.getBufferSize();
-
-        assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE * 2, bufferSize);
-    }
-
-    @Test
-    void getBufferSizeWhenNotConfigured() {
-        // значение не задано (null) — должен вернуться дефолт
-        searchProps.setBufferSize(null);
-
-        int bufferSize = config.getBufferSize();
-
-        assertEquals(CommonApplicationConfig.INITIAL_BUFFER_SIZE, bufferSize);
+        assertNotNull(webClient);
     }
 }
 ```
