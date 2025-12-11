@@ -3,10 +3,8 @@ class ApplicationConfigLocalTest {
 
     @Test
     void objectMapper() {
-        // теперь CommonApplicationConfig зависит от SearchRequestProperties
-        SearchRequestProperties searchProps = new SearchRequestProperties();
-        // при желании можешь задать searchProps.setBufferSize("2");
-        CommonApplicationConfig commonConfig = new CommonApplicationConfig(searchProps);
+        // ObjectMapper теперь создаётся в CommonApplicationConfig без зависимостей
+        CommonApplicationConfig commonConfig = new CommonApplicationConfig();
 
         ObjectMapper objectMapper = commonConfig.objectMapper();
 
@@ -15,30 +13,41 @@ class ApplicationConfigLocalTest {
 
     @Test
     void webClient_withCorrectKeystore() {
+        // настройки подключения (keystore ок)
         ConnectionProperties props = new ConnectionProperties();
         props.setFilePathKeyStore("empty-test-keystore.jks");
         props.setFilePathTrustStore("empty-test-keystore.jks");
         props.setKeyStorePassword("testpass");
         props.setKeyStoreType("JKS");
-        props.setBufferSize("1000000");
+
+        // настройки поиска (bufferSize для WebClient)
+        SearchRequestProperties searchProps = new SearchRequestProperties();
+        searchProps.setBufferSize("1000000");
 
         ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
-        WebClient webClient = applicationConfig.webClient(props);
+
+        WebClient webClient = applicationConfig.webClient(props, searchProps);
 
         assertNotNull(webClient);
     }
 
     @Test
     void webClient_withIncorrectKeystore() {
+        // настройки подключения (keystore с неверным путём,
+        // но метод должен вернуть WebClient даже при исключении внутри try)
         ConnectionProperties props = new ConnectionProperties();
         props.setFilePathKeyStore("empty-test-keystore1.jks");
         props.setFilePathTrustStore("empty-test-keystore1.jks");
         props.setKeyStorePassword("testpass");
         props.setKeyStoreType("JKS");
-        props.setBufferSize("1000000");
+
+        // настройки поиска
+        SearchRequestProperties searchProps = new SearchRequestProperties();
+        searchProps.setBufferSize("1000000");
 
         ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
-        WebClient webClient = applicationConfig.webClient(props);
+
+        WebClient webClient = applicationConfig.webClient(props, searchProps);
 
         assertNotNull(webClient);
     }
