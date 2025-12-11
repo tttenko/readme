@@ -1,60 +1,36 @@
 ```java
-@Slf4j
-@Configuration
-@Profile("local")
-public class ApplicationConfigLocal {
+class ApplicationConfigLocalTest {
 
-    /**
-     * Создаёт и настраивает {@link WebClient} для взаимодействия с сервисом
-     * мастер-данных в локальной среде с поддержкой SSL.
-     *
-     * @param props      свойства подключения (keystore)
-     * @param properties свойства запросов (размер буфера и т.п.)
-     * @return настроенный экземпляр WebClient
-     */
-    @Bean
-    public WebClient webClient(ConnectionProperties props, SearchRequestProperties properties) {
-        // SSL обязательно для local → если не задан путь, падаем сразу
-        if (isEmpty(props.getFilePathTrustStore()) || isEmpty(props.getFilePathKeyStore())) {
-            throw new IllegalStateException(
-                    "SSL is required for 'local' profile: master-data.connection.filePathKeyStore/filePathTrustStore must be set");
-        }
+    @Test
+    void webClient_withCorrectKeystore() {
+        ConnectionProperties props = new ConnectionProperties();
+        props.setFilePathKeyStore("empty-test-keystore.jks");
+        props.setFilePathTrustStore("empty-test-keystore.jks");
+        props.setKeyStorePassword("testpass");
+        props.setKeyStoreType("JKS");
 
-        ClassPathResource resource = new ClassPathResource(props.getFilePathKeyStore());
-        HttpClient httpClient;
+        SearchRequestProperties searchProps = new SearchRequestProperties();
+        searchProps.setBufferSize("1000000");
 
-        try {
-            InputStream pfxStream = resource.getInputStream(); // Получаем поток ресурса
+        ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
 
-            KeyStore keyStore = KeyStore.getInstance(
-                    defaultIfNull(props.getKeyStoreType(), KeyStore.getDefaultType())
-            );
-            keyStore.load(pfxStream, props.getKeyStorePassword().toCharArray()); // Загружаем данные из потока
+        WebClient webClient = applicationConfig.webClient(props, searchProps);
 
-            KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(
-                    defaultIfNull(props.getKeyStoreAlgorithm(), KeyManagerFactory.getDefaultAlgorithm())
-            );
-            keyManagerFactory.init(keyStore, props.getKeyStorePassword().toCharArray());
+        assertNotNull(webClient);
+    }
 
-            SslContext sslContext = SslContextBuilder.forClient()
-                    .keyManager(keyManagerFactory)
-                    .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                    .build();
+    @Test
+    void webClient_withoutKeystore_throwsException() {
+        ConnectionProperties props = new ConnectionProperties();
+        // специально ничего не задаём / или задаём пустые строки
 
-            httpClient = HttpClient.create()
-                    .secure(t -> t.sslContext(sslContext));
-        } catch (Exception e) {
-            log.error("Failed to configure SSL for local WebClient", e);
-            // для локалки это критичный косяк — падаем
-            throw new IllegalStateException("Failed to configure SSL for local WebClient", e);
-        }
+        SearchRequestProperties searchProps = new SearchRequestProperties();
+        searchProps.setBufferSize("1000000");
 
-        return WebClient.builder()
-                .codecs(configure -> configure
-                        .defaultCodecs()
-                        .maxInMemorySize(Integer.parseInt(properties.getBufferSize())))
-                .clientConnector(new ReactorClientHttpConnector(httpClient))
-                .build();
+        ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
+
+        assertThrows(IllegalStateException.class,
+                () -> applicationConfig.webClient(props, searchProps));
     }
 }
 ```
