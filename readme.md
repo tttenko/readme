@@ -74,42 +74,17 @@ public class BaseMasterDataRequestService {
 
 
 
-@Configuration
-@RequiredArgsConstructor
-public class MasterDataApiClientConfig {
-
-    @Qualifier("masterDataWebClient")
-    private final WebClient webClient;
-
-    private final SearchRequestProperties props;
-
-    @Bean("mdBookApi")
-    public ApiApi mdBookApi() {
-        return createApi(joinBaseUrl(props.getUrl(), props.getBookContext()));
+private static String joinBaseUrl(String url, String context) {
+    URI base = URI.create(url); // упадёт, если строка вообще не URI
+    if (base.getScheme() == null || base.getHost() == null) {
+        throw new IllegalStateException("Invalid master-data url (must be absolute): " + url);
+    }
+    if (context == null || context.isBlank()) {
+        throw new IllegalStateException("master-data context is blank");
     }
 
-    @Bean("mdTmcApi")
-    public ApiApi mdTmcApi() {
-        return createApi(joinBaseUrl(props.getUrl(), props.getTmcContext()));
-    }
-
-    private ApiApi createApi(String baseUrl) {
-        WebClient client = webClient.mutate()
-                .baseUrl(baseUrl)
-                .build();
-
-        HttpServiceProxyFactory factory = HttpServiceProxyFactory
-                .builderFor(WebClientAdapter.create(client))
-                .build();
-
-        return factory.createClient(ApiApi.class);
-    }
-
-    private static String joinBaseUrl(String url, String context) {
-        String u = url == null ? "" : url.replaceAll("/+$", "");
-        String c = context == null ? "" : context.replaceAll("^/+", "").replaceAll("/+$", "");
-        return u + "/" + c;
-    }
+    String u = url.replaceAll("/+$", "");
+    String c = context.replaceAll("^/+", "").replaceAll("/+$", "");
+    return u + "/" + c;
 }
-
 ```
