@@ -1,23 +1,19 @@
 ```java
-class ApplicationConfigTest {
+int maxBytes = Integer.parseInt(props.getBufferSize());
 
-    private final ApplicationConfig config = new ApplicationConfig();
+        // JSON decoder/encoder строго с твоим ObjectMapper
+        Jackson2JsonDecoder decoder = new Jackson2JsonDecoder(objectMapper, MediaType.APPLICATION_JSON);
+        decoder.setMaxInMemorySize(maxBytes);
 
-    @Test
-    void webClientBeanCreated() {
-        ExchangeStrategies strategies = ExchangeStrategies.builder()
-                .codecs(c -> c.defaultCodecs().jackson2JsonDecoder(new Jackson2JsonDecoder()))
+        Jackson2JsonEncoder encoder = new Jackson2JsonEncoder(objectMapper, MediaType.APPLICATION_JSON);
+
+        return ExchangeStrategies.builder()
+                .codecs(c -> {
+                    c.registerDefaults(false);              // <-- ключевой момент: не поднимать дефолты (и CBOR тоже)
+                    c.customCodecs().register(decoder);
+                    c.customCodecs().register(encoder);
+                })
                 .build();
-
-        WebClient webClient = config.webClient(strategies);
-
-        assertNotNull(webClient);
-
-        // (опционально) Проверяем, что WebClient реально получил эти стратегии
-        Object actualStrategies = ReflectionTestUtils.getField(webClient, "exchangeStrategies");
-        assertSame(strategies, actualStrategies);
-    }
-}
 
 
 
