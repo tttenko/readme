@@ -1,35 +1,73 @@
 ```java
-@Test
-    void strategiesUseConfiguredObjectMapper_singleQuotesAreParsed() {
-        CommonApplicationConfig cfg = new CommonApplicationConfig();
+@Log4j2
+@Component
+@RequiredArgsConstructor
+public class BaseMasterDataRequestService {
 
-        SearchRequestProperties props = new SearchRequestProperties();
-        props.setBufferSize("1024");
+    protected static final String SUCCESS = "S";
 
-        ObjectMapper mapper = cfg.objectMapper();
-        ExchangeStrategies strategies = cfg.masterDataExchangeStrategies(props, mapper);
+    // это твои конфиги/лимиты/атрибуты — оставить как есть
+    public final SearchRequestProperties properties;
 
-        Jackson2JsonDecoder decoder = strategies.messageReaders().stream()
-                .filter(DecoderHttpMessageReader.class::isInstance)
-                .map(DecoderHttpMessageReader.class::cast)
-                .map(r -> r.getDecoder())
-                .filter(Jackson2JsonDecoder.class::isInstance)
-                .map(Jackson2JsonDecoder.class::cast)
-                .findFirst()
-                .orElseThrow();
+    @Qualifier("mdBookApi")
+    private final ApiApi mdBookApi;
 
-        var buf = new DefaultDataBufferFactory()
-                .wrap("{'x':1}".getBytes(StandardCharsets.UTF_8));
+    @Qualifier("mdTmcApi")
+    private final ApiApi mdTmcApi;
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> result = (Map<String, Object>) decoder.decodeToMono(
-                Mono.just(buf),
-                ResolvableType.forClass(Map.class),
-                MediaType.APPLICATION_JSON,
-                Map.of()
-        ).block();
+    public GetItemsSearchResponse requestData(ItemsSearchCriteriaRequest request,
+                                              SearchRequestProperties.Context context) {
+        try {
+            ResponseEntity<GetItemsSearchResponse> resp =
+                    api(context).findItemsByAttributeValues(request);
 
-        assertEquals(1, ((Number) result.get("x")).intValue());
+            // Если вдруг вернулся не 2xx (в зависимости от настроек адаптера)
+            if (!resp.getStatusCode().is2xxSuccessful()) {
+                throw new MdaServerErrorException(
+                        "MD call failed: HTTP " + resp.getStatusCode(),
+                        resp.getStatusCode().value(),
+                        "Ошибка сервера",
+                        null
+                );
+            }
+
+            GetItemsSearchResponse body = resp.getBody();
+            if (body == null) {
+                throw new MdaServerErrorException(
+                        "MD call failed: empty body",
+                        502,
+                        "Пустой ответ от МД",
+                        null
+                );
+            }
+
+            return body;
+
+        } catch (WebClientResponseException ex) {
+            // 4xx/5xx если адаптер выбрасывает исключение
+            if (ex.getCause() instanceof DataBufferLimitException) {
+                throw new MdaDataBufferLimitException(ex.getMessage());
+            }
+            if (ex instanceof WebClientResponseException.InternalServerError) {
+                throw new MdaInternalMdServerException(ex.getMessage());
+            }
+            throw new MdaServerErrorException(
+                    ex.getMessage(),
+                    ex.getStatusCode().value(),
+                    "Ошибка сервера",
+                    null
+            );
+        } catch (Exception ex) {
+            // на всякий случай сохраним поведение “как раньше”
+            if (ex.getCause() instanceof DataBufferLimitException) {
+                throw new MdaDataBufferLimitException(ex.getMessage());
+            }
+            throw ex;
+        }
+    }
+
+    private ApiApi api(SearchRequestProperties.Context context) {
+        return context == SearchRequestProperties.Context.TMC ? mdTmcApi : mdBookApi;
     }
 
 
