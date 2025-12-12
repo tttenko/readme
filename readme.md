@@ -1,44 +1,49 @@
 ```java
-class ApplicationConfigLocalTest {
+@Test
+    void masterDataExchangeStrategiesBeanCreated() {
+        SearchRequestProperties properties = new SearchRequestProperties();
+        properties.setBufferSize("2");
 
-    /**
-     * Хелпер для установки приватного поля через рефлексию
-     */
-    private void setField(ApplicationConfigLocal config, String name, String value) throws Exception {
-        Field field = ApplicationConfigLocal.class.getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(config, value);
+        ObjectMapper mapper = new ObjectMapper();
+
+        ExchangeStrategies strategies = config.masterDataExchangeStrategies(properties, mapper);
+
+        assertNotNull(strategies);
     }
 
     @Test
-    void webClient_withCorrectKeystore() throws Exception {
-        // настраиваем конфиг так, как будто @Value всё подставил
-        ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
-        setField(applicationConfig, "filePathKeyStore", "empty-test-keystore.jks");
-        setField(applicationConfig, "keyStorePassword", "testpass");
-        setField(applicationConfig, "keyStoreType", "JKS");
-        // алгоритм можно не задавать, тогда возьмётся дефолтный,
-        // но если хочешь — раскомментируй:
-        // setField(applicationConfig, "keyStoreAlgorithm", "SunX509");
+    void masterDataExchangeStrategiesConfiguresCborDecoderAndMaxInMemorySize() {
+        SearchRequestProperties properties = new SearchRequestProperties();
+        properties.setBufferSize("2");
 
-        SearchRequestProperties searchProps = new SearchRequestProperties();
-        searchProps.setBufferSize("1000000");
+        ObjectMapper mapper = new ObjectMapper();
 
-        WebClient webClient = applicationConfig.webClient(searchProps);
+        ExchangeStrategies strategies = config.masterDataExchangeStrategies(properties, mapper);
 
-        assertNotNull(webClient);
+        List<Jackson2CborDecoder> cborDecoders = strategies.messageReaders().stream()
+                .filter(r -> r instanceof DecoderHttpMessageReader)
+                .map(r -> ((DecoderHttpMessageReader<?>) r).getDecoder())
+                .filter(d -> d instanceof Jackson2CborDecoder)
+                .map(d -> (Jackson2CborDecoder) d)
+                .collect(Collectors.toList());
+
+        assertFalse(cborDecoders.isEmpty(), "В ExchangeStrategies должен быть зарегистрирован Jackson2CborDecoder");
+
+        Jackson2CborDecoder decoder = cborDecoders.get(0);
+        assertSame(mapper, decoder.getObjectMapper(), "Должен использоваться переданный ObjectMapper");
+        assertEquals(2, decoder.getMaxInMemorySize(), "maxInMemorySize должен браться из properties.getBufferSize()");
+        assertTrue(decoder.canDecode(ResolvableType.forClass(Object.class), MediaType.APPLICATION_JSON),
+                "Декодер должен уметь декодировать application/json");
     }
 
     @Test
-    void webClient_withoutKeystore_throwsException() {
-        // поля не трогаем → filePathKeyStore останется null
-        ApplicationConfigLocal applicationConfig = new ApplicationConfigLocal();
+    void masterDataExchangeStrategiesThrowsWhenBufferSizeIsNotNumber() {
+        SearchRequestProperties properties = new SearchRequestProperties();
+        properties.setBufferSize("not-a-number");
 
-        SearchRequestProperties searchProps = new SearchRequestProperties();
-        searchProps.setBufferSize("1000000");
+        ObjectMapper mapper = new ObjectMapper();
 
-        assertThrows(IllegalStateException.class,
-                () -> applicationConfig.webClient(searchProps));
+        assertThrows(NumberFormatException.class,
+                () -> config.masterDataExchangeStrategies(properties, mapper));
     }
-}
 ```
