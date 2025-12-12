@@ -72,4 +72,44 @@ public class BaseMasterDataRequestService {
 
 
 
+
+
+@Configuration
+@RequiredArgsConstructor
+public class MasterDataApiClientConfig {
+
+    @Qualifier("masterDataWebClient")
+    private final WebClient webClient;
+
+    private final SearchRequestProperties props;
+
+    @Bean("mdBookApi")
+    public ApiApi mdBookApi() {
+        return createApi(joinBaseUrl(props.getUrl(), props.getBookContext()));
+    }
+
+    @Bean("mdTmcApi")
+    public ApiApi mdTmcApi() {
+        return createApi(joinBaseUrl(props.getUrl(), props.getTmcContext()));
+    }
+
+    private ApiApi createApi(String baseUrl) {
+        WebClient client = webClient.mutate()
+                .baseUrl(baseUrl)
+                .build();
+
+        HttpServiceProxyFactory factory = HttpServiceProxyFactory
+                .builderFor(WebClientAdapter.create(client))
+                .build();
+
+        return factory.createClient(ApiApi.class);
+    }
+
+    private static String joinBaseUrl(String url, String context) {
+        String u = url == null ? "" : url.replaceAll("/+$", "");
+        String c = context == null ? "" : context.replaceAll("^/+", "").replaceAll("/+$", "");
+        return u + "/" + c;
+    }
+}
+
 ```
