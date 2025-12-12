@@ -1,19 +1,36 @@
 ```java
-int maxBytes = Integer.parseInt(props.getBufferSize());
+@Test
+    void strategiesUseConfiguredObjectMapper_singleQuotesAreParsed() {
+        CommonApplicationConfig cfg = new CommonApplicationConfig();
 
-        // JSON decoder/encoder строго с твоим ObjectMapper
-        Jackson2JsonDecoder decoder = new Jackson2JsonDecoder(objectMapper, MediaType.APPLICATION_JSON);
-        decoder.setMaxInMemorySize(maxBytes);
+        SearchRequestProperties props = new SearchRequestProperties();
+        props.setBufferSize("1024");
 
-        Jackson2JsonEncoder encoder = new Jackson2JsonEncoder(objectMapper, MediaType.APPLICATION_JSON);
+        ObjectMapper mapper = cfg.objectMapper();
+        ExchangeStrategies strategies = cfg.masterDataExchangeStrategies(props, mapper);
 
-        return ExchangeStrategies.builder()
-                .codecs(c -> {
-                    c.registerDefaults(false);              // <-- ключевой момент: не поднимать дефолты (и CBOR тоже)
-                    c.customCodecs().register(decoder);
-                    c.customCodecs().register(encoder);
-                })
-                .build();
+        Jackson2JsonDecoder decoder = strategies.messageReaders().stream()
+                .filter(DecoderHttpMessageReader.class::isInstance)
+                .map(DecoderHttpMessageReader.class::cast)
+                .map(r -> r.getDecoder())
+                .filter(Jackson2JsonDecoder.class::isInstance)
+                .map(Jackson2JsonDecoder.class::cast)
+                .findFirst()
+                .orElseThrow();
+
+        var buf = new DefaultDataBufferFactory()
+                .wrap("{'x':1}".getBytes(StandardCharsets.UTF_8));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) decoder.decodeToMono(
+                Mono.just(buf),
+                ResolvableType.forClass(Map.class),
+                MediaType.APPLICATION_JSON,
+                Map.of()
+        ).block();
+
+        assertEquals(1, ((Number) result.get("x")).intValue());
+    }
 
 
 
