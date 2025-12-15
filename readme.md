@@ -1,43 +1,50 @@
 ```java
-@Component
-@RequiredArgsConstructor
-public class MasterDataApiApiClient implements MasterDataClient {
+@Slf4j
+public final class MasterDataWebClientFilters {
 
-    @Qualifier("mdBookApi")
-    private final ApiApi mdBookApi;
+    private MasterDataWebClientFilters() {}
 
-    @Qualifier("mdTmcApi")
-    private final ApiApi mdTmcApi;
+    /** Один фильтр: лог + единый маппинг ошибок в Mda*Exception */
+    public static ExchangeFilterFunction md() {
+        return (req, next) -> {
+            log.info("MD -> {} {}", req.method(), req.url());
 
-    @Override
-    public GetItemsSearchResponse findItemsByAttributeValues(
-            ItemsSearchCriteriaRequest request,
-            SearchRequestProperties.Context context
-    ) {
-        ApiApi api = (context == SearchRequestProperties.Context.TMC) ? mdTmcApi : mdBookApi;
+            return next.exchange(req)
+                    .flatMap(resp -> {
+                        log.info("MD <- {} {}", resp.statusCode().value(), req.url());
 
-        ResponseEntity<GetItemsSearchResponse> resp = api.findItemsByAttributeValues(request);
+                        if (resp.statusCode().is2xxSuccessful()) {
+                            return Mono.just(resp);
+                        }
 
-        if (!resp.getStatusCode().is2xxSuccessful()) {
-            throw new MdaServerErrorException(
-                    "MD call failed: HTTP " + resp.getStatusCode(),
-                    resp.getStatusCode().value(),
-                    "Ошибка сервера",
-                    null
-            );
+                        // прочитать body и получить стандартный WebClientResponseException
+                        return resp.createException()
+                                .flatMap(ex -> Mono.error(mapToMda((WebClientResponseException) ex)));
+                    })
+                    .onErrorMap(DataBufferLimitException.class,
+                            e -> new MdaDataBufferLimitException(e.getMessage()))
+                    .onErrorMap(WebClientResponseException.class,
+                            MasterDataWebClientFilters::mapToMda);
+        };
+    }
+
+    private static RuntimeException mapToMda(WebClientResponseException ex) {
+        if (ex.getCause() instanceof DataBufferLimitException) {
+            return new MdaDataBufferLimitException(ex.getMessage());
+        }
+        if (ex.getStatusCode().value() == 500) {
+            return new MdaInternalMdServerException(ex.getMessage());
         }
 
-        GetItemsSearchResponse body = resp.getBody();
-        if (body == null) {
-            throw new MdaServerErrorException(
-                    "Empty body from MD",
-                    502,
-                    "Пустой ответ от МД",
-                    null
-            );
-        }
+        String body = ex.getResponseBodyAsString();
+        if (body == null) body = "";
 
-        return body;
+        return new MdaServerErrorException(
+                ex.getMessage(),
+                ex.getStatusCode().value(),
+                "Ошибка сервера",
+                body
+        );
     }
 }
 ```
