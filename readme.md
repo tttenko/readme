@@ -1,137 +1,78 @@
 ```java
 
- <!-- 1) MODELS from BOOK -> общий output -->
-                <execution>
-                    <id>generate-masterdata-models-book</id>
-                    <phase>generate-sources</phase>
-                    <goals><goal>generate</goal></goals>
-                    <configuration>
-                        <inputSpec>${project.basedir}/src/main/resources/ewm-reference-book.yaml</inputSpec>
-                        <output>${openapi.out.dir}/masterdata-models</output>
+ <!-- TMC: API + MODELS (модели оставляем в старом пакете, чтобы бизнес-код не менять) -->
+    <execution>
+      <id>generate-masterdata-tmc</id>
+      <phase>generate-sources</phase>
+      <goals>
+        <goal>generate</goal>
+      </goals>
+      <configuration>
+        <inputSpec>${project.basedir}/src/main/resources/ewm-reference-tmc.yaml</inputSpec>
+        <output>${project.build.directory}/generated-sources/swagger/masterdata-tmc</output>
 
-                        <generatorName>spring</generatorName>
-                        <library>spring-http-interface</library>
+        <generatorName>spring</generatorName>
+        <library>spring-http-interface</library>
 
-                        <modelPackage>${openapi-generator.base-package}.models.md</modelPackage>
+        <apiPackage>${openapi-generator.base-package}.tmc.api</apiPackage>
+        <!-- ВАЖНО: этот пакет остаётся как сейчас -->
+        <modelPackage>${openapi-generator.base-package}.models.md</modelPackage>
 
-                        <generateApis>false</generateApis>
-                        <generateModels>true</generateModels>
-                        <generateSupportingFiles>false</generateSupportingFiles>
+        <generateApis>true</generateApis>
+        <generateModels>true</generateModels>
+        <generateSupportingFiles>false</generateSupportingFiles>
 
-                        <configOptions>
-                            <useJakartaEe>true</useJakartaEe>
-                            <reactive>false</reactive>
-                            <interfaceOnly>true</interfaceOnly>
-                            <useRuntimeException>true</useRuntimeException>
-                            <openApiNullable>true</openApiNullable>
-                            <dateLibrary>java8-localdatetime</dateLibrary>
-                            <hideGenerationTimestamp>true</hideGenerationTimestamp>
-                            <hideGeneratorVersion>true</hideGeneratorVersion>
-                            <sourceFolder>src/main/java</sourceFolder>
-                        </configOptions>
-                    </configuration>
-                </execution>
+        <addCompileSourceRoot>true</addCompileSourceRoot>
 
-                <!-- 2) MODELS from TMC -> ДОПИСЫВАЕМ в тот же output -->
-                <execution>
-                    <id>generate-masterdata-models-tmc</id>
-                    <phase>generate-sources</phase>
-                    <goals><goal>generate</goal></goals>
-                    <configuration>
-                        <inputSpec>${project.basedir}/src/main/resources/ewm-reference-tmc.yaml</inputSpec>
-                        <output>${openapi.out.dir}/masterdata-models</output>
+        <configOptions>
+          <useJakartaEe>true</useJakartaEe>
+          <reactive>false</reactive>
+          <interfaceOnly>true</interfaceOnly>
+          <useRuntimeException>true</useRuntimeException>
+          <openApiNullable>true</openApiNullable>
+          <dateLibrary>java8-localdatetime</dateLibrary>
+          <hideGenerationTimestamp>true</hideGenerationTimestamp>
+          <hideGeneratorVersion>true</hideGeneratorVersion>
+          <sourceFolder>src/main/java</sourceFolder>
+        </configOptions>
+      </configuration>
+    </execution>
 
-                        <generatorName>spring</generatorName>
-                        <library>spring-http-interface</library>
+    <!-- BOOK: API + MODELS (модели отдельно, чтобы не конфликтовали и “лежали рядом”) -->
+    <execution>
+      <id>generate-masterdata-book</id>
+      <phase>generate-sources</phase>
+      <goals>
+        <goal>generate</goal>
+      </goals>
+      <configuration>
+        <inputSpec>${project.basedir}/src/main/resources/ewm-reference-book.yaml</inputSpec>
+        <output>${project.build.directory}/generated-sources/swagger/masterdata-book</output>
 
-                        <modelPackage>${openapi-generator.base-package}.models.md</modelPackage>
+        <generatorName>spring</generatorName>
+        <library>spring-http-interface</library>
 
-                        <generateApis>false</generateApis>
-                        <generateModels>true</generateModels>
-                        <generateSupportingFiles>false</generateSupportingFiles>
+        <apiPackage>${openapi-generator.base-package}.book.api</apiPackage>
+        <!-- BOOK-модели в отдельном пакете -->
+        <modelPackage>${openapi-generator.base-package}.book.models.md</modelPackage>
 
-                        <!-- важно: не удалять результат book-моделей -->
-                        <cleanupOutput>false</cleanupOutput>
-                        <!-- чтобы одинаковые модели не перетирались -->
-                        <skipOverwrite>true</skipOverwrite>
+        <generateApis>true</generateApis>
+        <generateModels>true</generateModels>
+        <generateSupportingFiles>false</generateSupportingFiles>
 
-                        <configOptions>
-                            <useJakartaEe>true</useJakartaEe>
-                            <reactive>false</reactive>
-                            <interfaceOnly>true</interfaceOnly>
-                            <useRuntimeException>true</useRuntimeException>
-                            <openApiNullable>true</openApiNullable>
-                            <dateLibrary>java8-localdatetime</dateLibrary>
-                            <hideGenerationTimestamp>true</hideGenerationTimestamp>
-                            <hideGeneratorVersion>true</hideGeneratorVersion>
-                            <sourceFolder>src/main/java</sourceFolder>
-                        </configOptions>
-                    </configuration>
-                </execution>
+        <addCompileSourceRoot>true</addCompileSourceRoot>
 
-                <!-- 3) TMC API only -->
-                <execution>
-                    <id>generate-masterdata-tmc-api</id>
-                    <phase>generate-sources</phase>
-                    <goals><goal>generate</goal></goals>
-                    <configuration>
-                        <inputSpec>${project.basedir}/src/main/resources/ewm-reference-tmc.yaml</inputSpec>
-                        <output>${openapi.out.dir}/masterdata-tmc</output>
-
-                        <generatorName>spring</generatorName>
-                        <library>spring-http-interface</library>
-
-                        <apiPackage>${openapi-generator.base-package}.tmc.api</apiPackage>
-                        <modelPackage>${openapi-generator.base-package}.models.md</modelPackage>
-
-                        <generateApis>true</generateApis>
-                        <generateModels>false</generateModels>
-                        <generateSupportingFiles>false</generateSupportingFiles>
-
-                        <configOptions>
-                            <useJakartaEe>true</useJakartaEe>
-                            <reactive>false</reactive>
-                            <interfaceOnly>true</interfaceOnly>
-                            <useRuntimeException>true</useRuntimeException>
-                            <openApiNullable>true</openApiNullable>
-                            <dateLibrary>java8-localdatetime</dateLibrary>
-                            <hideGenerationTimestamp>true</hideGenerationTimestamp>
-                            <hideGeneratorVersion>true</hideGeneratorVersion>
-                            <sourceFolder>src/main/java</sourceFolder>
-                        </configOptions>
-                    </configuration>
-                </execution>
-
-                <!-- 4) BOOK API only -->
-                <execution>
-                    <id>generate-masterdata-book-api</id>
-                    <phase>generate-sources</phase>
-                    <goals><goal>generate</goal></goals>
-                    <configuration>
-                        <inputSpec>${project.basedir}/src/main/resources/ewm-reference-book.yaml</inputSpec>
-                        <output>${openapi.out.dir}/masterdata-book</output>
-
-                        <generatorName>spring</generatorName>
-                        <library>spring-http-interface</library>
-
-                        <apiPackage>${openapi-generator.base-package}.book.api</apiPackage>
-                        <modelPackage>${openapi-generator.base-package}.models.md</modelPackage>
-
-                        <generateApis>true</generateApis>
-                        <generateModels>false</generateModels>
-                        <generateSupportingFiles>false</generateSupportingFiles>
-
-                        <configOptions>
-                            <useJakartaEe>true</useJakartaEe>
-                            <reactive>false</reactive>
-                            <interfaceOnly>true</interfaceOnly>
-                            <useRuntimeException>true</useRuntimeException>
-                            <openApiNullable>true</openApiNullable>
-                            <dateLibrary>java8-localdatetime</dateLibrary>
-                            <hideGenerationTimestamp>true</hideGenerationTimestamp>
-                            <hideGeneratorVersion>true</hideGeneratorVersion>
-                            <sourceFolder>src/main/java</sourceFolder>
-                        </configOptions>
-                    </configuration>
-                </execution>
+        <configOptions>
+          <useJakartaEe>true</useJakartaEe>
+          <reactive>false</reactive>
+          <interfaceOnly>true</interfaceOnly>
+          <useRuntimeException>true</useRuntimeException>
+          <openApiNullable>true</openApiNullable>
+          <dateLibrary>java8-localdatetime</dateLibrary>
+          <hideGenerationTimestamp>true</hideGenerationTimestamp>
+          <hideGeneratorVersion>true</hideGeneratorVersion>
+          <sourceFolder>src/main/java</sourceFolder>
+        </configOptions>
+      </configuration>
+    </execution>
 ```
