@@ -1,8 +1,8 @@
 ```java
 
-<!-- 1) MODELS: генерим ОДИН раз (лучше из book, т.к. он “толще”) -->
-    <execution>
+<execution>
       <id>generate-masterdata-models</id>
+      <phase>generate-sources</phase>
       <goals><goal>generate</goal></goals>
       <configuration>
         <inputSpec>${project.basedir}/src/main/resources/ewm-reference-book.yaml</inputSpec>
@@ -16,6 +16,8 @@
         <generateApis>false</generateApis>
         <generateModels>true</generateModels>
         <generateSupportingFiles>false</generateSupportingFiles>
+
+        <addCompileSourceRoot>true</addCompileSourceRoot>
 
         <configOptions>
           <useJakartaEe>true</useJakartaEe>
@@ -31,9 +33,10 @@
       </configuration>
     </execution>
 
-    <!-- 2) TMC: генерим только API, модели НЕ генерим -->
+    <!-- 2) TMC API -->
     <execution>
       <id>generate-masterdata-tmc</id>
+      <phase>generate-sources</phase>
       <goals><goal>generate</goal></goals>
       <configuration>
         <inputSpec>${project.basedir}/src/main/resources/ewm-reference-tmc.yaml</inputSpec>
@@ -49,6 +52,8 @@
         <generateModels>false</generateModels>
         <generateSupportingFiles>false</generateSupportingFiles>
 
+        <addCompileSourceRoot>true</addCompileSourceRoot>
+
         <configOptions>
           <useJakartaEe>true</useJakartaEe>
           <reactive>false</reactive>
@@ -63,9 +68,10 @@
       </configuration>
     </execution>
 
-    <!-- 3) BOOK: генерим только API, модели НЕ генерим -->
+    <!-- 3) BOOK API -->
     <execution>
       <id>generate-masterdata-book</id>
+      <phase>generate-sources</phase>
       <goals><goal>generate</goal></goals>
       <configuration>
         <inputSpec>${project.basedir}/src/main/resources/ewm-reference-book.yaml</inputSpec>
@@ -81,6 +87,8 @@
         <generateModels>false</generateModels>
         <generateSupportingFiles>false</generateSupportingFiles>
 
+        <addCompileSourceRoot>true</addCompileSourceRoot>
+
         <configOptions>
           <useJakartaEe>true</useJakartaEe>
           <reactive>false</reactive>
@@ -94,5 +102,4 @@
         </configOptions>
       </configuration>
     </execution>
-
 ```
