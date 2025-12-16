@@ -1,133 +1,74 @@
 ```java
 
-<parent>
-        <groupId>ru.sber.cs.supplier.portal.masterdata</groupId>
-        <artifactId>common-master-data</artifactId>
-        <version>${revision}</version>
-        <relativePath>../pom.xml</relativePath>
-    </parent>
+<!-- TMC: генерим api + models -->
+                <execution>
+                    <id>generate-masterdata-tmc</id>
+                    <goals>
+                        <goal>generate</goal>
+                    </goals>
+                    <configuration>
+                        <inputSpec>${project.basedir}/src/main/resources/ewm-reference-tmc.yaml</inputSpec>
+                        <output>${project.build.directory}/generated-sources/swagger/masterdata-tmc</output>
 
-    <artifactId>master-data</artifactId>
-    <packaging>jar</packaging>
-    <name>master-data</name>
+                        <generatorName>spring</generatorName>
+                        <library>spring-http-interface</library>
 
-    <dependencies>
-        <!-- Web MVC -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
+                        <apiPackage>${masterdata.codegen.basepackage}.tmc.api</apiPackage>
+                        <modelPackage>${masterdata.codegen.basepackage}.models.md</modelPackage>
+                        <invokerPackage>${masterdata.codegen.basepackage}.invoker</invokerPackage>
+                        <configPackage>${masterdata.codegen.basepackage}.config</configPackage>
 
-        <!-- WebFlux (оставляй только если реально используешь реактив) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webflux</artifactId>
-        </dependency>
+                        <generateApis>true</generateApis>
+                        <generateModels>true</generateModels>
+                        <generateSupportingFiles>false</generateSupportingFiles>
 
-        <!-- Cache -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-cache</artifactId>
-        </dependency>
+                        <configOptions>
+                            <useJakartaEe>true</useJakartaEe>
+                            <reactive>false</reactive>
+                            <interfaceOnly>true</interfaceOnly>
+                            <useRuntimeException>true</useRuntimeException>
+                            <openApiNullable>true</openApiNullable>
+                            <dateLibrary>java8-localdatetime</dateLibrary>
+                            <hideGenerationTimestamp>true</hideGenerationTimestamp>
+                            <hideGeneratorVersion>true</hideGeneratorVersion>
+                            <sourceFolder>src/main/java</sourceFolder>
+                        </configOptions>
+                    </configuration>
+                </execution>
 
-        <dependency>
-            <groupId>com.github.ben-manes.caffeine</groupId>
-            <artifactId>caffeine</artifactId>
-        </dependency>
+                <!-- BOOK: генерим только api, модели НЕ генерим -->
+                <execution>
+                    <id>generate-masterdata-book</id>
+                    <goals>
+                        <goal>generate</goal>
+                    </goals>
+                    <configuration>
+                        <inputSpec>${project.basedir}/src/main/resources/ewm-reference-book.yaml</inputSpec>
+                        <output>${project.build.directory}/generated-sources/swagger/masterdata-book</output>
 
-        <!-- Validation (Boot 3 / Jakarta) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-validation</artifactId>
-        </dependency>
+                        <generatorName>spring</generatorName>
+                        <library>spring-http-interface</library>
 
-        <!-- Actuator -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-actuator</artifactId>
-        </dependency>
+                        <apiPackage>${masterdata.codegen.basepackage}.book.api</apiPackage>
+                        <modelPackage>${masterdata.codegen.basepackage}.models.md</modelPackage>
+                        <invokerPackage>${masterdata.codegen.basepackage}.invoker</invokerPackage>
+                        <configPackage>${masterdata.codegen.basepackage}.config</configPackage>
 
-        <!-- Internal deps -->
-        <dependency>
-            <groupId>ru.sber.cs.core</groupId>
-            <artifactId>cs-core-rest-response</artifactId>
-        </dependency>
+                        <generateApis>true</generateApis>
+                        <generateModels>false</generateModels>
+                        <generateSupportingFiles>false</generateSupportingFiles>
 
-        <dependency>
-            <groupId>ru.sber.cs.supplier.portal.masterdata</groupId>
-            <artifactId>master-data-client</artifactId>
-        </dependency>
-
-        <!-- OpenAPI -->
-        <dependency>
-            <groupId>org.springdoc</groupId>
-            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.openapitools</groupId>
-            <artifactId>jackson-databind-nullable</artifactId>
-        </dependency>
-
-        <!-- Logging -->
-        <dependency>
-            <groupId>net.logstash.logback</groupId>
-            <artifactId>logstash-logback-encoder</artifactId>
-        </dependency>
-
-        <!-- Utils -->
-        <dependency>
-            <groupId>org.jsoup</groupId>
-            <artifactId>jsoup</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-text</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-collections4</artifactId>
-        </dependency>
-
-        <!-- Lombok -->
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <scope>provided</scope>
-            <optional>true</optional>
-        </dependency>
-
-        <!-- Tests -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>net.javacrumbs.json-unit</groupId>
-            <artifactId>json-unit-assertj</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.awaitility</groupId>
-            <artifactId>awaitility</artifactId>
-            <scope>test</scope>
-        </dependency>
-    </dependencies>
-
-    <build>
-        <plugins>
-            <!-- Остальные плагины (checkstyle/jacoco/sonar/surefire/compiler/flatten)
-                 уже объявлены в родителе common-master-data -->
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-            </plugin>
-        </plugins>
-    </build>
-
+                        <configOptions>
+                            <useJakartaEe>true</useJakartaEe>
+                            <reactive>false</reactive>
+                            <interfaceOnly>true</interfaceOnly>
+                            <useRuntimeException>true</useRuntimeException>
+                            <openApiNullable>true</openApiNullable>
+                            <dateLibrary>java8-localdatetime</dateLibrary>
+                            <hideGenerationTimestamp>true</hideGenerationTimestamp>
+                            <hideGeneratorVersion>true</hideGeneratorVersion>
+                            <sourceFolder>src/main/java</sourceFolder>
+                        </configOptions>
+                    </configuration>
+                </execution>
 ```
