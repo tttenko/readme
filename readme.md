@@ -1,132 +1,50 @@
 ```java
-
-
-
 @ExtendWith(MockitoExtension.class)
-class LoaderRegionByCodeTest {
+class RegionServiceTest {
 
   @Mock
-  private BaseMasterDataRequestService baseMasterDataRequestService;
+  private RegionCacheOps regionCacheOps;
 
   @Mock
-  private SearchRequestProperties properties;
-
-  @Mock
-  private RegionMapper regionMapper;
+  private CacheGetOrLoadService cacheGetOrLoadService;
 
   @InjectMocks
-  private LoaderRegionByCode loader;
+  private RegionService regionService;
 
   @Test
-  void givenLoader_whenCacheName_thenReturnRegionByCode() {
-    assertEquals(RegionService.REGION_BY_CODE, loader.cacheName());
-  }
-
-  @Test
-  void givenLoader_whenElementType_thenReturnRegionDtoClass() {
-    assertEquals(RegionDto.class, loader.elementType());
-  }
-
-  @Test
-  void givenRegionDto_whenExtractKey_thenReturnRegionCode() {
-    RegionDto dto = new RegionDto();
-    dto.setRegionCode("05");
-
-    String key = loader.extractKey(dto);
-
-    assertEquals("05", key);
-  }
-
-  @Test
-  void givenEmptyKeys_whenFetchByKeys_thenReturnEmptyAndSkipBackend() {
-    // given
-    List<String> keys = List.of();
-
-    // when
-    List<RegionDto> result = loader.fetchByKeys(keys);
-
-    // then
-    assertTrue(result.isEmpty());
-    verifyNoInteractions(baseMasterDataRequestService, properties, regionMapper);
-  }
-
-  @Test
-  void givenCodes_whenFetchByKeys_thenDelegateToBackendAndMapResult() {
+  void givenCodes_whenSearchRegionsByCode_thenUseCacheGetOrLoadService() {
     // given
     List<String> codes = List.of("05", "06");
-    String slug = "region";
+    List<RegionDto> loaded = List.of(new RegionDto(), new RegionDto());
 
-    when(properties.getSlugValueForRegion()).thenReturn(slug);
+    when(cacheGetOrLoadService.fetchData(RegionService.REGION_BY_CODE, codes))
+        .thenReturn(loaded);
 
-    GetItemsSearchResponse resp = new GetItemsSearchResponse();
-    when(baseMasterDataRequestService.requestData(slug, codes, SearchRequestProperties.Context.BOOK))
-        .thenReturn(resp);
+    // when
+    List<RegionDto> result = regionService.searchRegionsByCode(codes);
 
-    List<RegionDto> mapped = List.of(
-        RegionDto.builder().regionCode("05").build(),
-        RegionDto.builder().regionCode("06").build()
-    );
+    // then
+    assertEquals(loaded, result);
 
-    try (MockedStatic<BaseMasterDataRequestService> statics =
-             Mockito.mockStatic(BaseMasterDataRequestService.class)) {
-
-      statics.when(() -> BaseMasterDataRequestService.createResult(Mockito.eq(resp), Mockito.any()))
-          .thenReturn(mapped);
-
-      // when
-      List<RegionDto> result = loader.fetchByKeys(codes);
-
-      // then
-      assertEquals(mapped, result);
-
-      verify(properties).getSlugValueForRegion();
-      verify(baseMasterDataRequestService, times(1))
-          .requestData(slug, codes, SearchRequestProperties.Context.BOOK);
-
-      statics.verify(() -> BaseMasterDataRequestService.createResult(Mockito.eq(resp), Mockito.any()),
-          times(1));
-
-      verifyNoMoreInteractions(baseMasterDataRequestService, properties, regionMapper);
-    }
+    verify(cacheGetOrLoadService).fetchData(RegionService.REGION_BY_CODE, codes);
+    verifyNoInteractions(regionCacheOps);
   }
 
   @Test
-  void givenTwoSequentialCalls_whenFetchByKeys_thenBackendInvokedTwice_noCaching() {
+  void whenGetAllRegions_thenLoadAllFromRegionCacheOps() {
     // given
-    List<String> codes = List.of("01");
-    String slug = "region";
+    List<RegionDto> all = List.of(new RegionDto(), new RegionDto());
 
-    when(properties.getSlugValueForRegion()).thenReturn(slug);
+    when(regionCacheOps.loadAllRegions()).thenReturn(all);
 
-    GetItemsSearchResponse resp = new GetItemsSearchResponse();
-    when(baseMasterDataRequestService.requestData(slug, codes, SearchRequestProperties.Context.BOOK))
-        .thenReturn(resp);
+    // when
+    List<RegionDto> result = regionService.getAllRegions();
 
-    List<RegionDto> mapped = List.of(
-        RegionDto.builder().regionCode("01").build()
-    );
+    // then
+    assertEquals(all, result);
 
-    try (MockedStatic<BaseMasterDataRequestService> statics =
-             Mockito.mockStatic(BaseMasterDataRequestService.class)) {
-
-      statics.when(() -> BaseMasterDataRequestService.createResult(Mockito.eq(resp), Mockito.any()))
-          .thenReturn(mapped);
-
-      // when
-      List<RegionDto> r1 = loader.fetchByKeys(codes);
-      List<RegionDto> r2 = loader.fetchByKeys(codes);
-
-      // then
-      assertEquals(mapped, r1);
-      assertEquals(mapped, r2);
-
-      verify(properties, times(2)).getSlugValueForRegion();
-      verify(baseMasterDataRequestService, times(2))
-          .requestData(slug, codes, SearchRequestProperties.Context.BOOK);
-
-      statics.verify(() -> BaseMasterDataRequestService.createResult(Mockito.eq(resp), Mockito.any()),
-          times(2));
-    }
+    verify(regionCacheOps).loadAllRegions();
+    verifyNoInteractions(cacheGetOrLoadService);
   }
 }
 ```
