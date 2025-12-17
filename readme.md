@@ -29,22 +29,35 @@ class RegionControllerMvcTest {
   @MockitoBean
   private CacheGetOrLoadService cacheGetOrLoadService;
 
+  @MockitoBean
+  private SearchRequestProperties properties;
+
   private MockMvc mockMvc;
   private ThreadSafeResourceReader reader;
   private AutoCloseable closeable;
 
   @BeforeEach
   void setUp() {
-    closeable = org.mockito.MockitoAnnotations.openMocks(this);
+    closeable = MockitoAnnotations.openMocks(this);
 
-    this.mockMvc = standaloneSetup(controller)
+    this.mockMvc = MockMvcBuilders
+        .standaloneSetup(controller)
         .defaultResponseCharacterEncoding(StandardCharsets.UTF_8)
         .build();
 
+    // Важно: чтобы reader нормально десериализовывал фикстуры
     mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     reader = MvcTestUtils.createReader(this);
 
-    org.mockito.Mockito.lenient().doAnswer(invocation -> {
+    // Критично: чтобы URL, который реально дергает BaseMasterDataRequestService, совпал со стабом mockPostResponse
+    Mockito.when(properties.getGetListByAttrValuesUri(SearchRequestProperties.Context.BOOK))
+        .thenReturn("v1/items/byAttrValues");
+
+    // Критично: чтобы dictionaryName/slug был не null
+    Mockito.when(properties.getSlugValueForRegion()).thenReturn("region");
+
+    // Стаб как у стран: для query-поиска дергаем loader
+    lenient().doAnswer(invocation -> {
       String cacheName = invocation.getArgument(0, String.class);
       List<String> keys = invocation.getArgument(1, List.class);
 
@@ -52,7 +65,7 @@ class RegionControllerMvcTest {
         return loaderRegionByCode.fetchByKeys(keys);
       }
       return List.of();
-    }).when(cacheGetOrLoadService).fetchData(org.mockito.Mockito.anyString(), org.mockito.Mockito.anyList());
+    }).when(cacheGetOrLoadService).fetchData(anyString(), anyList());
   }
 
   @AfterEach
@@ -68,6 +81,7 @@ class RegionControllerMvcTest {
         GetItemsSearchResponse.class
     );
 
+    // Вариант 1: как у стран (если mockPostResponse матчится по URL)
     MvcTestUtils.mockPostResponse(
         "v1/items/byAttrValues",
         response,
@@ -83,7 +97,7 @@ class RegionControllerMvcTest {
 
   @Test
   @DisplayName("test GET {host}/api/v1/info/region_code?regionCode=05")
-  void searchByRegionCodeTest() throws Exception {
+  void searchByCodeTest() throws Exception {
     GetItemsSearchResponse response = reader.readResource(
         "mdresponse/region/region-05.json",
         GetItemsSearchResponse.class
@@ -108,10 +122,7 @@ class RegionControllerMvcTest {
     MvcResult result = MvcTestUtils.performGet(mockMvc, "/api/v1/info/region_code").andReturn();
 
     assertEquals(400, result.getResponse().getStatus());
-    assertEquals(
-        MissingServletRequestParameterException.class,
-        result.getResolvedException().getClass()
-    );
+    assertEquals(MissingServletRequestParameterException.class, result.getResolvedException().getClass());
   }
 }
 ```
