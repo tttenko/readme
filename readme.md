@@ -1,29 +1,91 @@
 ```java
 /**
- * Кеш-операции для получения полного перечня регионов из Master Data.
+ * Batch-loader для подгрузки справочника регионов по коду региона из АС Master Data.
  * <p>
- * Используется для отдельной "явной" ручки вида {@code /all} (без передачи кодов в query),
- * чтобы не допускать поведения "если параметров нет — вернуть всё" в поисковой ручке.
+ * Используется батчевой инфраструктурой кэша (см. {@link BatchLoader}) для получения набора {@link RegionDto}
+ * по списку ключей (кодов регионов) и последующего сохранения результата в кэш
+ * {@link RegionService#REGION_BY_CODE}.
  * <p>
- * Результат сохраняется в кеш {@link #REGION_ALL} по ключу {@code "ALL"} (с {@code sync=true}),
- * чтобы при параллельных запросах данные загружались из Master Data только один раз.
+ * Источник данных: Master Data reference-book, идентификатор справочника берётся из настроек
+ * {@link SearchRequestProperties#getSlugValueForRegion()}, поиск выполняется по полю slug/коду региона
+ * (передаётся список {@code keys}) в контексте {@link SearchRequestProperties.Context#BOOK}.
+ * <p>
+ * Если список ключей пустой, запрос в Master Data не выполняется (возвращается пустой список).
  *
+ * @author
+ * @see RegionService
+ * @see RegionCacheOps
  * @see BaseMasterDataRequestService
  * @see SearchRequestProperties
- * @see RegionMapper
+ * @since 1.0
  */
+@Component
+@RequiredArgsConstructor
+public class LoaderRegionByCode implements BatchLoader<RegionDto> {
 
- /**
-   * Загружает полный перечень регионов из Master Data и возвращает DTO-список.
-   * <p>
-   * Вызывает {@link BaseMasterDataRequestService#requestData(String, List, SearchRequestProperties.Context)}
-   * с {@code searchFieldValue = null}, что трактуется как "получить всё" для заданного справочника.
-   * <p>
-   * Результат маппится через {@link RegionMapper#mapItemToDto(java.util.Map)} и кешируется.
-   *
-   * @return список регионов (может быть пустым)
-   * @throws ru.sber.cs.supplier.portal.masterdata.exception.MdaMdErrorResponseException
-   *         если Master Data вернул неуспешный статус (semantic != {@code "S"})
-   * @see #REGION_ALL
-   */
+    private final BaseMasterDataRequestService baseMasterDataRequestService;
+    private final SearchRequestProperties properties;
+    private final RegionMapper regionMapper;
+
+    /**
+     * Возвращает имя кэша, который обслуживает данный loader.
+     *
+     * @return имя кэша для поиска регионов по коду
+     * @see RegionService#REGION_BY_CODE
+     */
+    @Override
+    public String cacheName() {
+        return RegionService.REGION_BY_CODE;
+    }
+
+    /**
+     * Возвращает тип элементов, которые возвращает loader.
+     *
+     * @return класс {@link RegionDto}
+     */
+    @Override
+    public Class<RegionDto> elementType() {
+        return RegionDto.class;
+    }
+
+    /**
+     * Извлекает ключ кэширования из DTO региона.
+     *
+     * @param value DTO региона (не {@code null})
+     * @return код региона (используется как ключ кэша)
+     */
+    @Override
+    public String extractKey(RegionDto value) {
+        return value.getRegionCode();
+    }
+
+    /**
+     * Загружает регионы из Master Data по списку кодов регионов.
+     * <p>
+     * При пустом списке ключей возвращает пустой список и не обращается к backend.
+     *
+     * @param keys список кодов регионов (не {@code null})
+     * @return список найденных {@link RegionDto} (может быть пустым)
+     *
+     * @implNote Делегирует вызов в {@link BaseMasterDataRequestService#requestData(String, List, SearchRequestProperties.Context)}
+     * и маппит результат через {@link RegionMapper#mapItemToDto(java.util.Map)} (метод-референс).
+     *
+     * @throws RuntimeException если Master Data вернул неуспешный статус (semantic != "S")
+     *                          или произошла ошибка запроса/маппинга ответа
+     */
+    @Override
+    public List<RegionDto> fetchByKeys(List<String> keys) {
+        if (keys.isEmpty()) {
+            return List.of();
+        }
+
+        GetItemsSearchResponse response = baseMasterDataRequestService.requestData(
+            properties.getSlugValueForRegion(),
+            keys,
+            SearchRequestProperties.Context.BOOK
+        );
+
+        return BaseMasterDataRequestService.createResult(response, regionMapper::mapItemToDto);
+    }
+}
 ```
