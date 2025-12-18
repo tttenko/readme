@@ -1,128 +1,36 @@
 ```java
-@SpringBootTest(classes = {
-    RegionController.class,
-    RegionService.class,
-    SearchRequestProperties.class,
-    RegionCacheOps.class,
-    RegionMapper.class,
-    CacheConfig.class,
-    BaseMasterDataRequestService.class,
-    CacheGetOrLoadService.class,
-    BatchCacheSupport.class,
-    LoaderRegionByCode.class,
-    ResponseHandler.class
-})
-class RegionControllerMvcTest {
+/**
+ * Сервис для работы со справочником регионов (Master Data).
+ * <p>
+ * Предоставляет:
+ * <ul>
+ *   <li>поиск регионов по коду(ам) через {@link CacheGetOrLoadService} (batch-cache);</li>
+ *   <li>получение полного списка регионов через {@link RegionCacheOps} (отдельный кеш /all).</li>
+ * </ul>
+ *
+ * @author
+ * @since 1.0
+ */
 
-  @MockitoBean
-  private ObjectMapper mapper;
+ /**
+   * Возвращает список регионов по массиву кодов регионов.
+   * <p>
+   * Использует {@link CacheGetOrLoadService} для получения данных из кеша или загрузки отсутствующих
+   * значений через соответствующий loader (например, {@code LoaderRegionByCode}).
+   *
+   * @param regionCodes список кодов регионов; не должен быть {@code null}
+   * @return список найденных регионов (может быть пустым)
+   * @throws NullPointerException если {@code regionCodes == null}
+   * @see #REGION_BY_CODE
+   */
 
-  @Autowired
-  private RegionController controller;
-
-  @Autowired
-  private LoaderRegionByCode loaderRegionByCode;
-
-  @MockitoBean
-  private HttpRequestHelper httpRequestHelper;
-
-  @MockitoBean
-  private CacheGetOrLoadService cacheGetOrLoadService;
-
-  @MockitoBean
-  private SearchRequestProperties properties;
-
-  private MockMvc mockMvc;
-  private ThreadSafeResourceReader reader;
-  private AutoCloseable closeable;
-
-  @BeforeEach
-  void setUp() {
-    closeable = MockitoAnnotations.openMocks(this);
-
-    this.mockMvc = MockMvcBuilders
-        .standaloneSetup(controller)
-        .defaultResponseCharacterEncoding(StandardCharsets.UTF_8)
-        .build();
-
-    // Важно: чтобы reader нормально десериализовывал фикстуры
-    mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-    reader = MvcTestUtils.createReader(this);
-
-    // Критично: чтобы URL, который реально дергает BaseMasterDataRequestService, совпал со стабом mockPostResponse
-    Mockito.when(properties.getGetListByAttrValuesUri(SearchRequestProperties.Context.BOOK))
-        .thenReturn("v1/items/byAttrValues");
-
-    // Критично: чтобы dictionaryName/slug был не null
-    Mockito.when(properties.getSlugValueForRegion()).thenReturn("region");
-
-    // Стаб как у стран: для query-поиска дергаем loader
-    lenient().doAnswer(invocation -> {
-      String cacheName = invocation.getArgument(0, String.class);
-      List<String> keys = invocation.getArgument(1, List.class);
-
-      if (RegionService.REGION_BY_CODE.equals(cacheName)) {
-        return loaderRegionByCode.fetchByKeys(keys);
-      }
-      return List.of();
-    }).when(cacheGetOrLoadService).fetchData(anyString(), anyList());
-  }
-
-  @AfterEach
-  void tearDown() throws Exception {
-    closeable.close();
-  }
-
-  @Test
-  @DisplayName("test GET {host}/api/v1/info/region_code/all")
-  void searchAllRegionsTest() throws Exception {
-    GetItemsSearchResponse response = reader.readResource(
-        "mdresponse/region/region-all.json",
-        GetItemsSearchResponse.class
-    );
-
-    // Вариант 1: как у стран (если mockPostResponse матчится по URL)
-    MvcTestUtils.mockPostResponse(
-        "v1/items/byAttrValues",
-        response,
-        GetItemsSearchResponse.class,
-        httpRequestHelper
-    );
-
-    MvcTestUtils.checkResult(
-        MvcTestUtils.performGetOk(mockMvc, "/api/v1/info/region_code/all"),
-        2
-    );
-  }
-
-  @Test
-  @DisplayName("test GET {host}/api/v1/info/region_code?regionCode=05")
-  void searchByCodeTest() throws Exception {
-    GetItemsSearchResponse response = reader.readResource(
-        "mdresponse/region/region-05.json",
-        GetItemsSearchResponse.class
-    );
-
-    MvcTestUtils.mockPostResponse(
-        "v1/items/byAttrValues",
-        response,
-        GetItemsSearchResponse.class,
-        httpRequestHelper
-    );
-
-    MvcTestUtils.checkResult(
-        MvcTestUtils.performGetOk(mockMvc, "/api/v1/info/region_code", "regionCode", "05"),
-        1
-    );
-  }
-
-  @Test
-  @DisplayName("Get /api/v1/info/region_code без параметров")
-  void searchRegionsWithoutCodesReturnsBadRequest() throws Exception {
-    MvcResult result = MvcTestUtils.performGet(mockMvc, "/api/v1/info/region_code").andReturn();
-
-    assertEquals(400, result.getResponse().getStatus());
-    assertEquals(MissingServletRequestParameterException.class, result.getResolvedException().getClass());
-  }
-}
+   /**
+   * Возвращает полный перечень регионов.
+   * <p>
+   * Данные берутся из кеша, наполняемого через {@link RegionCacheOps#loadAllRegions()}.
+   * Обычно используется ручкой вида {@code GET /api/v1/info/region_code/all}.
+   *
+   * @return полный список регионов (может быть пустым)
+   * @see RegionCacheOps#loadAllRegions()
+   */
 ```
