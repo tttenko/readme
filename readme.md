@@ -1,36 +1,29 @@
 ```java
 /**
- * Сервис для работы со справочником регионов (Master Data).
+ * Кеш-операции для получения полного перечня регионов из Master Data.
  * <p>
- * Предоставляет:
- * <ul>
- *   <li>поиск регионов по коду(ам) через {@link CacheGetOrLoadService} (batch-cache);</li>
- *   <li>получение полного списка регионов через {@link RegionCacheOps} (отдельный кеш /all).</li>
- * </ul>
+ * Используется для отдельной "явной" ручки вида {@code /all} (без передачи кодов в query),
+ * чтобы не допускать поведения "если параметров нет — вернуть всё" в поисковой ручке.
+ * <p>
+ * Результат сохраняется в кеш {@link #REGION_ALL} по ключу {@code "ALL"} (с {@code sync=true}),
+ * чтобы при параллельных запросах данные загружались из Master Data только один раз.
  *
- * @author
- * @since 1.0
+ * @see BaseMasterDataRequestService
+ * @see SearchRequestProperties
+ * @see RegionMapper
  */
 
  /**
-   * Возвращает список регионов по массиву кодов регионов.
+   * Загружает полный перечень регионов из Master Data и возвращает DTO-список.
    * <p>
-   * Использует {@link CacheGetOrLoadService} для получения данных из кеша или загрузки отсутствующих
-   * значений через соответствующий loader (например, {@code LoaderRegionByCode}).
-   *
-   * @param regionCodes список кодов регионов; не должен быть {@code null}
-   * @return список найденных регионов (может быть пустым)
-   * @throws NullPointerException если {@code regionCodes == null}
-   * @see #REGION_BY_CODE
-   */
-
-   /**
-   * Возвращает полный перечень регионов.
+   * Вызывает {@link BaseMasterDataRequestService#requestData(String, List, SearchRequestProperties.Context)}
+   * с {@code searchFieldValue = null}, что трактуется как "получить всё" для заданного справочника.
    * <p>
-   * Данные берутся из кеша, наполняемого через {@link RegionCacheOps#loadAllRegions()}.
-   * Обычно используется ручкой вида {@code GET /api/v1/info/region_code/all}.
+   * Результат маппится через {@link RegionMapper#mapItemToDto(java.util.Map)} и кешируется.
    *
-   * @return полный список регионов (может быть пустым)
-   * @see RegionCacheOps#loadAllRegions()
+   * @return список регионов (может быть пустым)
+   * @throws ru.sber.cs.supplier.portal.masterdata.exception.MdaMdErrorResponseException
+   *         если Master Data вернул неуспешный статус (semantic != {@code "S"})
+   * @see #REGION_ALL
    */
 ```
