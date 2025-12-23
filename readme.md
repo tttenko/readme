@@ -1,388 +1,172 @@
 ```java
-@RequestMapping(value = "/api/v1", produces = MediaType.APPLICATION_JSON_UTF8_VALUE)
-@Tag(
-    name = "Supplier controller",
-    description = "Предоставление информации о профиле Поставщика из АС Мастер-данные"
-)
-@SecurityRequirement(name = "Authorization")
-public interface UiSupplierController {
+/**
+ * HTTP-interface для вызова MasterData API через WebClient/HttpServiceProxyFactory.
+ */
+@HttpExchange(url = "/api/v1", accept = MediaType.APPLICATION_JSON_VALUE)
+public interface MasterDataClientApi {
 
-  /**
-   * Получает информацию о контрагентах по ИНН и опционально по КПП.
-   */
-  @GetMapping(value = "/supplier-search")
-  @Operation(
-      operationId = "getCounterpartyRequisites",
-      summary = "Предоставление информации о получении контрагента по ИНН/КПП",
-      description =
-          "Возвращает список контрагентов, соответствующих критериям поиска. "
-              + "Поиск выполняется по обязательному параметру `inn` и опциональному `kpp`."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешный поиск контрагентов",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "400",
-          description = "Некорректные параметры запроса (валидация inn/kpp)",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "Внутренняя ошибка сервиса",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      )
-  })
-  ResultObj<List<CounterpartyDto>> searchSupplier(
-      @RequestParam(name = "inn")
-      @Parameter(
-          name = "inn",
-          in = ParameterIn.QUERY,
-          required = true,
-          description = "ИНН контрагента (обязательный параметр)",
-          schema = @Schema(type = "string", minLength = 10, maxLength = 12, example = "7707083893")
-      )
-      String inn,
+    // -------------------- AdapterController (/api/v1/info) --------------------
 
-      @RequestParam(required = false, name = "kpp")
-      @Parameter(
-          name = "kpp",
-          in = ParameterIn.QUERY,
-          required = false,
-          description = "КПП контрагента (опционально)",
-          schema = @Schema(type = "string", minLength = 9, maxLength = 9, example = "773601001")
-      )
-      String kpp
-  );
+    @GetExchange("/info/uom/all")
+    ResultObj<List<UomBankDto>> getAllMeasures();
 
-  /**
-   * Получает информацию о контрагентах по списку идентификаторов.
-   * Если список пустой — возвращаются все доступные контрагенты.
-   */
-  @GetMapping(value = "/supplier")
-  @Operation(
-      operationId = "getSupplier",
-      summary = "Предоставление информации о получении контрагентов по списку идентификаторов",
-      description =
-          "Возвращает список контрагентов по переданному списку идентификаторов `id`. "
-              + "Если параметр `id` не задан или список пустой — возвращаются все доступные контрагенты. "
-              + "Для передачи нескольких значений повторяйте query-параметр: `?id=1&id=2&id=3`."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешное получение списка контрагентов",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "400",
-          description = "Некорректные параметры запроса (валидация id)",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "Внутренняя ошибка сервиса",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      )
-  })
-  ResultObj<List<CounterpartyDto>> getSupplier(
-      @RequestParam(required = false, name = "id")
-      @ArraySchema(
-          schema = @Schema(
-              title = "Идентификатор контрагента",
-              description = "Идентификатор контрагента",
-              type = "string",
-              maxLength = 255,
-              example = "12345"
-          ),
-          maxItems = 999
-      )
-      @Parameter(
-          name = "id",
-          in = ParameterIn.QUERY,
-          required = false,
-          description =
-              "Список идентификаторов контрагентов. "
-                  + "Можно передать несколько значений, повторяя query-параметр: `?id=1&id=2`. "
-                  + "Если параметр не задан — возвращаются все контрагенты."
-      )
-      List<String> listOfId
-  );
+    @GetExchange("/info/uom")
+    ResultObj<List<UomBankDto>> getMeasuresByCodes(
+            @RequestParam(required = false, name = "uomCode") List<String> uomCode
+    );
 
-  /**
-   * Получает информацию о контрагенте по его идентификатору.
-   * Если контрагент не найден — возвращается ошибка 404.
-   */
-  @GetMapping(value = "/supplier/{id}")
-  @Operation(
-      operationId = "getSupplierById",
-      summary = "Предоставление информации о получении контрагента по идентификатору",
-      description =
-          "Возвращает информацию о контрагенте по его идентификатору `id`. "
-              + "Если контрагент не найден — возвращается ошибка 404 (MdaDataNotFoundException)."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешное получение информации о контрагенте",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "400",
-          description = "Некорректный идентификатор контрагента (валидация параметра)",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "404",
-          description = "Контрагент не найден",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "Внутренняя ошибка сервиса",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      )
-  })
-  ResultObj<List<CounterpartyDto>> getSupplierById(
-      @PathVariable("id")
-      @Parameter(
-          name = "id",
-          in = ParameterIn.PATH,
-          required = true,
-          description = "Идентификатор контрагента",
-          schema = @Schema(type = "string", maxLength = 255, example = "12345")
-      )
-      String id
-  );
+    @GetExchange("/info/uom/{uomCode}")
+    ResultObj<List<UomBankDto>> getMeasuresById(
+            @PathVariable(name = "uomCode") String uomCode
+    );
 
-  /**
-   * Получает банковские реквизиты по списку идентификаторов поставщиков.
-   */
-  @GetMapping(value = "/supplier-bank-requisite")
-  @Operation(
-      operationId = "getSupplierRequisite",
-      summary = "Получения банковских реквизитов по списку идентификаторов поставщиков",
-      description =
-          "Возвращает банковские реквизиты поставщиков по списку идентификаторов `id`. "
-              + "Для передачи нескольких значений повторяйте query-параметр: `?id=1&id=2&id=3`."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешное получение банковских реквизитов",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "400",
-          description = "Некорректные параметры запроса (валидация id)",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "Внутренняя ошибка сервиса",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      )
-  })
-  ResultObj<List<BankDto>> getSupplierRequisite(
-      @RequestParam(name = "id")
-      @ArraySchema(
-          schema = @Schema(
-              title = "Идентификатор поставщика",
-              description = "Идентификатор поставщика",
-              type = "string",
-              maxLength = 255,
-              example = "12345"
-          ),
-          maxItems = 999
-      )
-      @Parameter(
-          name = "id",
-          in = ParameterIn.QUERY,
-          required = true,
-          description =
-              "Список идентификаторов поставщиков. "
-                  + "Можно передать несколько значений, повторяя query-параметр: `?id=1&id=2`."
-      )
-      List<String> listOfId
-  );
+    @GetExchange("/info/material")
+    ResultObj<List<MaterialDto>> getMaterialByCodes(
+            @RequestParam(required = false, name = "materialCode") List<String> materialCodes
+    );
 
-  /**
-   * Получает банковские реквизиты по идентификатору поставщика.
-   * Если реквизиты не найдены — возвращается ошибка 404.
-   */
-  @GetMapping(value = "/supplier-bank-requisite/{id}")
-  @Operation(
-      operationId = "getSupplierRequisiteById",
-      summary = "Получения банковских реквизитов по идентификатору поставщика",
-      description =
-          "Возвращает банковские реквизиты поставщика по идентификатору `id`. "
-              + "Если реквизиты не найдены — возвращается ошибка 404 (MdaDataNotFoundException)."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешное получение банковских реквизитов",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "400",
-          description = "Некорректный идентификатор поставщика (валидация параметра)",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "404",
-          description = "Банковские реквизиты не найдены",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "Внутренняя ошибка сервиса",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      )
-  })
-  ResultObj<List<BankDto>> getSupplierRequisiteById(
-      @PathVariable("id")
-      @Parameter(
-          name = "id",
-          in = ParameterIn.PATH,
-          required = true,
-          description = "Идентификатор поставщика",
-          schema = @Schema(type = "string", maxLength = 255, example = "12345")
-      )
-      String id
-  );
+    @GetExchange("/info/material/{materialCode}")
+    ResultObj<List<MaterialDto>> getMaterialById(
+            @PathVariable(name = "materialCode") String materialCode
+    );
+
+    @GetExchange("/info/material-type/all")
+    ResultObj<List<MaterialTypeDto>> getAllMaterialTypes();
+
+    @GetExchange("/info/material-type")
+    ResultObj<List<MaterialTypeDto>> getMaterialTypeIds(
+            @RequestParam(name = "typeId", required = false) List<String> typeIds
+    );
+
+    @GetExchange("/info/material-type/{typeId}")
+    ResultObj<List<MaterialTypeDto>> getMaterialTypeById(
+            @PathVariable(name = "typeId") String typeId
+    );
+
+    // -------------------- CacheController (/api/v1/cache) --------------------
+
+    @GetExchange("/cache/invalidate")
+    ResultObj<Object> invalidate();
+
+    @GetExchange("/cache/status")
+    ResultObj<CacheStatusResponse> getStatus();
+
+    // -------------------- CountryController (/api/v1/info/country) --------------------
+
+    @GetExchange("/info/country")
+    ResultObj<List<CountryDto>> searchCountryByCodes(
+            @RequestParam(name = "countryCode") List<String> countryCodes
+    );
+
+    @GetExchange("/info/country/{countryCode}")
+    ResultObj<List<CountryDto>> searchCountryByCode(
+            @PathVariable("countryCode") String countryCode
+    );
+
+    @GetExchange("/info/country/all")
+    ResultObj<List<CountryDto>> getAllCountries();
+
+    // -------------------- CurrencyController (/api/v1/info/currency) --------------------
+
+    @GetExchange("/info/currency/all")
+    ResultObj<List<CurrencyDto>> getAllCurrencies();
+
+    @GetExchange("/info/currency")
+    ResultObj<List<CurrencyDto>> searchCurrenciesByCodes(
+            @RequestParam(required = false, name = "currencyCode") List<String> currencyCodes
+    );
+
+    @GetExchange("/info/currency/{currencyCode}")
+    ResultObj<List<CurrencyDto>> searchCurrencyByCode(
+            @PathVariable("currencyCode") String currencyCode
+    );
+
+    // -------------------- NdsController (/api/v1) --------------------
+
+    @GetExchange("/main-nds")
+    ResultObj<List<NdsDto>> getNdsByRate(
+            @RequestParam(name = "rate", required = false) List<String> rate,
+            @RequestParam(name = "date", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime date
+    );
+
+    @GetExchange("/main-nds-code")
+    ResultObj<List<NdsDto>> getNdsByCode(
+            @RequestParam(name = "code", required = false) List<String> code,
+            @RequestParam(name = "rate", required = false) List<String> rate,
+            @RequestParam(name = "date", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime date
+    );
+
+    // -------------------- RegionController (/api/v1/info) --------------------
+
+    @GetExchange("/info/region_code")
+    ResultObj<List<RegionDto>> searchRegionsByCode(
+            @RequestParam(name = "regionCode") List<String> regionCodes
+    );
+
+    @GetExchange("/info/{regionCode}")
+    ResultObj<List<RegionDto>> searchRegionByCode(
+            @PathVariable("regionCode") String regionCode
+    );
+
+    @GetExchange("/info/region_code/all")
+    ResultObj<List<RegionDto>> getAllRegions();
+
+    // -------------------- SupplierController (/api/v1) --------------------
+
+    @GetExchange("/supplier-search")
+    ResultObj<List<CounterpartyDto>> searchSupplier(
+            @RequestParam(name = "inn") String inn,
+            @RequestParam(required = false, name = "kpp") String kpp
+    );
+
+    @GetExchange("/supplier")
+    ResultObj<List<CounterpartyDto>> getSupplier(
+            @RequestParam(required = false, name = "id") List<String> listOfId
+    );
+
+    @GetExchange("/supplier/{id}")
+    ResultObj<List<CounterpartyDto>> getSupplierById(
+            @PathVariable("id") String id
+    );
+
+    @GetExchange("/supplier-bank-requisite")
+    ResultObj<List<BankDto>> getSupplierRequisite(
+            @RequestParam(name = "id") List<String> listOfId
+    );
+
+    @GetExchange("/supplier-bank-requisite/{id}")
+    ResultObj<List<BankDto>> getSupplierRequisiteById(
+            @PathVariable("id") String id
+    );
+
+    // -------------------- TerBanksController (/api/v1/info) --------------------
+
+    @GetExchange("/info/tb/all")
+    ResultObj<List<TerBankDto>> getAllTerBanks();
+
+    @GetExchange("/info/tb")
+    ResultObj<List<TerBankDto>> getTerBank(
+            @RequestParam(name = "tbCode", required = false) List<String> tbCode
+    );
+
+    @GetExchange("/info/tb/{tbCode}")
+    ResultObj<List<TerBankDto>> getTerBankById(
+            @PathVariable("tbCode") String tbCode
+    );
+
+    @GetExchange("/info/tb-requisite/all")
+    ResultObj<List<TerBankWithRequisiteDto>> getTerBanksRequisiteALL();
+
+    @GetExchange("/info/tb-requisite")
+    ResultObj<List<TerBankWithRequisiteDto>> getTerBanksRequisite(
+            @RequestParam(name = "tbCode", required = false) List<String> tbCode
+    );
+
+    @GetExchange("/info/tb-requisite/{tbCode}")
+    ResultObj<List<TerBankWithRequisiteDto>> getTerBanksRequisiteById(
+            @PathVariable("tbCode") String tbCode
+    );
 }
 ```
