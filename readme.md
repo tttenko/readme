@@ -1,81 +1,30 @@
 ```java
 
+@Validated
+@RequestMapping(value = "/api/v1/info", produces = MediaType.APPLICATION_JSON_UTF8_VALUE)
 @Tag(
-    name = "Currency controller",
-    description = "Сервис получения валют из АС Мастер-данные"
+    name = "Region controller",
+    description = "Сервис получения перечня регионов из АС Мастер-данные"
 )
 @SecurityRequirement(name = "Authorization")
-@RequestMapping(value = "/api/v1/info/currency", produces = MediaType.APPLICATION_JSON_UTF8_VALUE)
-public interface UiCurrencyController {
+public interface UiRegionController {
 
   /**
-   * Возвращает полный список всех валют из системы мастер-данных.
-   * Поддерживает автоматическое кеширование на уровне сервиса.
+   * Ищет регионы по переданному списку кодов.
    */
-  @GetMapping(value = "/all")
+  @GetMapping(value = "/region_code")
   @Operation(
-      operationId = "getAllCurrencies",
-      summary = "Предоставление информации обо всех доступных валютах",
+      operationId = "searchRegion",
+      summary = "Получение перечня регионов по массиву кодов регионов",
       description =
-          "Возвращает полный список всех валют из системы мастер-данных. "
-              + "Поддерживает автоматическое кеширование на уровне сервиса."
+          "Возвращает список регионов по заданным кодам (например: 77). "
+              + "Параметр regionCode обязателен: должен содержать хотя бы одно значение; "
+              + "элементы списка не должны быть пустыми."
   )
   @ApiResponses({
       @ApiResponse(
           responseCode = "200",
-          description = "Успешное получение полного списка валют",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "Внутренняя ошибка сервиса",
-          content = @Content(
-              mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class)
-          )
-      )
-  })
-  ResultObj<List<CurrencyDto>> getAllCurrencies();
-
-
-  /**
-   * Возвращает валюты по заданным кодам (например, "RUB", "USD").
-   * Поддерживает массовый поиск. Если запрашиваемый код не найден — валюта не включается в результат.
-   */
-  @GetMapping
-  @Operation(
-      operationId = "searchCurrenciesByCode",
-      summary = "Предоставление информации о валютах по списку кодов",
-      description =
-          "Возвращает список валют по заданным кодам (например: RUB, USD). "
-              + "Поддерживает массовый поиск: параметр currencyCode можно повторять в query, "
-              + "например: `?currencyCode=RUB&currencyCode=USD`. "
-              + "Если валюта по какому-либо коду не найдена — она не включается в результат. "
-              + "Если параметр currencyCode не задан — возвращается список всех валют."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешное получение списка валют",
+          description = "Успешный поиск регионов",
           content = @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = ResultObj.class)
@@ -83,7 +32,7 @@ public interface UiCurrencyController {
       ),
       @ApiResponse(
           responseCode = "400",
-          description = "Некорректные параметры запроса (валидация)",
+          description = "Некорректные параметры запроса (валидация, пустой/отсутствующий regionCode)",
           content = @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = MessageObj.class)
@@ -114,50 +63,48 @@ public interface UiCurrencyController {
           )
       )
   })
-  ResultObj<List<CurrencyDto>> searchCurrenciesByCodes(
-      @RequestParam(required = false, name = "currencyCode")
+  ResultObj<List<RegionDto>> searchRegionsByCode(
+      @RequestParam(name = "regionCode")
+      @NotEmpty(message = "Параметр regionCode должен содержать хотя бы одно значение")
       @ArraySchema(
           schema = @Schema(
-              title = "Код валюты",
-              description = "Код валюты (например: RUB, USD)",
+              title = "Код региона",
+              description = "Код региона (например: 77)",
               type = "string",
-              pattern = "^[A-Z]{3}$",
-              minLength = 3,
-              maxLength = 3,
-              example = "RUB"
+              pattern = "^\\d{1,10}$",
+              maxLength = 10,
+              example = "77"
           ),
           maxItems = 999
       )
       @Parameter(
-          name = "currencyCode",
+          name = "regionCode",
           in = ParameterIn.QUERY,
           description =
-              "Список кодов валют. "
+              "Список кодов регионов. "
                   + "Можно передать несколько значений, повторяя query-параметр: "
-                  + "`?currencyCode=RUB&currencyCode=USD`. "
-                  + "Если параметр не задан — возвращаются все валюты.",
-          required = false
+                  + "`?regionCode=77&regionCode=78`. "
+                  + "Параметр обязателен и не должен быть пустым.",
+          required = true
       )
-      List<String> currencyCodes
+      List<@NotBlank(message = "Код региона не должен быть пустым") String> regionCodes
   );
 
-
   /**
-   * Получает информацию о валюте по её коду.
-   * Если валюта не найдена — выбрасывается MdaDataNotFoundException (404).
+   * Возвращает информацию о регионе по его коду.
    */
-  @GetMapping(value = "/{currencyCode}")
+  @GetMapping(value = "/region_code/{regionCode}")
   @Operation(
-      operationId = "getCurrenciesByCodes",
-      summary = "Предоставление информации о валюте по коду",
+      operationId = "searchRegionByCode",
+      summary = "Предоставление информации о регионе по коду региона",
       description =
-          "Возвращает информацию о валюте по её коду (например: RUB). "
-              + "Если валюта не найдена — возвращается ошибка 404."
+          "Возвращает информацию о регионе по его коду (например: 77). "
+              + "Параметр regionCode обязателен и не должен быть пустым."
   )
   @ApiResponses({
       @ApiResponse(
           responseCode = "200",
-          description = "Успешное получение информации о валюте",
+          description = "Успешное получение информации о регионе",
           content = @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = ResultObj.class)
@@ -165,7 +112,7 @@ public interface UiCurrencyController {
       ),
       @ApiResponse(
           responseCode = "400",
-          description = "Некорректный код валюты (валидация параметра)",
+          description = "Некорректный код региона (валидация параметра)",
           content = @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = MessageObj.class)
@@ -188,8 +135,66 @@ public interface UiCurrencyController {
           )
       ),
       @ApiResponse(
-          responseCode = "404",
-          description = "Валюта не найдена",
+          responseCode = "500",
+          description = "Внутренняя ошибка сервиса",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      )
+  })
+  ResultObj<List<RegionDto>> searchRegionByCode(
+      @PathVariable("regionCode")
+      @NotBlank(message = "regionCode не должен быть пустым")
+      @Parameter(
+          name = "regionCode",
+          in = ParameterIn.PATH,
+          description = "Код региона (например: 77)",
+          required = true,
+          schema = @Schema(
+              title = "Код региона",
+              description = "Код региона (например: 77)",
+              type = "string",
+              pattern = "^\\d{1,10}$",
+              maxLength = 10,
+              example = "77"
+          )
+      )
+      String regionCode
+  );
+
+  /**
+   * Возвращает полный список всех регионов.
+   */
+  @GetMapping(value = "/region_code/all")
+  @Operation(
+      operationId = "getAllRegions",
+      summary = "Получение полного перечня регионов",
+      description =
+          "Возвращает полный список всех регионов из системы мастер-данных. "
+              + "Метод доступен по GET запросу на эндпоинт `/api/v1/info/region_code/all`. "
+              + "Поддерживает кеширование на уровне сервиса для повышения производительности."
+  )
+  @ApiResponses({
+      @ApiResponse(
+          responseCode = "200",
+          description = "Успешное получение списка регионов",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = ResultObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "401",
+          description = "Пользователь не аутентифицирован",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "403",
+          description = "Нет прав на операцию",
           content = @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = MessageObj.class)
@@ -204,25 +209,6 @@ public interface UiCurrencyController {
           )
       )
   })
-  ResultObj<List<CurrencyDto>> searchCurrencyByCode(
-      @PathVariable("currencyCode")
-      @Parameter(
-          name = "currencyCode",
-          in = ParameterIn.PATH,
-          description = "Код валюты (например: RUB)",
-          required = true,
-          schema = @Schema(
-              title = "Код валюты",
-              description = "Код валюты (например: RUB, USD)",
-              type = "string",
-              pattern = "^[A-Z]{3}$",
-              minLength = 3,
-              maxLength = 3,
-              example = "RUB"
-          )
-      )
-      String currencyCode
-  );
+  ResultObj<List<RegionDto>> getAllRegions();
 }
-
 ```
