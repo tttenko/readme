@@ -1,529 +1,202 @@
 ```java
 
+@Validated
+@RequestMapping(value = "/api/v1/info/country", produces = MediaType.APPLICATION_JSON_UTF8_VALUE)
 @Tag(
-    name = "Common controller",
-    description = "REST API для работы с сервисом АС Мастер-данные (UOM / Material / MaterialType)."
+    name = "Country controller",
+    description = "Сервис получения перечня стран из АС Мастер-данные"
 )
 @SecurityRequirement(name = "Authorization")
-@RequestMapping(value = "/api/v1/info", produces = MediaType.APPLICATION_JSON_VALUE)
-public interface UiAdapterController {
-
-  // -------------------- UOM --------------------
+public interface UiCountryController {
 
   /**
-   * Получение всех доступных единиц измерения (UOM).
+   * Ищет страны по списку кодов ALPHA-2.
    */
-  @GetMapping(value = "/uom/all")
+  @GetMapping
   @Operation(
-      operationId = "getAllMeasures",
-      summary = "Получить список всех единиц измерения",
+      operationId = "searchCountry",
+      summary = "Получение перечня стран по массиву кодов ALPHA-2",
       description =
-          "Возвращает полный список всех доступных единиц измерения (UOM) из системы мастер-данных. "
-              + "Метод используется для заполнения справочников/выпадающих списков."
+          "Возвращает список стран по заданным кодам ALPHA-2 (например: RU, US). "
+              + "Параметр countryCode обязателен: должен содержать хотя бы одно значение; элементы списка не должны быть пустыми."
   )
   @ApiResponses({
       @ApiResponse(
           responseCode = "200",
-          description = "Успешно",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObjUomBankDtoList.class))
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "На сервере произошла ошибка",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      )
-  })
-  ResultObj<List<UomBankDto>> getAllMeasures();
-
-
-  /**
-   * Получение списка единиц измерения (UOM) по кодам.
-   * Если коды не переданы — возвращаются все доступные UOM.
-   */
-  @GetMapping(value = "/uom")
-  @Operation(
-      operationId = "getMeasuresByCodes",
-      summary = "Предоставление единиц измерения по списку кодов",
-      description =
-          "Возвращает список единиц измерения (UOM) по заданному списку кодов. "
-              + "Параметр uomCode можно передавать несколько раз в query: "
-              + "`?uomCode=796&uomCode=778`. "
-              + "Если параметр uomCode не задан — возвращаются все доступные единицы измерения."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешно",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObjUomBankDtoList.class))
+          description = "Успешный поиск стран",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = ResultObj.class)
+          )
       ),
       @ApiResponse(
           responseCode = "400",
-          description = "Запрос не прошёл правила валидации",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
+          description = "Некорректные параметры запроса (валидация, пустой/отсутствующий countryCode)",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
       ),
       @ApiResponse(
           responseCode = "401",
           description = "Пользователь не аутентифицирован",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
       ),
       @ApiResponse(
           responseCode = "403",
           description = "Нет прав на операцию",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
       ),
       @ApiResponse(
           responseCode = "500",
-          description = "На сервере произошла ошибка",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      )
-  })
-  ResultObj<List<UomBankDto>> getMeasuresByCodes(
-      @RequestParam(required = false, name = "uomCode")
-      @ArraySchema(
-          schema = @Schema(
-              title = "Код единицы измерения",
-              description = "Код UOM (единицы измерения)",
-              type = "string",
-              pattern = "^.*$",
-              maxLength = 255,
-              example = "796"
-          ),
-          maxItems = 999
-      )
-      @Parameter(
-          name = "uomCode",
-          in = ParameterIn.QUERY,
-          description =
-              "Список кодов единиц измерения (UOM). "
-                  + "Можно передать несколько значений, повторяя query-параметр: `?uomCode=796&uomCode=778`. "
-                  + "Если параметр не задан — возвращаются все доступные единицы измерения.",
-          required = false
-      )
-      List<String> uomCode
-  );
-
-
-  /**
-   * Получение информации об одной единице измерения (UOM) по её коду.
-   */
-  @GetMapping(value = "/uom/{uomCode}")
-  @Operation(
-      operationId = "getMeasuresById",
-      summary = "Предоставление единицы измерения по коду",
-      description =
-          "Возвращает информацию об одной единице измерения (UOM) по её коду (uomCode). "
-              + "Если по коду ничего не найдено — возвращается ошибка 404."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешно",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObjUomBankDtoList.class))
-      ),
-      @ApiResponse(
-          responseCode = "400",
-          description = "Запрос не прошёл правила валидации (некорректный uomCode)",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "404",
-          description = "Единица измерения не найдена",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "На сервере произошла ошибка",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      )
-  })
-  ResultObj<List<UomBankDto>> getMeasuresById(
-      @PathVariable(name = "uomCode")
-      @Parameter(
-          name = "uomCode",
-          in = ParameterIn.PATH,
-          description = "Код единицы измерения (UOM)",
-          required = true,
-          schema = @Schema(
-              title = "Код UOM",
-              description = "Код единицы измерения (UOM)",
-              type = "string",
-              pattern = "^.*$",
-              maxLength = 255,
-              example = "796"
+          description = "Внутренняя ошибка сервиса",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
           )
       )
-      String uomCode
-  );
-
-
-  // -------------------- Material --------------------
-
-  /**
-   * Получение информации об основной записи материала по списку кодов.
-   * Если коды не переданы — возвращаются все доступные материалы.
-   */
-  @GetMapping(value = "/material")
-  @Operation(
-      operationId = "getMaterialByCodes",
-      summary = "Получение информации об основной записи материала",
-      description =
-          "Возвращает информацию об основной записи материала по заданному списку кодов. "
-              + "Параметр materialCode можно передавать несколько раз: `?materialCode=0001&materialCode=0002`. "
-              + "Если коды не указаны — возвращаются все доступные материалы."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешно",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObjMaterialDtoList.class))
-      ),
-      @ApiResponse(
-          responseCode = "400",
-          description = "Запрос не прошёл правила валидации",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "На сервере произошла ошибка",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      )
   })
-  ResultObj<List<MaterialDto>> getMaterialByCodes(
-      @RequestParam(required = false, name = "materialCode")
+  ResultObj<List<CountryDto>> searchCountryByCodes(
+      @RequestParam(name = "countryCode")
+      @NotEmpty(message = "Параметр countryCode должен содержать хотя бы одно значение")
       @ArraySchema(
           schema = @Schema(
-              title = "Код материала",
-              description = "Код материала",
+              title = "Код страны (ALPHA-2)",
+              description = "Код страны в формате ISO 3166-1 alpha-2",
               type = "string",
-              pattern = "^.*$",
-              maxLength = 255,
-              example = "000000000000000001"
+              minLength = 2,
+              maxLength = 2,
+              example = "RU"
           ),
           maxItems = 999
       )
       @Parameter(
-          name = "materialCode",
+          name = "countryCode",
           in = ParameterIn.QUERY,
           description =
-              "Список кодов материалов. "
+              "Список кодов стран ALPHA-2 (ISO 3166-1). "
                   + "Можно передать несколько значений, повторяя query-параметр: "
-                  + "`?materialCode=0001&materialCode=0002`. "
-                  + "Если параметр не задан — возвращаются все доступные материалы.",
-          required = false
+                  + "`?countryCode=RU&countryCode=US`.",
+          required = true
       )
-      List<String> materialCodes
+      List<@NotBlank(message = "Код страны не должен быть пустым") String> countryCodes
   );
 
-
   /**
-   * Получение информации об основной записи материала по коду.
+   * Ищет одну страну по коду ALPHA-2.
    */
-  @GetMapping(value = "/material/{materialCode}")
+  @GetMapping(value = "/{countryCode}")
   @Operation(
-      operationId = "getMaterialById",
-      summary = "Получение информации об основной записи материала по коду",
+      operationId = "searchCountryByCode",
+      summary = "Предоставление информации о стране по коду ALPHA-2",
       description =
-          "Возвращает информацию об основной записи материала по его коду (materialCode). "
-              + "Если по коду ничего не найдено — возвращается ошибка 404."
+          "Возвращает информацию о стране по коду ALPHA-2 (например: RU). "
+              + "Параметр countryCode обязателен и не должен быть пустым."
   )
   @ApiResponses({
       @ApiResponse(
           responseCode = "200",
-          description = "Успешно",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObjMaterialDtoList.class))
+          description = "Успешное получение информации о стране",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = ResultObj.class)
+          )
       ),
       @ApiResponse(
           responseCode = "400",
-          description = "Запрос не прошёл правила валидации (некорректный materialCode)",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
+          description = "Некорректный код страны (валидация параметра)",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
       ),
       @ApiResponse(
           responseCode = "401",
           description = "Пользователь не аутентифицирован",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
       ),
       @ApiResponse(
           responseCode = "403",
           description = "Нет прав на операцию",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "404",
-          description = "Материал не найден",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
       ),
       @ApiResponse(
           responseCode = "500",
-          description = "На сервере произошла ошибка",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      )
-  })
-  ResultObj<List<MaterialDto>> getMaterialById(
-      @PathVariable(name = "materialCode")
-      @Parameter(
-          name = "materialCode",
-          in = ParameterIn.PATH,
-          description = "Код материала",
-          required = true,
-          schema = @Schema(
-              title = "Код материала",
-              description = "Код материала",
-              type = "string",
-              pattern = "^.*$",
-              maxLength = 255,
-              example = "000000000000000001"
+          description = "Внутренняя ошибка сервиса",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
           )
       )
-      String materialCode
-  );
-
-
-  // -------------------- MaterialType --------------------
-
-  /**
-   * Возвращает полный список всех типов материалов.
-   */
-  @GetMapping(value = "/material-type/all")
-  @Operation(
-      operationId = "getAllMaterialTypes",
-      summary = "Получение информации о всех доступных видах ТМЦ",
-      description =
-          "Возвращает полный список всех доступных видов ТМЦ (типов материалов) из системы мастер-данных."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешно",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObjMaterialTypeDtoList.class))
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "На сервере произошла ошибка",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      )
   })
-  ResultObj<List<MaterialTypeDto>> getAllMaterialTypes();
-
-
-  /**
-   * Возвращает список типов материалов по идентификаторам.
-   * Если typeId не передан — возвращаются все доступные типы материалов.
-   */
-  @GetMapping(value = "/material-type")
-  @Operation(
-      operationId = "getMaterialTypeIds",
-      summary = "Получение информации о виде ТМЦ по списку идентификаторов",
-      description =
-          "Возвращает список видов ТМЦ (типов материалов) по заданному списку идентификаторов. "
-              + "Параметр typeId можно передавать несколько раз: `?typeId=1&typeId=2`. "
-              + "Если параметр typeId не задан — возвращаются все доступные виды ТМЦ."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешно",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObjMaterialTypeDtoList.class))
-      ),
-      @ApiResponse(
-          responseCode = "400",
-          description = "Запрос не прошёл правила валидации",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "На сервере произошла ошибка",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      )
-  })
-  ResultObj<List<MaterialTypeDto>> getMaterialTypeIds(
-      @RequestParam(name = "typeId", required = false)
-      @ArraySchema(
-          schema = @Schema(
-              title = "Идентификатор вида ТМЦ",
-              description = "Идентификатор вида ТМЦ (тип материала)",
-              type = "string",
-              pattern = "^.*$",
-              maxLength = 255,
-              example = "1"
-          ),
-          maxItems = 999
-      )
+  ResultObj<List<CountryDto>> searchCountryByCode(
+      @PathVariable("countryCode")
+      @NotBlank(message = "countryCode не должен быть пустым")
       @Parameter(
-          name = "typeId",
-          in = ParameterIn.QUERY,
-          description =
-              "Список идентификаторов видов ТМЦ. "
-                  + "Можно передать несколько значений, повторяя query-параметр: `?typeId=1&typeId=2`. "
-                  + "Если параметр не задан — возвращаются все доступные виды ТМЦ.",
-          required = false
-      )
-      List<String> typeIds
-  );
-
-
-  /**
-   * Возвращает информацию о виде ТМЦ по его идентификатору.
-   */
-  @GetMapping(value = "/material-type/{typeId}")
-  @Operation(
-      operationId = "getMaterialTypeById",
-      summary = "Получение информации о виде ТМЦ по идентификатору",
-      description =
-          "Возвращает информацию о виде ТМЦ (типе материала) по его идентификатору (typeId). "
-              + "Если по идентификатору ничего не найдено — возвращается ошибка 404."
-  )
-  @ApiResponses({
-      @ApiResponse(
-          responseCode = "200",
-          description = "Успешно",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = ResultObjMaterialTypeDtoList.class))
-      ),
-      @ApiResponse(
-          responseCode = "400",
-          description = "Запрос не прошёл правила валидации (некорректный typeId)",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "401",
-          description = "Пользователь не аутентифицирован",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "403",
-          description = "Нет прав на операцию",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "404",
-          description = "Вид ТМЦ не найден",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      ),
-      @ApiResponse(
-          responseCode = "500",
-          description = "На сервере произошла ошибка",
-          content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-              schema = @Schema(implementation = MessageObj.class))
-      )
-  })
-  ResultObj<List<MaterialTypeDto>> getMaterialTypeById(
-      @PathVariable(name = "typeId")
-      @Parameter(
-          name = "typeId",
+          name = "countryCode",
           in = ParameterIn.PATH,
-          description = "Идентификатор вида ТМЦ (тип материала)",
+          description = "Код страны в формате ISO 3166-1 alpha-2 (например: RU)",
           required = true,
-          schema = @Schema(
-              title = "Идентификатор вида ТМЦ",
-              description = "Идентификатор вида ТМЦ (тип материала)",
-              type = "string",
-              pattern = "^.*$",
-              maxLength = 255,
-              example = "1"
+          schema = @Schema(type = "string", minLength = 2, maxLength = 2, example = "RU")
+      )
+      String countryCode
+  );
+
+  /**
+   * Возвращает полный список всех стран.
+   */
+  @GetMapping(value = "/all")
+  @Operation(
+      operationId = "getAllCountries",
+      summary = "Получение полного перечня стран",
+      description = "Возвращает полный список всех стран из АС Мастер-данные."
+  )
+  @ApiResponses({
+      @ApiResponse(
+          responseCode = "200",
+          description = "Успешное получение списка стран",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = ResultObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "401",
+          description = "Пользователь не аутентифицирован",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "403",
+          description = "Нет прав на операцию",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "500",
+          description = "Внутренняя ошибка сервиса",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
           )
       )
-      String typeId
-  );
-
-
-  // --------- helper schemas to show generics in OpenAPI ---------
-  @Schema(name = "ResultObjUomBankDtoList")
-  class ResultObjUomBankDtoList extends ResultObj<List<UomBankDto>> {}
-
-  @Schema(name = "ResultObjMaterialDtoList")
-  class ResultObjMaterialDtoList extends ResultObj<List<MaterialDto>> {}
-
-  @Schema(name = "ResultObjMaterialTypeDtoList")
-  class ResultObjMaterialTypeDtoList extends ResultObj<List<MaterialTypeDto>> {}
+  })
+  ResultObj<List<CountryDto>> getAllCountries();
 }
-
 ```
