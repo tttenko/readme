@@ -1,30 +1,27 @@
 ```java
-
-@Validated
-@RequestMapping(value = "/api/v1/info", produces = MediaType.APPLICATION_JSON_UTF8_VALUE)
+@RequestMapping(value = "/api/v1", produces = MediaType.APPLICATION_JSON_UTF8_VALUE)
 @Tag(
-    name = "Region controller",
-    description = "Сервис получения перечня регионов из АС Мастер-данные"
+    name = "Supplier controller",
+    description = "Предоставление информации о профиле Поставщика из АС Мастер-данные"
 )
 @SecurityRequirement(name = "Authorization")
-public interface UiRegionController {
+public interface UiSupplierController {
 
   /**
-   * Ищет регионы по переданному списку кодов.
+   * Получает информацию о контрагентах по ИНН и опционально по КПП.
    */
-  @GetMapping(value = "/region_code")
+  @GetMapping(value = "/supplier-search")
   @Operation(
-      operationId = "searchRegion",
-      summary = "Получение перечня регионов по массиву кодов регионов",
+      operationId = "getCounterpartyRequisites",
+      summary = "Предоставление информации о получении контрагента по ИНН/КПП",
       description =
-          "Возвращает список регионов по заданным кодам (например: 77). "
-              + "Параметр regionCode обязателен: должен содержать хотя бы одно значение; "
-              + "элементы списка не должны быть пустыми."
+          "Возвращает список контрагентов, соответствующих критериям поиска. "
+              + "Поиск выполняется по обязательному параметру `inn` и опциональному `kpp`."
   )
   @ApiResponses({
       @ApiResponse(
           responseCode = "200",
-          description = "Успешный поиск регионов",
+          description = "Успешный поиск контрагентов",
           content = @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = ResultObj.class)
@@ -32,7 +29,7 @@ public interface UiRegionController {
       ),
       @ApiResponse(
           responseCode = "400",
-          description = "Некорректные параметры запроса (валидация, пустой/отсутствующий regionCode)",
+          description = "Некорректные параметры запроса (валидация inn/kpp)",
           content = @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = MessageObj.class)
@@ -63,48 +60,123 @@ public interface UiRegionController {
           )
       )
   })
-  ResultObj<List<RegionDto>> searchRegionsByCode(
-      @RequestParam(name = "regionCode")
-      @NotEmpty(message = "Параметр regionCode должен содержать хотя бы одно значение")
+  ResultObj<List<CounterpartyDto>> searchSupplier(
+      @RequestParam(name = "inn")
+      @Parameter(
+          name = "inn",
+          in = ParameterIn.QUERY,
+          required = true,
+          description = "ИНН контрагента (обязательный параметр)",
+          schema = @Schema(type = "string", minLength = 10, maxLength = 12, example = "7707083893")
+      )
+      String inn,
+
+      @RequestParam(required = false, name = "kpp")
+      @Parameter(
+          name = "kpp",
+          in = ParameterIn.QUERY,
+          required = false,
+          description = "КПП контрагента (опционально)",
+          schema = @Schema(type = "string", minLength = 9, maxLength = 9, example = "773601001")
+      )
+      String kpp
+  );
+
+  /**
+   * Получает информацию о контрагентах по списку идентификаторов.
+   * Если список пустой — возвращаются все доступные контрагенты.
+   */
+  @GetMapping(value = "/supplier")
+  @Operation(
+      operationId = "getSupplier",
+      summary = "Предоставление информации о получении контрагентов по списку идентификаторов",
+      description =
+          "Возвращает список контрагентов по переданному списку идентификаторов `id`. "
+              + "Если параметр `id` не задан или список пустой — возвращаются все доступные контрагенты. "
+              + "Для передачи нескольких значений повторяйте query-параметр: `?id=1&id=2&id=3`."
+  )
+  @ApiResponses({
+      @ApiResponse(
+          responseCode = "200",
+          description = "Успешное получение списка контрагентов",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = ResultObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "400",
+          description = "Некорректные параметры запроса (валидация id)",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "401",
+          description = "Пользователь не аутентифицирован",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "403",
+          description = "Нет прав на операцию",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "500",
+          description = "Внутренняя ошибка сервиса",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      )
+  })
+  ResultObj<List<CounterpartyDto>> getSupplier(
+      @RequestParam(required = false, name = "id")
       @ArraySchema(
           schema = @Schema(
-              title = "Код региона",
-              description = "Код региона (например: 77)",
+              title = "Идентификатор контрагента",
+              description = "Идентификатор контрагента",
               type = "string",
-              pattern = "^\\d{1,10}$",
-              maxLength = 10,
-              example = "77"
+              maxLength = 255,
+              example = "12345"
           ),
           maxItems = 999
       )
       @Parameter(
-          name = "regionCode",
+          name = "id",
           in = ParameterIn.QUERY,
+          required = false,
           description =
-              "Список кодов регионов. "
-                  + "Можно передать несколько значений, повторяя query-параметр: "
-                  + "`?regionCode=77&regionCode=78`. "
-                  + "Параметр обязателен и не должен быть пустым.",
-          required = true
+              "Список идентификаторов контрагентов. "
+                  + "Можно передать несколько значений, повторяя query-параметр: `?id=1&id=2`. "
+                  + "Если параметр не задан — возвращаются все контрагенты."
       )
-      List<@NotBlank(message = "Код региона не должен быть пустым") String> regionCodes
+      List<String> listOfId
   );
 
   /**
-   * Возвращает информацию о регионе по его коду.
+   * Получает информацию о контрагенте по его идентификатору.
+   * Если контрагент не найден — возвращается ошибка 404.
    */
-  @GetMapping(value = "/region_code/{regionCode}")
+  @GetMapping(value = "/supplier/{id}")
   @Operation(
-      operationId = "searchRegionByCode",
-      summary = "Предоставление информации о регионе по коду региона",
+      operationId = "getSupplierById",
+      summary = "Предоставление информации о получении контрагента по идентификатору",
       description =
-          "Возвращает информацию о регионе по его коду (например: 77). "
-              + "Параметр regionCode обязателен и не должен быть пустым."
+          "Возвращает информацию о контрагенте по его идентификатору `id`. "
+              + "Если контрагент не найден — возвращается ошибка 404 (MdaDataNotFoundException)."
   )
   @ApiResponses({
       @ApiResponse(
           responseCode = "200",
-          description = "Успешное получение информации о регионе",
+          description = "Успешное получение информации о контрагенте",
           content = @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = ResultObj.class)
@@ -112,7 +184,7 @@ public interface UiRegionController {
       ),
       @ApiResponse(
           responseCode = "400",
-          description = "Некорректный код региона (валидация параметра)",
+          description = "Некорректный идентификатор контрагента (валидация параметра)",
           content = @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = MessageObj.class)
@@ -135,6 +207,14 @@ public interface UiRegionController {
           )
       ),
       @ApiResponse(
+          responseCode = "404",
+          description = "Контрагент не найден",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
           responseCode = "500",
           description = "Внутренняя ошибка сервиса",
           content = @Content(
@@ -143,48 +223,47 @@ public interface UiRegionController {
           )
       )
   })
-  ResultObj<List<RegionDto>> searchRegionByCode(
-      @PathVariable("regionCode")
-      @NotBlank(message = "regionCode не должен быть пустым")
+  ResultObj<List<CounterpartyDto>> getSupplierById(
+      @PathVariable("id")
       @Parameter(
-          name = "regionCode",
+          name = "id",
           in = ParameterIn.PATH,
-          description = "Код региона (например: 77)",
           required = true,
-          schema = @Schema(
-              title = "Код региона",
-              description = "Код региона (например: 77)",
-              type = "string",
-              pattern = "^\\d{1,10}$",
-              maxLength = 10,
-              example = "77"
-          )
+          description = "Идентификатор контрагента",
+          schema = @Schema(type = "string", maxLength = 255, example = "12345")
       )
-      String regionCode
+      String id
   );
 
   /**
-   * Возвращает полный список всех регионов.
+   * Получает банковские реквизиты по списку идентификаторов поставщиков.
    */
-  @GetMapping(value = "/region_code/all")
+  @GetMapping(value = "/supplier-bank-requisite")
   @Operation(
-      operationId = "getAllRegions",
-      summary = "Получение полного перечня регионов",
+      operationId = "getSupplierRequisite",
+      summary = "Получения банковских реквизитов по списку идентификаторов поставщиков",
       description =
-          "Возвращает полный список всех регионов из системы мастер-данных. "
-              + "Метод доступен по GET запросу на эндпоинт `/api/v1/info/region_code/all`. "
-              + "Поддерживает кеширование на уровне сервиса для повышения производительности."
+          "Возвращает банковские реквизиты поставщиков по списку идентификаторов `id`. "
+              + "Для передачи нескольких значений повторяйте query-параметр: `?id=1&id=2&id=3`."
   )
   @ApiResponses({
       @ApiResponse(
           responseCode = "200",
-          description = "Успешное получение списка регионов",
+          description = "Успешное получение банковских реквизитов",
           content = @Content(
               mediaType = MediaType.APPLICATION_JSON_VALUE,
               schema = @Schema(implementation = ResultObj.class)
           )
       ),
       @ApiResponse(
+          responseCode = "400",
+          description = "Некорректные параметры запроса (валидация id)",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
           responseCode = "401",
           description = "Пользователь не аутентифицирован",
           content = @Content(
@@ -209,6 +288,101 @@ public interface UiRegionController {
           )
       )
   })
-  ResultObj<List<RegionDto>> getAllRegions();
+  ResultObj<List<BankDto>> getSupplierRequisite(
+      @RequestParam(name = "id")
+      @ArraySchema(
+          schema = @Schema(
+              title = "Идентификатор поставщика",
+              description = "Идентификатор поставщика",
+              type = "string",
+              maxLength = 255,
+              example = "12345"
+          ),
+          maxItems = 999
+      )
+      @Parameter(
+          name = "id",
+          in = ParameterIn.QUERY,
+          required = true,
+          description =
+              "Список идентификаторов поставщиков. "
+                  + "Можно передать несколько значений, повторяя query-параметр: `?id=1&id=2`."
+      )
+      List<String> listOfId
+  );
+
+  /**
+   * Получает банковские реквизиты по идентификатору поставщика.
+   * Если реквизиты не найдены — возвращается ошибка 404.
+   */
+  @GetMapping(value = "/supplier-bank-requisite/{id}")
+  @Operation(
+      operationId = "getSupplierRequisiteById",
+      summary = "Получения банковских реквизитов по идентификатору поставщика",
+      description =
+          "Возвращает банковские реквизиты поставщика по идентификатору `id`. "
+              + "Если реквизиты не найдены — возвращается ошибка 404 (MdaDataNotFoundException)."
+  )
+  @ApiResponses({
+      @ApiResponse(
+          responseCode = "200",
+          description = "Успешное получение банковских реквизитов",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = ResultObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "400",
+          description = "Некорректный идентификатор поставщика (валидация параметра)",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "401",
+          description = "Пользователь не аутентифицирован",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "403",
+          description = "Нет прав на операцию",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "404",
+          description = "Банковские реквизиты не найдены",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      ),
+      @ApiResponse(
+          responseCode = "500",
+          description = "Внутренняя ошибка сервиса",
+          content = @Content(
+              mediaType = MediaType.APPLICATION_JSON_VALUE,
+              schema = @Schema(implementation = MessageObj.class)
+          )
+      )
+  })
+  ResultObj<List<BankDto>> getSupplierRequisiteById(
+      @PathVariable("id")
+      @Parameter(
+          name = "id",
+          in = ParameterIn.PATH,
+          required = true,
+          description = "Идентификатор поставщика",
+          schema = @Schema(type = "string", maxLength = 255, example = "12345")
+      )
+      String id
+  );
 }
 ```
