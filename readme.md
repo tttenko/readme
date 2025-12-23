@@ -1,381 +1,159 @@
 ```java
-/**
- * HTTP-interface для вызова MasterData API через WebClient/HttpServiceProxyFactory.
- */
-@HttpExchange(url = "/api/v1", accept = MediaType.APPLICATION_JSON_VALUE)
-public interface MasterDataClientApi {
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class SmokeRunner implements CommandLineRunner {
 
-    // -------------------- AdapterController (/api/v1/info) --------------------
+    private final MasterDataClientApi masterDataClientApi;
 
-    @GetExchange("/info/uom/all")
-    ResultObj<List<UomBankDto>> getAllMeasures();
+    private final ObjectMapper om = new ObjectMapper().findAndRegisterModules();
 
-    @GetExchange("/info/uom")
-    ResultObj<List<UomBankDto>> getMeasuresByCodes(
-            @RequestParam(required = false, name = "uomCode") List<String> uomCode
-    );
+    @Override
+    public void run(String... args) {
+        // ---------------- AdapterController ----------------
+        var uoms = safeList("Adapter:getAllMeasures", masterDataClientApi::getAllMeasures);
+        var uomCode = pickFirst(uoms, "uomCode", "code", "id");
+        if (uomCode != null) {
+            safeList("Adapter:getMeasuresByCodes", () -> masterDataClientApi.getMeasuresByCodes(List.of(uomCode)));
+            safeList("Adapter:getMeasuresById", () -> masterDataClientApi.getMeasuresById(uomCode));
+        }
 
-    @GetExchange("/info/uom/{uomCode}")
-    ResultObj<List<UomBankDto>> getMeasuresById(
-            @PathVariable(name = "uomCode") String uomCode
-    );
+        // material (в контроллере параметр optional, можно null)
+        var materials = safeList("Adapter:getMaterialByCodes(null)", () -> masterDataClientApi.getMaterialByCodes(null));
+        var materialCode = pickFirst(materials, "materialCode", "code", "id");
+        if (materialCode != null) {
+            safeList("Adapter:getMaterialById", () -> masterDataClientApi.getMaterialById(materialCode));
+        }
 
-    @GetExchange("/info/material")
-    ResultObj<List<MaterialDto>> getMaterialByCodes(
-            @RequestParam(required = false, name = "materialCode") List<String> materialCodes
-    );
+        var materialTypes = safeList("Adapter:getAllMaterialTypes", masterDataClientApi::getAllMaterialTypes);
+        var typeId = pickFirst(materialTypes, "typeId", "id", "code");
+        if (typeId != null) {
+            safeList("Adapter:getMaterialTypeIds", () -> masterDataClientApi.getMaterialTypeIds(List.of(typeId)));
+            safeList("Adapter:getMaterialTypeById", () -> masterDataClientApi.getMaterialTypeById(typeId));
+        }
 
-    @GetExchange("/info/material/{materialCode}")
-    ResultObj<List<MaterialDto>> getMaterialById(
-            @PathVariable(name = "materialCode") String materialCode
-    );
+        // ---------------- CacheController ----------------
+        safeObj("Cache:invalidate", masterDataClientApi::invalidate);
+        safeObj("Cache:getStatus", masterDataClientApi::getStatus);
 
-    @GetExchange("/info/material-type/all")
-    ResultObj<List<MaterialTypeDto>> getAllMaterialTypes();
+        // ---------------- CountryController ----------------
+        var countries = safeList("Country:getAllCountries", masterDataClientApi::getAllCountries);
+        var countryCode = pickFirst(countries, "alpha2", "countryCode", "code", "id");
+        if (countryCode != null) {
+            safeList("Country:searchCountryByCodes", () -> masterDataClientApi.searchCountryByCodes(List.of(countryCode)));
+            safeList("Country:searchCountryByCode", () -> masterDataClientApi.searchCountryByCode(countryCode));
+        }
 
-    @GetExchange("/info/material-type")
-    ResultObj<List<MaterialTypeDto>> getMaterialTypeIds(
-            @RequestParam(name = "typeId", required = false) List<String> typeIds
-    );
+        // ---------------- CurrencyController ----------------
+        var currencies = safeList("Currency:getAllCurrencies", masterDataClientApi::getAllCurrencies);
+        var currencyCode = pickFirst(currencies, "currencyCode", "code", "id");
+        if (currencyCode != null) {
+            safeList("Currency:searchCurrenciesByCodes", () -> masterDataClientApi.searchCurrenciesByCodes(List.of(currencyCode)));
+            safeList("Currency:searchCurrencyByCode", () -> masterDataClientApi.searchCurrencyByCode(currencyCode));
+        }
 
-    @GetExchange("/info/material-type/{typeId}")
-    ResultObj<List<MaterialTypeDto>> getMaterialTypeById(
-            @PathVariable(name = "typeId") String typeId
-    );
+        // ---------------- NdsController ----------------
+        safeList("Nds:getNdsByRate(null,null)", () -> masterDataClientApi.getNdsByRate(null, null));
+        safeList("Nds:getNdsByCode(null,null,null)", () -> masterDataClientApi.getNdsByCode(null, null, null));
 
-    // -------------------- CacheController (/api/v1/cache) --------------------
+        // ---------------- RegionController ----------------
+        var regions = safeList("Region:getAllRegions", masterDataClientApi::getAllRegions);
+        var regionCode = pickFirst(regions, "regionCode", "code", "id");
+        if (regionCode != null) {
+            safeList("Region:searchRegionsByCode", () -> masterDataClientApi.searchRegionsByCode(List.of(regionCode)));
+            safeList("Region:searchRegionByCode", () -> masterDataClientApi.searchRegionByCode(regionCode));
+        }
 
-    @GetExchange("/cache/invalidate")
-    ResultObj<Object> invalidate();
+        // ---------------- SupplierController ----------------
+        // В javadoc у тебя: если список id пустой — вернет всех, поэтому дергаем (null)
+        var suppliers = safeList("Supplier:getSupplier(null)", () -> masterDataClientApi.getSupplier(null));
+        var supplierId = pickFirst(suppliers, "id", "supplierId", "counterpartyId", "uuid");
+        var inn = pickFirst(suppliers, "inn");
+        var kpp = pickFirst(suppliers, "kpp");
 
-    @GetExchange("/cache/status")
-    ResultObj<CacheStatusResponse> getStatus();
+        if (inn != null) {
+            safeList("Supplier:searchSupplier(inn,kpp)", () -> masterDataClientApi.searchSupplier(inn, kpp));
+        }
+        if (supplierId != null) {
+            safeList("Supplier:getSupplierById", () -> masterDataClientApi.getSupplierById(supplierId));
+            safeList("Supplier:getSupplierRequisite", () -> masterDataClientApi.getSupplierRequisite(List.of(supplierId)));
+            safeList("Supplier:getSupplierRequisiteById", () -> masterDataClientApi.getSupplierRequisiteById(supplierId));
+        }
 
-    // -------------------- CountryController (/api/v1/info/country) --------------------
+        // ---------------- TerBanksController ----------------
+        var tbs = safeList("TerBanks:getAllTerBanks", masterDataClientApi::getAllTerBanks);
+        var tbCode = pickFirst(tbs, "tbCode", "code", "id");
+        safeList("TerBanks:getTerBank(tbCode?)",
+                () -> masterDataClientApi.getTerBank(tbCode == null ? null : List.of(tbCode)));
+        if (tbCode != null) {
+            safeList("TerBanks:getTerBankById", () -> masterDataClientApi.getTerBankById(tbCode));
+        }
 
-    @GetExchange("/info/country")
-    ResultObj<List<CountryDto>> searchCountryByCodes(
-            @RequestParam(name = "countryCode") List<String> countryCodes
-    );
+        var tbsReq = safeList("TerBanks:getTerBanksRequisiteALL", masterDataClientApi::getTerBanksRequisiteALL);
+        var tbReqCode = pickFirst(tbsReq, "tbCode", "code", "id");
+        if (tbReqCode == null) tbReqCode = tbCode;
 
-    @GetExchange("/info/country/{countryCode}")
-    ResultObj<List<CountryDto>> searchCountryByCode(
-            @PathVariable("countryCode") String countryCode
-    );
+        safeList("TerBanks:getTerBanksRequisite(tbCode?)",
+                () -> masterDataClientApi.getTerBanksRequisite(tbReqCode == null ? null : List.of(tbReqCode)));
+        if (tbReqCode != null) {
+            safeList("TerBanks:getTerBanksRequisiteById", () -> masterDataClientApi.getTerBanksRequisiteById(tbReqCode));
+        }
 
-    @GetExchange("/info/country/all")
-    ResultObj<List<CountryDto>> getAllCountries();
+        log.info("✅ Smoke finished");
+    }
 
-    // -------------------- CurrencyController (/api/v1/info/currency) --------------------
+    // -------- helpers --------
 
-    @GetExchange("/info/currency/all")
-    ResultObj<List<CurrencyDto>> getAllCurrencies();
+    private <T> List<T> safeList(String name, Supplier<ResultObj<List<T>>> call) {
+        try {
+            var res = call.get();
+            var data = (res != null ? res.getData() : null);
+            int size = (data != null ? data.size() : 0);
+            log.info("{} -> size={}", name, size);
+            return data != null ? data : List.of();
+        } catch (Exception e) {
+            log.warn("{} -> FAILED: {}", name, e.toString());
+            return List.of();
+        }
+    }
 
-    @GetExchange("/info/currency")
-    ResultObj<List<CurrencyDto>> searchCurrenciesByCodes(
-            @RequestParam(required = false, name = "currencyCode") List<String> currencyCodes
-    );
+    private <T> T safeObj(String name, Supplier<ResultObj<T>> call) {
+        try {
+            var res = call.get();
+            var data = (res != null ? res.getData() : null);
+            // чтобы увидеть в логах "что пришло", но без огромных простыней
+            log.info("{} -> {}", name, data == null ? "null" : toJsonShort(data));
+            return data;
+        } catch (Exception e) {
+            log.warn("{} -> FAILED: {}", name, e.toString());
+            return null;
+        }
+    }
 
-    @GetExchange("/info/currency/{currencyCode}")
-    ResultObj<List<CurrencyDto>> searchCurrencyByCode(
-            @PathVariable("currencyCode") String currencyCode
-    );
+    private String pickFirst(List<?> list, String... keys) {
+        if (list == null || list.isEmpty()) return null;
+        return pickField(list.get(0), keys);
+    }
 
-    // -------------------- NdsController (/api/v1) --------------------
+    private String pickField(Object dto, String... keys) {
+        if (dto == null) return null;
+        Map<String, Object> m = om.convertValue(dto, new TypeReference<Map<String, Object>>() {});
+        for (String k : keys) {
+            Object v = m.get(k);
+            if (v == null) continue;
+            String s = v.toString();
+            if (!s.isBlank()) return s;
+        }
+        return null;
+    }
 
-    @GetExchange("/main-nds")
-    ResultObj<List<NdsDto>> getNdsByRate(
-            @RequestParam(name = "rate", required = false) List<String> rate,
-            @RequestParam(name = "date", required = false)
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime date
-    );
-
-    @GetExchange("/main-nds-code")
-    ResultObj<List<NdsDto>> getNdsByCode(
-            @RequestParam(name = "code", required = false) List<String> code,
-            @RequestParam(name = "rate", required = false) List<String> rate,
-            @RequestParam(name = "date", required = false)
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime date
-    );
-
-    // -------------------- RegionController (/api/v1/info) --------------------
-
-    @GetExchange("/info/region_code")
-    ResultObj<List<RegionDto>> searchRegionsByCode(
-            @RequestParam(name = "regionCode") List<String> regionCodes
-    );
-
-    @GetExchange("/info/{regionCode}")
-    ResultObj<List<RegionDto>> searchRegionByCode(
-            @PathVariable("regionCode") String regionCode
-    );
-
-    @GetExchange("/info/region_code/all")
-    ResultObj<List<RegionDto>> getAllRegions();
-
-    // -------------------- SupplierController (/api/v1) --------------------
-
-    @GetExchange("/supplier-search")
-    ResultObj<List<CounterpartyDto>> searchSupplier(
-            @RequestParam(name = "inn") String inn,
-            @RequestParam(required = false, name = "kpp") String kpp
-    );
-
-    @GetExchange("/supplier")
-    ResultObj<List<CounterpartyDto>> getSupplier(
-            @RequestParam(required = false, name = "id") List<String> listOfId
-    );
-
-    @GetExchange("/supplier/{id}")
-    ResultObj<List<CounterpartyDto>> getSupplierById(
-            @PathVariable("id") String id
-    );
-
-    @GetExchange("/supplier-bank-requisite")
-    ResultObj<List<BankDto>> getSupplierRequisite(
-            @RequestParam(name = "id") List<String> listOfId
-    );
-
-    @GetExchange("/supplier-bank-requisite/{id}")
-    ResultObj<List<BankDto>> getSupplierRequisiteById(
-            @PathVariable("id") String id
-    );
-
-    // -------------------- TerBanksController (/api/v1/info) --------------------
-
-    @GetExchange("/info/tb/all")
-    ResultObj<List<TerBankDto>> getAllTerBanks();
-
-    @GetExchange("/info/tb")
-    ResultObj<List<TerBankDto>> getTerBank(
-            @RequestParam(name = "tbCode", required = false) List<String> tbCode
-    );
-
-    @GetExchange("/info/tb/{tbCode}")
-    ResultObj<List<TerBankDto>> getTerBankById(
-            @PathVariable("tbCode") String tbCode
-    );
-
-    @GetExchange("/info/tb-requisite/all")
-    ResultObj<List<TerBankWithRequisiteDto>> getTerBanksRequisiteALL();
-
-    @GetExchange("/info/tb-requisite")
-    ResultObj<List<TerBankWithRequisiteDto>> getTerBanksRequisite(
-            @RequestParam(name = "tbCode", required = false) List<String> tbCode
-    );
-
-    @GetExchange("/info/tb-requisite/{tbCode}")
-    ResultObj<List<TerBankWithRequisiteDto>> getTerBanksRequisiteById(
-            @PathVariable("tbCode") String tbCode
-    );
+    private String toJsonShort(Object o) {
+        try {
+            String json = om.writeValueAsString(o);
+            return json.length() > 400 ? json.substring(0, 400) + "...(truncated)" : json;
+        } catch (Exception e) {
+            return o.toString();
+        }
+    }
 }
-
-
-/**
- * HTTP-interface для вызова MasterData API через WebClient/HttpServiceProxyFactory.
- */
-@HttpExchange(url = "/api/v1", accept = MediaType.APPLICATION_JSON_VALUE)
-public interface MasterDataClientApi {
-
-    // -------------------- AdapterController (/api/v1/info) --------------------
-
-    @GetExchange("/info/uom/all")
-    ResultObj<List<UomBankDto>> getAllMeasures();
-
-    @GetExchange("/info/uom")
-    ResultObj<List<UomBankDto>> getMeasuresByCodes(
-            @RequestParam(required = false, name = "uomCode") List<String> uomCode
-    );
-
-    @GetExchange("/info/uom/{uomCode}")
-    ResultObj<List<UomBankDto>> getMeasuresById(
-            @PathVariable(name = "uomCode") String uomCode
-    );
-
-    @GetExchange("/info/material")
-    ResultObj<List<MaterialDto>> getMaterialByCodes(
-            @RequestParam(required = false, name = "materialCode") List<String> materialCodes
-    );
-
-    @GetExchange("/info/material/{materialCode}")
-    ResultObj<List<MaterialDto>> getMaterialById(
-            @PathVariable(name = "materialCode") String materialCode
-    );
-
-    @GetExchange("/info/material-type/all")
-    ResultObj<List<MaterialTypeDto>> getAllMaterialTypes();
-
-    @GetExchange("/info/material-type")
-    ResultObj<List<MaterialTypeDto>> getMaterialTypeIds(
-            @RequestParam(name = "typeId", required = false) List<String> typeIds
-    );
-
-    @GetExchange("/info/material-type/{typeId}")
-    ResultObj<List<MaterialTypeDto>> getMaterialTypeById(
-            @PathVariable(name = "typeId") String typeId
-    );
-
-    // -------------------- CacheController (/api/v1/cache) --------------------
-
-    @GetExchange("/cache/invalidate")
-    ResultObj<Object> invalidate();
-
-    @GetExchange("/cache/status")
-    ResultObj<CacheStatusResponse> getStatus();
-
-    // -------------------- CountryController (/api/v1/info/country) --------------------
-
-    @GetExchange("/info/country")
-    ResultObj<List<CountryDto>> searchCountryByCodes(
-            @RequestParam(name = "countryCode") List<String> countryCodes
-    );
-
-    @GetExchange("/info/country/{countryCode}")
-    ResultObj<List<CountryDto>> searchCountryByCode(
-            @PathVariable("countryCode") String countryCode
-    );
-
-    @GetExchange("/info/country/all")
-    ResultObj<List<CountryDto>> getAllCountries();
-
-    // -------------------- CurrencyController (/api/v1/info/currency) --------------------
-
-    @GetExchange("/info/currency/all")
-    ResultObj<List<CurrencyDto>> getAllCurrencies();
-
-    @GetExchange("/info/currency")
-    ResultObj<List<CurrencyDto>> searchCurrenciesByCodes(
-            @RequestParam(required = false, name = "currencyCode") List<String> currencyCodes
-    );
-
-    @GetExchange("/info/currency/{currencyCode}")
-    ResultObj<List<CurrencyDto>> searchCurrencyByCode(
-            @PathVariable("currencyCode") String currencyCode
-    );
-
-    // -------------------- NdsController (/api/v1) --------------------
-
-    @GetExchange("/main-nds")
-    ResultObj<List<NdsDto>> getNdsByRate(
-            @RequestParam(name = "rate", required = false) List<String> rate,
-            @RequestParam(name = "date", required = false)
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime date
-    );
-
-    @GetExchange("/main-nds-code")
-    ResultObj<List<NdsDto>> getNdsByCode(
-            @RequestParam(name = "code", required = false) List<String> code,
-            @RequestParam(name = "rate", required = false) List<String> rate,
-            @RequestParam(name = "date", required = false)
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime date
-    );
-
-    // -------------------- RegionController (/api/v1/info) --------------------
-
-    @GetExchange("/info/region_code")
-    ResultObj<List<RegionDto>> searchRegionsByCode(
-            @RequestParam(name = "regionCode") List<String> regionCodes
-    );
-
-    @GetExchange("/info/{regionCode}")
-    ResultObj<List<RegionDto>> searchRegionByCode(
-            @PathVariable("regionCode") String regionCode
-    );
-
-    @GetExchange("/info/region_code/all")
-    ResultObj<List<RegionDto>> getAllRegions();
-
-    // -------------------- SupplierController (/api/v1) --------------------
-
-    @GetExchange("/supplier-search")
-    ResultObj<List<CounterpartyDto>> searchSupplier(
-            @RequestParam(name = "inn") String inn,
-            @RequestParam(required = false, name = "kpp") String kpp
-    );
-
-    @GetExchange("/supplier")
-    ResultObj<List<CounterpartyDto>> getSupplier(
-            @RequestParam(required = false, name = "id") List<String> listOfId
-    );
-
-    @GetExchange("/supplier/{id}")
-    ResultObj<List<CounterpartyDto>> getSupplierById(
-            @PathVariable("id") String id
-    );
-
-    @GetExchange("/supplier-bank-requisite")
-    ResultObj<List<BankDto>> getSupplierRequisite(
-            @RequestParam(name = "id") List<String> listOfId
-    );
-
-    @GetExchange("/supplier-bank-requisite/{id}")
-    ResultObj<List<BankDto>> getSupplierRequisiteById(
-            @PathVariable("id") String id
-    );
-
-    // -------------------- TerBanksController (/api/v1/info) --------------------
-
-    @GetExchange("/info/tb/all")
-    ResultObj<List<TerBankDto>> getAllTerBanks();
-
-    @GetExchange("/info/tb")
-    ResultObj<List<TerBankDto>> getTerBank(
-            @RequestParam(name = "tbCode", required = false) List<String> tbCode
-    );
-
-    @GetExchange("/info/tb/{tbCode}")
-    ResultObj<List<TerBankDto>> getTerBankById(
-            @PathVariable("tbCode") String tbCode
-    );
-
-    @GetExchange("/info/tb-requisite/all")
-    ResultObj<List<TerBankWithRequisiteDto>> getTerBanksRequisiteALL();
-
-    @GetExchange("/info/tb-requisite")
-    ResultObj<List<TerBankWithRequisiteDto>> getTerBanksRequisite(
-            @RequestParam(name = "tbCode", required = false) List<String> tbCode
-    );
-
-    @GetExchange("/info/tb-requisite/{tbCode}")
-    ResultObj<List<TerBankWithRequisiteDto>> getTerBanksRequisiteById(
-            @PathVariable("tbCode") String tbCode
-    );
-}
-
-dependency>
-    <groupId>org.springframework</groupId>
-    <artifactId>spring-web</artifactId>
-  </dependency>
-
-  <!-- @Valid + @NotBlank/@NotEmpty/... -->
-  <dependency>
-    <groupId>jakarta.validation</groupId>
-    <artifactId>jakarta.validation-api</artifactId>
-  </dependency>
-
-  <!-- OpenAPI аннотации: @Operation/@ApiResponses/@Tag/@Parameter/... -->
-  <dependency>
-    <groupId>io.swagger.core.v3</groupId>
-    <artifactId>swagger-annotations-jakarta</artifactId>
-  </dependency>
-
-  <!-- Если DTO размечены Jackson-аннотациями -->
-  <dependency>
-    <groupId>com.fasterxml.jackson.core</groupId>
-    <artifactId>jackson-annotations</artifactId>
-  </dependency>
-
-  <!-- Твой общий wrapper ResultObj -->
-  <dependency>
-    <groupId>ru.sber.cs.core</groupId>
-    <artifactId>cs-core-rest-response</artifactId>
-  </dependency>
-
-  <!-- Lombok (лучше provided, чтобы не тащить транзитивно) -->
-  <dependency>
-    <groupId>org.projectlombok</groupId>
-    <artifactId>lombok</artifactId>
-    <scope>provided</scope>
-    <optional>true</optional>
-  </dependency>
 ```
