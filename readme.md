@@ -341,4 +341,41 @@ public interface MasterDataClientApi {
             @PathVariable("tbCode") String tbCode
     );
 }
+
+dependency>
+    <groupId>org.springframework</groupId>
+    <artifactId>spring-web</artifactId>
+  </dependency>
+
+  <!-- @Valid + @NotBlank/@NotEmpty/... -->
+  <dependency>
+    <groupId>jakarta.validation</groupId>
+    <artifactId>jakarta.validation-api</artifactId>
+  </dependency>
+
+  <!-- OpenAPI аннотации: @Operation/@ApiResponses/@Tag/@Parameter/... -->
+  <dependency>
+    <groupId>io.swagger.core.v3</groupId>
+    <artifactId>swagger-annotations-jakarta</artifactId>
+  </dependency>
+
+  <!-- Если DTO размечены Jackson-аннотациями -->
+  <dependency>
+    <groupId>com.fasterxml.jackson.core</groupId>
+    <artifactId>jackson-annotations</artifactId>
+  </dependency>
+
+  <!-- Твой общий wrapper ResultObj -->
+  <dependency>
+    <groupId>ru.sber.cs.core</groupId>
+    <artifactId>cs-core-rest-response</artifactId>
+  </dependency>
+
+  <!-- Lombok (лучше provided, чтобы не тащить транзитивно) -->
+  <dependency>
+    <groupId>org.projectlombok</groupId>
+    <artifactId>lombok</artifactId>
+    <scope>provided</scope>
+    <optional>true</optional>
+  </dependency>
 ```
