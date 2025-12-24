@@ -1,190 +1,138 @@
 ```java
-@Slf4j
-@RestController
-@RequiredArgsConstructor
-public class NdsUiControllerImpl implements UiNdsController {
+@SpringBootTest(classes = {
+        // 👇 замени на свой UI-контроллер-имплементацию
+        NdsUiControllerImpl.class,
 
-    private final NdsService ndsService;
-    private final ResponseHandler responseHandler;
+        // 👇 остальной список оставь как в твоём NdsControllerMvcTest
+        SearchRequestProperties.class,
+        HttpRequestHelper.class,
+        NdsService.class,
+        NdsMapper.class,
+        GlobalExceptionHandler.class,
+        CacheGetOrLoadService.class,
+        BatchCacheSupport.class,
+        LoaderNdsByRate.class,
+        CacheConfig.class,
+        BaseMasterDataRequestService.class,
+        ResponseHandler.class
+})
+@ActiveProfiles("test")
+class NdsUiControllerMvcTest {
 
-    @Override
-    public ResultObj<List<NdsDto>> getNdsByRate(
-            @RequestParam(name = "rate", required = false) List<String> rate,
-            @RequestParam(name = "date", required = false)
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime date
-    ) {
-        if (date == null) {
-            date = ZonedDateTime.now();
-        }
-        ZonedDateTime finalDate = date;
+    // ====== ПОДСТАВЬ СВОИ UI PATH ======
+    private static final String UI_V1 = "/ui/v1";              // например "/ui/v1" или "/ui/v1/info" — как у тебя заведено
+    private static final String MAIN_NDS = UI_V1 + "/main-nds";
+    private static final String MAIN_NDS_CODE = UI_V1 + "/main-nds-code";
+    // ===================================
 
-        return responseHandler.executeOrThrow(() ->
-                getSuccessResponse(ndsService.getBasicVatRate(finalDate, null, rate))
+    private AutoCloseable closeable;
+    private ThreadSafeResourceReader reader;
+    private MockMvc mockMvc;
+
+    @MockitoBean
+    private HttpRequestHelper httpRequestHelper;
+
+    @MockitoBean
+    private ObjectMapper mapper;
+
+    @Autowired
+    private NdsService service;
+
+    @Autowired
+    private ResponseHandler responseHandler;
+
+    @BeforeEach
+    void setUp() {
+        // если у тебя класс называется иначе — замени
+        UiNdsController controller = new NdsUiControllerImpl(service, responseHandler);
+
+        reader = MvcTestUtils.createReader(this);
+        closeable = MockitoAnnotations.openMocks(this);
+
+        this.mockMvc = MockMvcBuilders
+                .standaloneSetup(controller)
+                .defaultResponseCharacterEncoding(StandardCharsets.UTF_8)
+                .build();
+
+        // если mapper реально мок — можно убрать, но оставляю как в твоём тесте
+        mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    }
+
+    @AfterEach
+    void close() throws Exception {
+        closeable.close();
+    }
+
+    @Test
+    @DisplayName("UI test GET {host}" + MAIN_NDS)
+    void ui_searchNdsAllTest() throws Exception {
+        GetItemsSearchResponse response = reader.readResource(
+                "mdresponse/nds/nds-type-1.json",
+                GetItemsSearchResponse.class
         );
+
+        MvcTestUtils.mockPostResponse(
+                "v1/items/byAttrValues",
+                response,
+                GetItemsSearchResponse.class,
+                httpRequestHelper
+        );
+
+        // как в твоём NdsControllerMvcTest: ожидаем 6 элементов
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS), 6);
     }
 
-    @Override
-    public ResultObj<List<NdsDto>> getNdsByCode(
-            @RequestParam(name = "code", required = false) List<String> code,
-            @RequestParam(name = "rate", required = false) List<String> rate,
-            @RequestParam(name = "date", required = false)
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime date
-    ) {
-        if (date == null) {
-            date = ZonedDateTime.now();
-        }
-        
+    @Test
+    @DisplayName("UI cache test GET {host}" + MAIN_NDS)
+    void ui_searchNdsCacheTest() throws Exception {
+        GetItemsSearchResponse response = reader.readResource(
+                "mdresponse/nds/nds-type-1.json",
+                GetItemsSearchResponse.class
+        );
 
-        
-                getSuccessResponse(ndsService.getBasicVatRate(date, code, rate));
+        MvcTestUtils.mockPostResponse(
+                "v1/items/byAttrValues",
+                response,
+                GetItemsSearchResponse.class,
+                httpRequestHelper
+        );
 
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS + "?rate=0"), 2);
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS + "?rate=5"), 1);
+
+        service.cleanCache();
+
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS + "?rate=5"), 1);
+
+        // “без rate” — как у тебя в тесте, ожидаем полный список
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS), 6);
     }
-}
 
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-@JsonIgnoreProperties(ignoreUnknown = true)
-@Schema(description = "Информация о действующих ставках НДС на дату")
-public class NdsDto implements Serializable {
+    @Test
+    @DisplayName("UI test GET {host}" + MAIN_NDS_CODE)
+    void ui_searchNdsCodeCacheTest() throws Exception {
+        GetItemsSearchResponse response = reader.readResource(
+                "mdresponse/nds/nds-type-1.json",
+                GetItemsSearchResponse.class
+        );
 
-    @Schema(
-            description = "Ставка НДС",
-            title = "Ставка НДС",
-            example = "105",
-            type = "string",
-            maxLength = 255,
-            pattern = "^\\d+$"
-    )
-    private String rate;
+        MvcTestUtils.mockPostResponse(
+                "v1/items/byAttrValues",
+                response,
+                GetItemsSearchResponse.class,
+                httpRequestHelper
+        );
 
-    @Schema(
-            description = "Текстовое описание налога",
-            title = "Описание налога",
-            example = "5%/105%",
-            type = "string",
-            maxLength = 255,
-            pattern = ".*$"
-    )
-    private String name;
+        // если у UI-контроллера date обязателен — подставь в URL как в твоём тесте
+        String date = "2025-07-21T10:00:03+03:00";
 
-    @Schema(
-            description = "UUID код ставки НДС",
-            title = "UUID ставки",
-            example = "98971a55-7634-42b5-b1f8-ef31994eef54",
-            type = "string",
-            format = "uuid",
-            maxLength = 36,
-            pattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-    )
-    private String id;
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS_CODE + "?date=" + date), 6);
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS_CODE + "?code=N0VA&date=" + date), 1);
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS_CODE + "?code=N0VA&rate=0&date=" + date), 1);
 
-    @Schema(
-            description = "Код налога",
-            title = "Код налога",
-            example = "01",
-            type = "string",
-            maxLength = 255,
-            pattern = "^\\d+$"
-    )
-    private String code;
-}
+        service.cleanCache();
 
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-@JsonIgnoreProperties(ignoreUnknown = true)
-@Schema(description = "Информация о действующих ставках НДС на дату (расширенная)")
-public class NdsFullDto implements Serializable {
-
-    @Schema(
-            description = "Ставка НДС",
-            title = "Ставка НДС",
-            example = "105",
-            type = "string",
-            maxLength = 255,
-            pattern = "^\\d+$"
-    )
-    private String rate;
-
-    @Schema(
-            description = "Текстовое описание налога",
-            title = "Описание налога",
-            example = "5%/105%",
-            type = "string",
-            maxLength = 255,
-            pattern = ".*$"
-    )
-    private String name;
-
-    @Schema(
-            description = "UUID код ставки НДС",
-            title = "UUID ставки",
-            example = "98971a55-7634-42b5-b1f8-ef31994eef54",
-            type = "string",
-            format = "uuid",
-            maxLength = 36,
-            pattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-    )
-    private String id;
-
-    @Schema(
-            description = "Тип ставки",
-            title = "Тип ставки",
-            example = "2",
-            type = "integer",
-            format = "int32"
-    )
-    private int rateType;
-
-    @Schema(
-            description = "Значение ставки (числитель)",
-            title = "Числитель",
-            example = "5",
-            type = "string",
-            maxLength = 255,
-            pattern = "^\\d+$"
-    )
-    private String rateNominator;
-
-    @Schema(
-            description = "Значение расчётной ставки (знаменатель)",
-            title = "Знаменатель",
-            example = "105",
-            type = "string",
-            maxLength = 255,
-            pattern = "^\\d+$"
-    )
-    private String rateDenominator;
-
-    @Schema(
-            description = "Дата начала срока действия налога",
-            title = "Дата начала действия",
-            example = "2018-12-31T21:00:00Z",
-            type = "string",
-            format = "date-time"
-    )
-    private ZonedDateTime rateDateStartZoned;
-
-    @Schema(
-            description = "Дата окончания срока действия налога",
-            title = "Дата окончания действия",
-            example = "2999-12-30T21:00:00Z",
-            type = "string",
-            format = "date-time"
-    )
-    private ZonedDateTime rateDateEndZoned;
-
-    @Schema(
-            description = "Код налога",
-            title = "Код налога",
-            example = "01",
-            type = "string",
-            maxLength = 255,
-            pattern = "^\\d+$"
-    )
-    private String code;
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS_CODE + "?code=N0VA&rate=0&date=" + date), 1);
+    }
 }
 ```
