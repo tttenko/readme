@@ -1,9 +1,9 @@
 ```java
 @Test
-@DisplayName("test GET {host}/api/v1/info/country/{countryCode}")
-void searchByAlpha2PathVariableTest() throws Exception {
+@DisplayName("test GET {host}/api/v1/info/region_code/{regionCode}")
+void searchByRegionCodePathVariableTest() throws Exception {
     GetItemsSearchResponse response = reader.readResource(
-            "mdresponse/country/country-RU.json",
+            "mdresponse/region/region-01.json",
             GetItemsSearchResponse.class
     );
 
@@ -15,7 +15,7 @@ void searchByAlpha2PathVariableTest() throws Exception {
     );
 
     MvcTestUtils.checkResult(
-            MvcTestUtils.performGetOk(mockMvc, "/api/v1/info/country/RU"),
+            MvcTestUtils.performGetOk(mockMvc, "/api/v1/info/region_code/05"),
             1
     );
 }
