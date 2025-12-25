@@ -1,9 +1,6 @@
 ```java
 @SpringBootTest(classes = {
-        // 👇 замени на свой UI-контроллер-имплементацию
         NdsUiControllerImpl.class,
-
-        // 👇 остальной список оставь как в твоём NdsControllerMvcTest
         SearchRequestProperties.class,
         HttpRequestHelper.class,
         NdsService.class,
@@ -16,21 +13,9 @@
         BaseMasterDataRequestService.class,
         ResponseHandler.class
 })
-@ActiveProfiles("test")
 class NdsUiControllerMvcTest {
 
-    // ====== ПОДСТАВЬ СВОИ UI PATH ======
-    private static final String UI_V1 = "/ui/v1";              // например "/ui/v1" или "/ui/v1/info" — как у тебя заведено
-    private static final String MAIN_NDS = UI_V1 + "/main-nds";
-    private static final String MAIN_NDS_CODE = UI_V1 + "/main-nds-code";
-    // ===================================
-
     private AutoCloseable closeable;
-    private ThreadSafeResourceReader reader;
-    private MockMvc mockMvc;
-
-    @MockitoBean
-    private HttpRequestHelper httpRequestHelper;
 
     @MockitoBean
     private ObjectMapper mapper;
@@ -41,10 +26,16 @@ class NdsUiControllerMvcTest {
     @Autowired
     private ResponseHandler responseHandler;
 
+    private MockMvc mockMvc;
+
+    @MockitoBean
+    private HttpRequestHelper httpRequestHelper;
+
+    private ThreadSafeResourceReader reader;
+
     @BeforeEach
     void setUp() {
-        // если у тебя класс называется иначе — замени
-        UiNdsController controller = new NdsUiControllerImpl(service, responseHandler);
+        var controller = new NdsUiControllerImpl(service, responseHandler);
 
         reader = MvcTestUtils.createReader(this);
         closeable = MockitoAnnotations.openMocks(this);
@@ -54,18 +45,17 @@ class NdsUiControllerMvcTest {
                 .defaultResponseCharacterEncoding(StandardCharsets.UTF_8)
                 .build();
 
-        // если mapper реально мок — можно убрать, но оставляю как в твоём тесте
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
     @AfterEach
-    void close() throws Exception {
+    void tearDown() throws Exception {
         closeable.close();
     }
 
     @Test
-    @DisplayName("UI test GET {host}" + MAIN_NDS)
-    void ui_searchNdsAllTest() throws Exception {
+    @DisplayName("test GET {host}/ui/v1/main-nds")
+    void searchUiNdsAllTest() throws Exception {
         GetItemsSearchResponse response = reader.readResource(
                 "mdresponse/nds/nds-type-1.json",
                 GetItemsSearchResponse.class
@@ -78,13 +68,15 @@ class NdsUiControllerMvcTest {
                 httpRequestHelper
         );
 
-        // как в твоём NdsControllerMvcTest: ожидаем 6 элементов
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS), 6);
+        MvcTestUtils.checkResult(
+                MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds"),
+                6
+        );
     }
 
     @Test
-    @DisplayName("UI cache test GET {host}" + MAIN_NDS)
-    void ui_searchNdsCacheTest() throws Exception {
+    @DisplayName("test GET {host}/ui/v1/main-nds (cache + фильтры)")
+    void searchUiNdsCacheTest() throws Exception {
         GetItemsSearchResponse response = reader.readResource(
                 "mdresponse/nds/nds-type-1.json",
                 GetItemsSearchResponse.class
@@ -97,20 +89,24 @@ class NdsUiControllerMvcTest {
                 httpRequestHelper
         );
 
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS + "?rate=0"), 2);
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS + "?rate=5"), 1);
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds?rate=0"), 2);
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds?rate=5"), 1);
 
         service.cleanCache();
 
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS + "?rate=5"), 1);
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds?rate=5"), 1);
+        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds"), 6);
 
-        // “без rate” — как у тебя в тесте, ожидаем полный список
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS), 6);
+        // если вдруг начнёт падать парсинг из-за "+03:00", замени на "%2B03:00"
+        MvcTestUtils.checkResult(
+                MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds?rate=5&date=2025-07-21T10:00:00+03:00"),
+                1
+        );
     }
 
     @Test
-    @DisplayName("UI test GET {host}" + MAIN_NDS_CODE)
-    void ui_searchNdsCodeCacheTest() throws Exception {
+    @DisplayName("test GET {host}/ui/v1/main-nds-code")
+    void searchUiNdsCodeTest() throws Exception {
         GetItemsSearchResponse response = reader.readResource(
                 "mdresponse/nds/nds-type-1.json",
                 GetItemsSearchResponse.class
@@ -123,16 +119,29 @@ class NdsUiControllerMvcTest {
                 httpRequestHelper
         );
 
-        // если у UI-контроллера date обязателен — подставь в URL как в твоём тесте
-        String date = "2025-07-21T10:00:03+03:00";
+        String date = "2025-07-21T10:00:00+03:00";
 
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS_CODE + "?date=" + date), 6);
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS_CODE + "?code=N0VA&date=" + date), 1);
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS_CODE + "?code=N0VA&rate=0&date=" + date), 1);
+        MvcTestUtils.checkResult(
+                MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds-code?date=" + date),
+                6
+        );
+
+        MvcTestUtils.checkResult(
+                MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds-code?code=NOVAT&date=" + date),
+                1
+        );
+
+        MvcTestUtils.checkResult(
+                MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds-code?code=NOVAT&rate=0&date=" + date),
+                1
+        );
 
         service.cleanCache();
 
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, MAIN_NDS_CODE + "?code=N0VA&rate=0&date=" + date), 1);
+        MvcTestUtils.checkResult(
+                MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds-code?code=NOVAT&rate=0&date=" + date),
+                1
+        );
     }
 }
 ```
