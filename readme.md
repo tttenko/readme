@@ -1,4 +1,6 @@
 ```java
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+
 p@SpringBootTest(classes = {
         // набор оставь такой же, как у тебя в текущих тестах
         SearchRequestProperties.class,
