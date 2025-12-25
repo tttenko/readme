@@ -1,168 +1,61 @@
 ```java
-@SpringBootTest(classes = {
-        NdsUiControllerImpl.class,
-        SearchRequestProperties.class,
-        HttpRequestHelper.class,
-        NdsService.class,
-        NdsMapper.class,
-        GlobalExceptionHandler.class,
-        CacheGetOrLoadService.class,
-        BatchCacheSupport.class,
-        LoaderNdsByRate.class,
-        CacheConfig.class,
-        BaseMasterDataRequestService.class,
-        ResponseHandler.class
-})
-class NdsUiControllerMvcTest {
+public abstract class AbstractNdsController {
 
-    private AutoCloseable closeable;
+    protected final NdsService ndsService;
+    protected final ResponseHandler responseHandler;
 
-    @MockitoBean
-    private ObjectMapper mapper;
-
-    @Autowired
-    private NdsService service;
-
-    @Autowired
-    private ResponseHandler responseHandler;
-
-    @MockitoBean
-    private HttpRequestHelper httpRequestHelper;
-
-    @MockitoBean
-    private SearchRequestProperties searchRequestProperties;
-
-    private MockMvc mockMvc;
-    private ThreadSafeResourceReader reader;
-
-    @BeforeEach
-    void setUp() {
-        // важно: контроллер создаём руками как в твоих тестах
-        UiNdsController controller = new NdsUiControllerImpl(service, responseHandler);
-
-        reader = MvcTestUtils.createReader(this);
-        closeable = MockitoAnnotations.openMocks(this);
-
-        // важно: чтобы мок совпал с реальным URL, который возьмёт сервис
-        when(searchRequestProperties.getGetListByAttrValuesUri(SearchRequestProperties.Context.BOOK))
-                .thenReturn("v1/items/byAttrValues");
-
-        // если в твоём SearchRequestProperties есть методы для NDS (slug/attrId) и они реально используются,
-        // и без них уходит некорректный запрос — добавь аналогично:
-        // when(searchRequestProperties.getSlugValueForNds()).thenReturn("nds");
-        // when(searchRequestProperties.getAttributeIdForNds()).thenReturn("...");
-
-        this.mockMvc = MockMvcBuilders
-                .standaloneSetup(controller)
-                .defaultResponseCharacterEncoding(StandardCharsets.UTF_8)
-                .build();
-
-        // если mapper реально мок — эта настройка ни на что не влияет, но оставляем как в твоих тестах
-        mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    protected AbstractNdsController(NdsService ndsService, ResponseHandler responseHandler) {
+        this.ndsService = ndsService;
+        this.responseHandler = responseHandler;
     }
 
-    @AfterEach
-    void tearDown() throws Exception {
-        closeable.close();
+    protected ResultObj<List<NdsDto>> getNdsByRateInternal(List<String> rate, ZonedDateTime date) {
+        ZonedDateTime finalDate = (date == null) ? ZonedDateTime.now() : date;
+        return responseHandler.executeOrThrow(() ->
+                getSuccessResponse(ndsService.getBasicVatRate(finalDate, null, rate)));
     }
 
-    @Test
-    @DisplayName("test GET {host}/ui/v1/main-nds")
-    void searchUiNdsAllTest() throws Exception {
-        GetItemsSearchResponse response = reader.readResource(
-                "mdresponse/nds/nds-type-1.json",
-                GetItemsSearchResponse.class
-        );
+    protected ResultObj<List<NdsDto>> getNdsByCodeInternal(List<String> code, List<String> rate, ZonedDateTime date) {
+        ZonedDateTime finalDate = (date == null) ? ZonedDateTime.now() : date;
+        return getSuccessResponse(ndsService.getBasicVatRate(finalDate, code, rate));
+    }
+}
 
-        MvcTestUtils.mockPostResponse(
-                "v1/items/byAttrValues",
-                response,
-                GetItemsSearchResponse.class,
-                httpRequestHelper
-        );
+@RestController
+@RequestMapping("/api/v1")
+public class NdsControllerImpl extends AbstractNdsController implements NdsController {
 
-        MvcTestUtils.checkResult(
-                MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds"),
-                6
-        );
+    public NdsControllerImpl(NdsService ndsService, ResponseHandler responseHandler) {
+        super(ndsService, responseHandler);
     }
 
-    @Test
-    @DisplayName("test GET {host}/ui/v1/main-nds (cache + params)")
-    void searchUiNdsCacheTest() throws Exception {
-        GetItemsSearchResponse response = reader.readResource(
-                "mdresponse/nds/nds-type-1.json",
-                GetItemsSearchResponse.class
-        );
-
-        MvcTestUtils.mockPostResponse(
-                "v1/items/byAttrValues",
-                response,
-                GetItemsSearchResponse.class,
-                httpRequestHelper
-        );
-
-        // разные фильтры
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds?rate=0"), 2);
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds?rate=5"), 1);
-
-        // чистим кэш (как в твоём примере)
-        service.cleanCache();
-
-        // повторный вызов после чистки
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds?rate=5"), 1);
-        MvcTestUtils.checkResult(MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds"), 6);
-
-        // дата + таймзона: "+" обязательно кодируем как %2B
-        MvcTestUtils.checkResult(
-                MvcTestUtils.performGetOk(mockMvc,
-                        "/ui/v1/main-nds?rate=5&date=2025-07-21T10:00:00%2B03:00"),
-                1
-        );
+    @GetMapping("/main-nds")
+    public ResultObj<List<NdsDto>> getNdsByRate(List<String> rate, ZonedDateTime date) {
+        return getNdsByRateInternal(rate, date);
     }
 
-    @Test
-    @DisplayName("test GET {host}/ui/v1/main-nds-code")
-    void searchUiNdsCodeCacheTest() throws Exception {
-        GetItemsSearchResponse response = reader.readResource(
-                "mdresponse/nds/nds-type-1.json",
-                GetItemsSearchResponse.class
-        );
+    @GetMapping("/main-nds-code")
+    public ResultObj<List<NdsDto>> getNdsByCode(List<String> code, List<String> rate, ZonedDateTime date) {
+        return getNdsByCodeInternal(code, rate, date);
+    }
+}
 
-        MvcTestUtils.mockPostResponse(
-                "v1/items/byAttrValues",
-                response,
-                GetItemsSearchResponse.class,
-                httpRequestHelper
-        );
+@RestController
+@RequestMapping("/ui/v1")
+public class NdsUiControllerImpl extends AbstractNdsController implements UiNdsController {
 
-        String date = "2025-07-21T10:00:00%2B03:00";
+    public NdsUiControllerImpl(NdsService ndsService, ResponseHandler responseHandler) {
+        super(ndsService, responseHandler);
+    }
 
-        // без code/rate
-        MvcTestUtils.checkResult(
-                MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds-code?date=" + date),
-                6
-        );
+    @GetMapping("/main-nds")
+    public ResultObj<List<NdsDto>> getNdsByRate(List<String> rate, ZonedDateTime date) {
+        return getNdsByRateInternal(rate, date);
+    }
 
-        // с code
-        MvcTestUtils.checkResult(
-                MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds-code?code=NOVAT&date=" + date),
-                1
-        );
-
-        // с code + rate
-        MvcTestUtils.checkResult(
-                MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds-code?code=NOVAT&rate=0&date=" + date),
-                1
-        );
-
-        // чистим кэш и повторяем
-        service.cleanCache();
-
-        MvcTestUtils.checkResult(
-                MvcTestUtils.performGetOk(mockMvc, "/ui/v1/main-nds-code?code=NOVAT&rate=0&date=" + date),
-                1
-        );
+    @GetMapping("/main-nds-code")
+    public ResultObj<List<NdsDto>> getNdsByCode(List<String> code, List<String> rate, ZonedDateTime date) {
+        return getNdsByCodeInternal(code, rate, date);
     }
 }
 ```
