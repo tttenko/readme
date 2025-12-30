@@ -1,11 +1,30 @@
 ```java
-@Override
-    @Mapping(target = "uuid",        expression = "java(getValueOrNull(values, ITEM_ID))")
-    @Mapping(target = "alpha2Code",  expression = "java(getValueText(attributes, SLUG_ALPHA2))")
-    @Mapping(target = "shortName",   expression = "java(getValueText(attributes, SLUG_SHORT_NAME))")
-    @Mapping(target = "fullName",    expression = "java(getValueText(attributes, SLUG_FULL_NAME))")
-    @Mapping(target = "codeCountry", expression = "java(getValueText(attributes, SLUG_CODE_COUNTRY))")
-    @Mapping(target = "alpha3Code",  expression = "java(getValueText(attributes, SLUG_ALPHA3))")
-    CountryDto mapValuesToDto(Map<String, Object> values,
-                              Map<String, Map<String, Object>> attributes);
+@Mapper(config = MdMapperConfig.class)
+public interface CurrencyMapperMs extends DataMapperWithAttribute<CurrencyDto> {
+
+    String NAME = "name";
+    String ALPHABETIC_ISO_CODE = "alphabeticIsoCode";
+    String DIGITAL_ISO_CODE = "digitalIsoCode";
+    String CODE_AST = "codeAst";
+    String ID = "id";
+
+    @Override
+    @Mapping(target = "id",            expression = "java(getValueOrNull(values, ID))")
+    @Mapping(target = "currencyName",  expression = "java(getValueText(attributes, NAME))")
+    @Mapping(target = "currencyCode",  expression = "java(getValueText(attributes, ALPHABETIC_ISO_CODE))")
+    @Mapping(target = "codeAst",       expression = "java(getValueText(attributes, CODE_AST))")
+    @Mapping(target = "isoCode",       expression = "java(getValueText(attributes, DIGITAL_ISO_CODE))")
+    // эти два поля заполним после маппинга
+    @Mapping(target = "currencySymbol", ignore = true)
+    @Mapping(target = "currencySymbolCode", ignore = true)
+    CurrencyDto mapValuesToDto(Map<String, Object> values,
+                               Map<String, Map<String, Object>> attributes);
+
+    @AfterMapping
+    default void enrichSymbols(@MappingTarget CurrencyDto dto) {
+        String code = dto.getCurrencyCode();
+        dto.setCurrencySymbol(CurrencySymbolDictionary.getSymbolByCode(code).orElse(null));
+        dto.setCurrencySymbolCode(CurrencySymbolDictionary.getSymbolCodeByCode(code).orElse(null));
+    }
+}
 ```
