@@ -1,4 +1,25 @@
 ```java
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@Schema(description = "Элемент диапазона календаря")
+public class CalendarRangeItemDto implements Serializable {
+
+    @Schema(description = "UUID записи")
+    private String id;
+
+    @Schema(description = "Дата в формате dd.MM.yyyy")
+    private String date;
+
+    @Schema(description = "Код типа дня")
+    private String dateType;
+
+    @Schema(description = "Статус дня: рабочий день / не рабочий день")
+    private String dailyStatus;
+}
+
 public enum DaysClassification {
     ALL("all"),
     WORK("work");
