@@ -1,207 +1,155 @@
 ```java
 
-@Component
-@RequiredArgsConstructor
-public class CalendarDateMdIndexLoader {
+Общая цепочка (всегда одинаковый старт и финал)
+1) buildRange(start, numDays, isForward, daysClassificationRaw)
 
-    private static final DateTimeFormatter DDMMYYYY = DateTimeFormatter.ofPattern("dd.MM.yyyy");
+Парсит daysClassificationRaw → DaysClassification classification
 
-    private final CalendarDateService prodCalendDateService; // существующий batch + cache
+Считает step = +1/-1 через step(isForward)
 
-    /**
-     * Загружает календарные DTO из МД батчем (по item.slug = dd.MM.yyyy)
-     * и индексирует их по dateShort (dd.MM.yyyy) для O(1) доступа.
-     */
-    public Map<String, CalendarDateDto> loadIndexByDateShort(List<LocalDate> dates) {
-        List<String> keys = toDistinctShortKeys(dates);
-        List<CalendarDateDto> dtos = prodCalendDateService.searchByDates(keys);
-        return indexByDateShort(dtos);
-    }
+В зависимости от classification строит список дат:
 
-    /** Ключ для МД (item.slug) и для индекса. */
-    public String toShortKey(LocalDate date) {
-        return date.format(DDMMYYYY);
-    }
+ALL → buildAllDates(...)
 
-    private List<String> toDistinctShortKeys(List<LocalDate> dates) {
-        return dates.stream()
-            .map(this::toShortKey)
-            .distinct()
-            .toList();
-    }
+WORK → buildWorkDates(...)
 
-    private Map<String, CalendarDateDto> indexByDateShort(List<CalendarDateDto> dtos) {
-        return dtos.stream()
-            .filter(d -> d.getDateShort() != null)
-            .collect(Collectors.toMap(
-                CalendarDateDto::getDateShort,
-                Function.identity(),
-                (a, b) -> a // если внезапно дубль — берём первый
-            ));
-    }
-}
+Когда итоговый список дат готов, делает финальную загрузку МД ровно под него:
 
-@Service
-@RequiredArgsConstructor
-public class CalendarRangeService {
+mdByShort = mdLoader.loadIndexByDateShort(requestedRange)
 
-    private static final String STATUS_WORK = "рабочий день";
-    private static final String STATUS_NON_WORK = "не рабочий день";
+Собирает ответ по спеке:
 
-    private final CalendarDateMdIndexLoader mdLoader;
-    private final DefaultWorkWindowPolicy workWindowPolicy;
+toSortedRangeResponse(requestedRange, mdByShort)
 
-    /**
-     * ВАЖНО: здесь предполагаем, что контроллер уже провалидировал входные параметры:
-     * - date в формате dd.MM.yyyy и распарсен в LocalDate
-     * - numDays >= 1
-     * - isForward / daysClassification имеют дефолты
-     */
-    public List<CalendarRangeItemDto> buildRange(
-        LocalDate start,
-        int numDays,
-        boolean isForward,
-        String daysClassificationRaw
-    ) {
-        DaysClassification classification = DaysClassification.parseOrDefault(daysClassificationRaw);
-        int step = step(isForward);
+Ветка ALL (простая)
+2) buildAllDates(start, numDays, step)
 
-        List<LocalDate> requestedRange = switch (classification) {
-            case ALL -> buildAllDates(start, numDays, step);
-            case WORK -> buildWorkDates(start, numDays, step);
-        };
+Вычисляет конечную дату:
 
-        // финально грузим МД ровно на итоговый диапазон (батчем)
-        Map<String, CalendarDateDto> mdByShort = mdLoader.loadIndexByDateShort(requestedRange);
-        return toSortedRangeResponse(requestedRange, mdByShort);
-    }
+end = start + step * (numDays - 1)
 
-    // ---------------- ALL ----------------
+Возвращает все даты между start и end включительно:
 
-    private List<LocalDate> buildAllDates(LocalDate start, int numDays, int step) {
-        LocalDate end = start.plusDays((long) step * (numDays - 1L));
-        return inclusiveRange(start, end); // всегда по возрастанию
-    }
+inclusiveRange(start, end)
 
-    // ---------------- WORK (оконная загрузка) ----------------
+3) inclusiveRange(a, b)
 
-    private List<LocalDate> buildWorkDates(LocalDate start, int numDays, int step) {
-        int windowSize = workWindowPolicy.initialWindowSize(numDays);
+Делает start = min(a,b), end = max(a,b) — чтобы всегда вернуть по возрастанию, даже если isForward=false
 
-        while (windowSize <= workWindowPolicy.maxWindowSize()) {
-            List<LocalDate> windowDates = generateWindow(start, windowSize, step);
-            Map<String, CalendarDateDto> windowMd = mdLoader.loadIndexByDateShort(windowDates);
+В цикле добавляет даты от start до end включительно (+1 день)
 
-            Optional<LocalDate> endDate = tryFindEndDateByWorkDays(windowDates, windowMd, numDays);
-            if (endDate.isPresent()) {
-                return inclusiveRange(start, endDate.get()); // итоговый непрерывный диапазон
-            }
+✅ На этом итоговый диапазон готов → возвращаемся в buildRange(...) и идём в финальную загрузку МД + сборку ответа.
 
-            int next = workWindowPolicy.nextWindowSize(windowSize);
-            if (next <= windowSize) {
-                throw new IllegalStateException("WorkWindowPolicy must increase window size");
-            }
-            windowSize = next;
-        }
+Ветка WORK (оконная, потому что конец заранее неизвестен)
+2) buildWorkDates(start, numDays, step)
 
-        throw new IllegalStateException("Unable to resolve work-range: exceeded max window size");
-    }
+Задача: найти такую конечную дату, чтобы в непрерывном промежутке от start набралось numDays рабочих.
 
-    private Optional<LocalDate> tryFindEndDateByWorkDays(
-        List<LocalDate> orderedWindowDates,
-        Map<String, CalendarDateDto> mdByShort,
-        int targetWorkDays
-    ) {
-        if (targetWorkDays <= 0) {
-            return Optional.empty();
-        }
+Берём стартовый размер окна:
 
-        int workCount = 0;
-        for (LocalDate d : orderedWindowDates) {
-            CalendarDateDto dto = requireDto(d, mdByShort);
+windowSize = workWindowPolicy.initialWindowSize(numDays)
 
-            if (isWork(dto.getDateType())) {
-                workCount++;
-            }
-            if (workCount == targetWorkDays) {
-                return Optional.of(d);
-            }
-        }
-        return Optional.empty();
-    }
+В цикле:
 
-    // ---------------- RESPONSE ----------------
+строим окно дат:
 
-    private List<CalendarRangeItemDto> toSortedRangeResponse(
-        List<LocalDate> rangeDates,
-        Map<String, CalendarDateDto> mdByShort
-    ) {
-        List<LocalDate> sorted = rangeDates.stream().sorted().toList();
+windowDates = generateWindow(start, windowSize, step)
 
-        List<CalendarRangeItemDto> result = new ArrayList<>(sorted.size());
-        for (LocalDate d : sorted) {
-            CalendarDateDto mdDto = requireDto(d, mdByShort);
+батчем грузим МД под окно:
 
-            result.add(CalendarRangeItemDto.builder()
-                .id(mdDto.getId())
-                .date(mdDto.getDateShort())                 // строго dd.MM.yyyy по спеке
-                .dateType(mdDto.getDateType())
-                .dailyStatus(isWork(mdDto.getDateType()) ? STATUS_WORK : STATUS_NON_WORK)
-                .build());
-        }
-        return result;
-    }
+windowMd = mdLoader.loadIndexByDateShort(windowDates)
 
-    // ---------------- UTILS ----------------
+пытаемся внутри окна найти дату, на которой набралось numDays рабочих:
 
-    private CalendarDateDto requireDto(LocalDate date, Map<String, CalendarDateDto> mdByShort) {
-        String key = mdLoader.toShortKey(date);
-        CalendarDateDto dto = mdByShort.get(key);
+endDateOpt = tryFindEndDateByWorkDays(windowDates, windowMd, numDays)
 
-        if (dto == null) {
-            throw new IllegalStateException("No calendar data from MD for date: " + key);
-        }
-        return dto;
-    }
+если нашли:
 
-    private boolean isWork(String dateType) {
-        return "1".equals(dateType) || "2".equals(dateType);
-    }
+возвращаем итоговый непрерывный диапазон: inclusiveRange(start, endDate)
 
-    private int step(boolean isForward) {
-        return isForward ? 1 : -1;
-    }
+если не нашли — увеличиваем окно через политику:
 
-    /**
-     * Непрерывный диапазон между a и b включительно, всегда по возрастанию.
-     * (Это важно: даже если isForward=false, ответ должен быть отсортирован по возрастанию.)
-     */
-    private List<LocalDate> inclusiveRange(LocalDate a, LocalDate b) {
-        LocalDate start = a.isBefore(b) ? a : b;
-        LocalDate end = a.isBefore(b) ? b : a;
+windowSize = workWindowPolicy.nextWindowSize(windowSize)
 
-        List<LocalDate> out = new ArrayList<>();
-        LocalDate cur = start;
-        while (!cur.isAfter(end)) {
-            out.add(cur);
-            cur = cur.plusDays(1);
-        }
-        return out;
-    }
+Если окно доросло до max и всё равно не нашли — кидаем ошибку (защитный сценарий)
 
-    /**
-     * Окно дат: start, start+step, ... (windowSize штук).
-     * Порядок тут важен — по нему считаем рабочие дни.
-     */
-    private List<LocalDate> generateWindow(LocalDate start, int windowSize, int step) {
-        List<LocalDate> out = new ArrayList<>(windowSize);
-        LocalDate cur = start;
+3) generateWindow(start, windowSize, step)
 
-        for (int i = 0; i < windowSize; i++) {
-            out.add(cur);
-            cur = cur.plusDays(step);
-        }
-        return out;
-    }
-}
+Строит список дат длиной windowSize в направлении step:
+
+start
+
+start+step
+
+start+2*step
+
+…
+
+⚠️ Важно: порядок тут “в направлении шага”, потому что по нему мы считаем рабочие дни.
+
+4) mdLoader.loadIndexByDateShort(windowDates)
+
+Внутри:
+
+toDistinctShortKeys(windowDates) → превращает даты в "dd.MM.yyyy" и убирает дубли
+
+prodCalendDateService.searchByDates(keys) → один батч-запрос в МД (и кэш)
+
+indexByDateShort(dtos) → делает Map<dateShort, CalendarDateDto>
+
+То есть на выходе у тебя O(1) доступ:
+
+“дай инфу по 03.02.2026” → map.get("03.02.2026")
+
+5) tryFindEndDateByWorkDays(orderedWindowDates, mdByShort, targetWorkDays)
+
+Проходит окно по порядку и считает рабочие:
+
+workCount = 0
+
+Для каждой даты d:
+
+dto = requireDto(d, mdByShort) (проверка что МД вернуло запись)
+
+если isWork(dto.getDateType()) → workCount++
+
+если workCount == targetWorkDays → return Optional.of(d)
+
+Если не набрали — Optional.empty()
+
+6) requireDto(date, mdByShort)
+
+Делает ключ "dd.MM.yyyy"
+
+Берёт dto = map.get(key)
+
+Если dto == null → ошибка (значит МД не вернуло дату, а мы без неё не можем корректно посчитать диапазон/сформировать ответ)
+
+Финал для обеих веток: сборка ответа
+7) toSortedRangeResponse(rangeDates, mdByShort)
+
+Делает sorted = rangeDates.stream().sorted() — спека требует всегда по возрастанию
+
+На каждую дату:
+
+mdDto = requireDto(d, mdByShort)
+
+собираем CalendarRangeItemDto:
+
+id = mdDto.getId()
+
+date = mdDto.getDateShort() (строго dd.MM.yyyy)
+
+dateType = mdDto.getDateType()
+
+dailyStatus = isWork(dateType) ? "рабочий день" : "не рабочий день"
+
+Почему в WORK нельзя просто “один запрос”
+
+Потому что конец диапазона неизвестен заранее: он зависит от того, сколько рабочих дней встретится, а это можно определить только после получения dateType на конкретные даты.
+И раз в МД нет запроса по диапазону (только по списку slug), приходится:
+
+либо дёргать МД по 1 дате (плохо),
+
+либо грузить пачками окнами (хорошо, особенно с кэшем).
 ```
