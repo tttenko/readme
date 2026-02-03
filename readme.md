@@ -1,24 +1,25 @@
 ```java
 
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-@Schema(description = "Элемент диапазона календаря")
-public class CalendarRangeItemDto implements Serializable {
+private List<CalendarRangeItemDto> toSortedRangeResponse(
+            List<LocalDate> rangeDates,
+            Map<String, CalendarDateDto> byShort
+    ) {
+        List<LocalDate> sorted = rangeDates.stream().sorted().toList();
 
-    @Schema(description = "UUID записи")
-    private String id;
+        List<CalendarRangeItemDto> result = new ArrayList<>(sorted.size());
+        for (LocalDate d : sorted) {
+            CalendarDateDto mdDto = requireDto(d, byShort);
 
-    @Schema(description = "Дата в формате dd.MM.yyyy")
-    private String date;
-
-    @Schema(description = "Код типа дня")
-    private String dateType;
-
-    @Schema(description = "Статус дня: рабочий день / не рабочий день")
-    private String dailyStatus;
-}
+            result.add(CalendarRangeItemDto.builder()
+                    .id(mdDto.getId())
+                    // ✅ по спеке date = dd.MM.yyyy
+                    .date(mdDto.getDateShort())
+                    .dateType(mdDto.getDateType())
+                    .dailyStatus(isWork(mdDto.getDateType()) ? STATUS_WORK : STATUS_NONWORK)
+                    .build());
+        }
+        return result;
+    }
 
 public enum DaysClassification {
     ALL("all"),
