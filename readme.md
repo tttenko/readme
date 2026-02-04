@@ -1,33 +1,27 @@
 ```java
 
-@Component
-@RequiredArgsConstructor
-public class MdCalendarDataProvider implements CalendarDataProvider {
+public class MissingCalendarDataException extends RuntimeException {
 
     private static final DateTimeFormatter DDMMYYYY = DateTimeFormatter.ofPattern("dd.MM.yyyy");
-    private final CalendarDateService prodCalendarDateService;
 
-    @Override
-    public Map<LocalDate, CalendarDateDto> loadByDates(Collection<LocalDate> dates) {
-        // сохраняем порядок и убираем дубли
-        List<LocalDate> unique = dates.stream().distinct().toList();
-        List<String> keys = unique.stream().map(d -> d.format(DDMMYYYY)).toList();
+    private final LocalDate date;
 
-        List<CalendarDateDto> dtos = prodCalendarDateService.searchByDates(keys);
+    public MissingCalendarDataException(LocalDate date) {
+        super("No calendar data from MD for date: " + format(date));
+        this.date = date;
+    }
 
-        // Индексируем по LocalDate из dto.getDateShort()
-        Map<LocalDate, CalendarDateDto> index = new HashMap<>(dtos.size() * 2);
-        for (CalendarDateDto dto : dtos) {
-            String shortStr = dto.getDateShort();
-            if (shortStr == null) {
-                throw new IllegalStateException("MD returned dto with null dateShort");
-            }
-            LocalDate ld = LocalDate.parse(shortStr, DDMMYYYY);
-            index.putIfAbsent(ld, dto); // или бросать на дубль
-        }
-        return index;
+    public LocalDate getDate() {
+        return date;
+    }
+
+    public String getDateShort() {
+        return format(date);
+    }
+
+    private static String format(LocalDate d) {
+        return d == null ? "null" : d.format(DDMMYYYY);
     }
 }
-
 
 ```
