@@ -1,132 +1,63 @@
 ```java
 /**
- * Калькулятор диапазона типа {@code WORK}: подбирает конечную дату так, чтобы в непрерывном
- * промежутке от {@code start} набралось {@code numDays} рабочих дней.
+ * Политика выбора размера "окна" дат для расчёта диапазона типа {@code WORK}.
  *
- * <p>Так как конечная дата заранее неизвестна, используется "оконный" алгоритм:
- * <ol>
- *   <li>Берём начальный размер окна из {@link WorkWindowPolicy}.</li>
- *   <li>Генерируем окно дат в направлении {@code step} (порядок важен).</li>
- *   <li>Догружаем данные из МД только для отсутствующих дат и складываем их в локальный индекс.</li>
- *   <li>Пробегаем окно по порядку и пытаемся найти дату, на которой накопилось {@code numDays} рабочих дней.</li>
- *   <li>Если не нашли — увеличиваем окно по политике и повторяем.</li>
- * </ol>
+ * <p>Окно — это список последовательных дат, для которых батчем загружаются данные МД,
+ * чтобы попытаться найти конечную дату, на которой набирается нужное количество рабочих дней.</p>
  *
- * <p>Ошибки/инварианты:
+ * <p>Политика задаёт:
  * <ul>
- *   <li>Если политика роста окна не увеличивает размер — это ошибка конфигурации ({@link IllegalStateException}).</li>
- *   <li>Если нужный конец так и не найден до {@code maxWindowSize} — считается нарушением инварианта
- *       (слишком маленький maxWindow, нет данных МД в нужной области или аномальные входные параметры).</li>
- *   <li>Если в МД нет данных для даты, необходимой для подсчёта — выбрасывается {@link MissingCalendarDataException}.</li>
+ *   <li>начальный размер окна, исходя из {@code numDays};</li>
+ *   <li>правило роста окна, если в текущем окне рабочих дней не хватило;</li>
+ *   <li>верхнюю границу (защита от бесконечного роста и слишком больших запросов).</li>
  * </ul>
  */
 @Component
-@RequiredArgsConstructor
-public class TypeWorkRangeCalculator implements RangeCalculator {
+public class WorkWindowPolicy {
 
-    private final WorkWindowPolicy windowPolicy;
-    private final CalendarDataProvider dataProvider;
-    private final CalendarRangeHelpers calendarRangeHelpers;
+    /** Минимальный размер окна (защита для маленьких numDays). */
+    private static final int MIN_WINDOW = 30;
+
+    /** Максимальный размер окна (защита от слишком больших запросов в МД). */
+    private static final int MAX_WINDOW = 4000;
 
     /**
-     * Вычисляет диапазон дат, в котором набирается {@code numDays} рабочих дней, начиная от {@code start}.
+     * Вычисляет стартовый размер окна.
      *
-     * @param start   стартовая дата
-     * @param numDays требуемое количество рабочих дней (>= 1)
-     * @param step    направление: {@code +1} — вперёд, {@code -1} — назад
-     * @return непрерывный диапазон дат (всегда по возрастанию, через {@code inclusiveRange})
+     * <p>Логика: берём {@code numDays * 2 + 20} как эвристику, затем ограничиваем снизу/сверху.</p>
+     *
+     * @param numDays сколько рабочих дней нужно набрать
+     * @return размер окна в диапазоне [{@link #MIN_WINDOW}, {@link #MAX_WINDOW}]
      */
-    @Override
-    public List<LocalDate> calculate(LocalDate start, int numDays, int step) {
-        int windowSize = windowPolicy.initialWindowSize(numDays);
-
-        // локальный кэш в рамках одного расчёта: чтобы не перезагружать одни и те же даты при росте окна
-        Map<LocalDate, CalendarDateDto> mdIndex = new HashMap<>();
-
-        while (windowSize <= windowPolicy.maxWindowSize()) {
-            List<LocalDate> windowDates = calendarRangeHelpers.generateWindow(start, windowSize, step);
-
-            List<LocalDate> missingDates = windowDates.stream()
-                    .filter(date -> !mdIndex.containsKey(date))
-                    .toList();
-
-            if (!missingDates.isEmpty()) {
-                mdIndex.putAll(dataProvider.loadByDates(missingDates));
-            }
-
-            Optional<LocalDate> endDateOpt = findEndDate(windowDates, mdIndex, numDays);
-            if (endDateOpt.isPresent()) {
-                return calendarRangeHelpers.inclusiveRange(start, endDateOpt.get());
-            }
-
-            int nextWindowSize = windowPolicy.nextWindowSize(windowSize, numDays);
-            if (nextWindowSize <= windowSize) {
-                throw new IllegalStateException(
-                        "WorkWindowPolicy must increase window size: current=" + windowSize + ", next=" + nextWindowSize
-                );
-            }
-
-            windowSize = nextWindowSize;
-        }
-
-        throw new IllegalStateException(
-                "Invariant violated: work-range end not found. start=" + start +
-                ", numDays=" + numDays +
-                ", step=" + step +
-                ", maxWindow=" + windowPolicy.maxWindowSize()
-        );
+    public int initialWindowSize(int numDays) {
+        return Math.min(Math.max(numDays * 2 + 20, MIN_WINDOW), MAX_WINDOW);
     }
 
     /**
-     * Ищет конечную дату внутри окна: проходит даты по порядку окна и считает рабочие дни,
-     * пока не наберётся {@code targetWorkDays}.
+     * Вычисляет следующий размер окна, если в текущем окне не удалось набрать нужное число рабочих дней.
      *
-     * @param orderedDates    окно дат в порядке направления ({@code step})
-     * @param mdIndex         индекс данных МД по датам
-     * @param targetWorkDays  сколько рабочих дней нужно набрать
-     * @return дата, на которой накопилось нужное количество рабочих дней, либо {@link Optional#empty()}
-     * @throws MissingCalendarDataException если для какой-то даты из окна отсутствуют данные МД
+     * <p>Логика роста:
+     * <ul>
+     *   <li>экспоненциальный рост: {@code current * 2};</li>
+     *   <li>линейный рост: {@code current + max(50, numDays)} (чтобы гарантировать прогресс даже на малых значениях);</li>
+     *   <li>выбираем максимум из двух вариантов и ограничиваем сверху {@link #MAX_WINDOW}.</li>
+     * </ul>
+     *
+     * @param current текущий размер окна
+     * @param numDays сколько рабочих дней нужно набрать (влияет на линейный шаг)
+     * @return следующий размер окна (не больше {@link #MAX_WINDOW})
      */
-    private Optional<LocalDate> findEndDate(
-            List<LocalDate> orderedDates,
-            Map<LocalDate, CalendarDateDto> mdIndex,
-            int targetWorkDays
-    ) {
-        if (targetWorkDays <= 0) {
-            return Optional.empty();
-        }
-
-        int workdaysCount = 0;
-
-        for (LocalDate date : orderedDates) {
-            CalendarDateDto mdDto = requireDto(date, mdIndex);
-
-            if (calendarRangeHelpers.isWorkday(mdDto.getDateType())) {
-                workdaysCount++;
-                if (workdaysCount == targetWorkDays) {
-                    return Optional.of(date);
-                }
-            }
-        }
-
-        return Optional.empty();
+    public int nextWindowSize(int current, int numDays) {
+        int doubled = current * 2;
+        int linear = current + Math.max(50, numDays);
+        return Math.min(Math.max(doubled, linear), MAX_WINDOW);
     }
 
     /**
-     * Достаёт DTO по дате из индекса. Если данных нет — это критично для подсчёта,
-     * поэтому выбрасывается доменное исключение.
-     *
-     * @param date    дата, для которой нужны данные МД
-     * @param mdIndex индекс данных МД
-     * @return DTO из МД
-     * @throws MissingCalendarDataException если данных для даты нет
+     * @return максимально допустимый размер окна
      */
-    private CalendarDateDto requireDto(LocalDate date, Map<LocalDate, CalendarDateDto> mdIndex) {
-        CalendarDateDto dto = mdIndex.get(date);
-        if (dto == null) {
-            throw new MissingCalendarDataException(date);
-        }
-        return dto;
+    public int maxWindowSize() {
+        return MAX_WINDOW;
     }
 }
 ```
