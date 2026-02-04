@@ -1,155 +1,164 @@
 ```java
 
-Общая цепочка (всегда одинаковый старт и финал)
-1) buildRange(start, numDays, isForward, daysClassificationRaw)
+@Component
+public class DefaultWorkWindowPolicy implements WorkWindowPolicy {
+    private static final int MIN_WINDOW = 30;
+    private static final int MAX_WINDOW = 4000;
+
+    @Override
+    public int initialWindowSize(int numDays) {
+        return Math.min(Math.max(numDays * 2 + 20, MIN_WINDOW), MAX_WINDOW);
+    }
+
+    @Override
+    public int nextWindowSize(int current, int numDays) {
+        // экспоненциально, но ограничено
+        int grown = current * 2;
+        int linear = current + Math.max(50, numDays);
+        return Math.min(Math.max(grown, linear), MAX_WINDOW);
+    }
+
+    @Override
+    public int maxWindowSize() { return MAX_WINDOW; }
+}
+
+public interface RangeCalculator {
+    List<LocalDate> calculate(LocalDate start, int numDays, int step);
+}
+
+@Component
+public class AllRangeCalculator implements RangeCalculator {
+    @Override
+    public List<LocalDate> calculate(LocalDate start, int numDays, int step) {
+        LocalDate end = start.plusDays((long) step * (numDays - 1));
+        return inclusiveAscending(start, end);
+    }
+}
+
+@Component
+@RequiredArgsConstructor
+public class WorkRangeCalculator {
+
+    private final WorkWindowPolicy windowPolicy;
+    private final CalendarDataProvider dataProvider;
+    private final WorkdayClassifier classifier; // isWork(dateType)
+
+    public List<LocalDate> calculate(LocalDate start, int numDays, int step) {
+        int windowSize = windowPolicy.initialWindowSize(numDays);
+
+        // накапливаем индекс постепенно
+        Map<LocalDate, CalendarDateDto> mdIndex = new HashMap<>();
+        List<LocalDate> windowDates = new ArrayList<>();
+
+        while (windowSize <= windowPolicy.maxWindowSize()) {
+            windowDates = generateWindow(start, windowSize, step);
+
+            // грузим только недостающие даты
+            List<LocalDate> missing = windowDates.stream()
+                    .filter(d -> !mdIndex.containsKey(d))
+                    .toList();
+
+            if (!missing.isEmpty()) {
+                mdIndex.putAll(dataProvider.loadByDates(missing));
+            }
+
+            LocalDate end = findEndDate(windowDates, mdIndex, numDays);
+            if (end != null) {
+                return inclusiveAscending(start, end);
+            }
+
+            int next = windowPolicy.nextWindowSize(windowSize, numDays);
+            if (next <= windowSize) {
+                throw new IllegalStateException("WorkWindowPolicy must increase window size");
+            }
+            windowSize = next;
+        }
+
+        throw new IllegalStateException("Unable to resolve work-range: exceeded max window size");
+    }
+
+    private LocalDate findEndDate(List<LocalDate> orderedDates,
+                                 Map<LocalDate, CalendarDateDto> md,
+                                 int targetWorkDays) {
+        int workCount = 0;
+        for (LocalDate d : orderedDates) {
+            CalendarDateDto dto = requireDto(d, md);
+            if (classifier.isWork(dto.getDateType())) {
+                workCount++;
+                if (workCount == targetWorkDays) return d;
+            }
+        }
+        return null;
+    }
+
+    private CalendarDateDto requireDto(LocalDate date, Map<LocalDate, CalendarDateDto> md) {
+        CalendarDateDto dto = md.get(date);
+        if (dto == null) throw new MissingCalendarDataException(date);
+        return dto;
+    }
+
+    private static List<LocalDate> inclusiveAscending(LocalDate a, LocalDate b) { ... }
+    private static List<LocalDate> generateWindow(LocalDate start, int windowSize, int step) { ... }
+}
+
+@Component
+@RequiredArgsConstructor
+public class CalendarRangeMapper {
+
+    private final WorkdayClassifier classifier;
+
+    public List<CalendarRangeItemDto> map(List<LocalDate> ascendingDates,
+                                         Map<LocalDate, CalendarDateDto> md) {
+        List<CalendarRangeItemDto> result = new ArrayList<>(ascendingDates.size());
+
+        for (LocalDate d : ascendingDates) {
+            CalendarDateDto dto = md.get(d);
+            if (dto == null) throw new MissingCalendarDataException(d);
+
+            result.add(CalendarRangeItemDto.builder()
+                    .id(dto.getId())
+                    .date(dto.getDateShort())
+                    .dateType(dto.getDateType())
+                    .dailyStatus(classifier.isWork(dto.getDateType())
+                            ? "Рабочий день" : "Не рабочий день")
+                    .build());
+        }
+        return result;
+    }
+}
+
+@Component
+public class WorkdayClassifier {
+    public boolean isWork(String dateType) {
+        return "1".equals(dateType) || "2".equals(dateType);
+    }
+}
+
+@Service
+@RequiredArgsConstructor
+public class CalendarRangeService {
+
+    private final CalendarDataProvider dataProvider;
+    private final AllRangeCalculator allCalc;
+    private final WorkRangeCalculator workCalc;
+    private final CalendarRangeMapper mapper;
+
+    public List<CalendarRangeItemDto> buildRange(LocalDate start, int numDays,
+                                                 boolean isForward, String raw) {
+        if (numDays < 1) throw new IllegalArgumentException("numDays must be >= 1");
+
+        DaysClassification cls = DaysClassification.parseOrDefault(raw);
+        int step = isForward ? 1 : -1;
+
+        List<LocalDate> dates = switch (cls) {
+            case ALL -> allCalc.calculate(start, numDays, step);
+            case WORK -> workCalc.calculate(start, numDays, step);
+        };
+
+        Map<LocalDate, CalendarDateDto> md = dataProvider.loadByDates(dates);
+        return mapper.map(dates, md); // dates уже ascending
+    }
+}
 
-Парсит daysClassificationRaw → DaysClassification classification
 
-Считает step = +1/-1 через step(isForward)
-
-В зависимости от classification строит список дат:
-
-ALL → buildAllDates(...)
-
-WORK → buildWorkDates(...)
-
-Когда итоговый список дат готов, делает финальную загрузку МД ровно под него:
-
-mdByShort = mdLoader.loadIndexByDateShort(requestedRange)
-
-Собирает ответ по спеке:
-
-toSortedRangeResponse(requestedRange, mdByShort)
-
-Ветка ALL (простая)
-2) buildAllDates(start, numDays, step)
-
-Вычисляет конечную дату:
-
-end = start + step * (numDays - 1)
-
-Возвращает все даты между start и end включительно:
-
-inclusiveRange(start, end)
-
-3) inclusiveRange(a, b)
-
-Делает start = min(a,b), end = max(a,b) — чтобы всегда вернуть по возрастанию, даже если isForward=false
-
-В цикле добавляет даты от start до end включительно (+1 день)
-
-✅ На этом итоговый диапазон готов → возвращаемся в buildRange(...) и идём в финальную загрузку МД + сборку ответа.
-
-Ветка WORK (оконная, потому что конец заранее неизвестен)
-2) buildWorkDates(start, numDays, step)
-
-Задача: найти такую конечную дату, чтобы в непрерывном промежутке от start набралось numDays рабочих.
-
-Берём стартовый размер окна:
-
-windowSize = workWindowPolicy.initialWindowSize(numDays)
-
-В цикле:
-
-строим окно дат:
-
-windowDates = generateWindow(start, windowSize, step)
-
-батчем грузим МД под окно:
-
-windowMd = mdLoader.loadIndexByDateShort(windowDates)
-
-пытаемся внутри окна найти дату, на которой набралось numDays рабочих:
-
-endDateOpt = tryFindEndDateByWorkDays(windowDates, windowMd, numDays)
-
-если нашли:
-
-возвращаем итоговый непрерывный диапазон: inclusiveRange(start, endDate)
-
-если не нашли — увеличиваем окно через политику:
-
-windowSize = workWindowPolicy.nextWindowSize(windowSize)
-
-Если окно доросло до max и всё равно не нашли — кидаем ошибку (защитный сценарий)
-
-3) generateWindow(start, windowSize, step)
-
-Строит список дат длиной windowSize в направлении step:
-
-start
-
-start+step
-
-start+2*step
-
-…
-
-⚠️ Важно: порядок тут “в направлении шага”, потому что по нему мы считаем рабочие дни.
-
-4) mdLoader.loadIndexByDateShort(windowDates)
-
-Внутри:
-
-toDistinctShortKeys(windowDates) → превращает даты в "dd.MM.yyyy" и убирает дубли
-
-prodCalendDateService.searchByDates(keys) → один батч-запрос в МД (и кэш)
-
-indexByDateShort(dtos) → делает Map<dateShort, CalendarDateDto>
-
-То есть на выходе у тебя O(1) доступ:
-
-“дай инфу по 03.02.2026” → map.get("03.02.2026")
-
-5) tryFindEndDateByWorkDays(orderedWindowDates, mdByShort, targetWorkDays)
-
-Проходит окно по порядку и считает рабочие:
-
-workCount = 0
-
-Для каждой даты d:
-
-dto = requireDto(d, mdByShort) (проверка что МД вернуло запись)
-
-если isWork(dto.getDateType()) → workCount++
-
-если workCount == targetWorkDays → return Optional.of(d)
-
-Если не набрали — Optional.empty()
-
-6) requireDto(date, mdByShort)
-
-Делает ключ "dd.MM.yyyy"
-
-Берёт dto = map.get(key)
-
-Если dto == null → ошибка (значит МД не вернуло дату, а мы без неё не можем корректно посчитать диапазон/сформировать ответ)
-
-Финал для обеих веток: сборка ответа
-7) toSortedRangeResponse(rangeDates, mdByShort)
-
-Делает sorted = rangeDates.stream().sorted() — спека требует всегда по возрастанию
-
-На каждую дату:
-
-mdDto = requireDto(d, mdByShort)
-
-собираем CalendarRangeItemDto:
-
-id = mdDto.getId()
-
-date = mdDto.getDateShort() (строго dd.MM.yyyy)
-
-dateType = mdDto.getDateType()
-
-dailyStatus = isWork(dateType) ? "рабочий день" : "не рабочий день"
-
-Почему в WORK нельзя просто “один запрос”
-
-Потому что конец диапазона неизвестен заранее: он зависит от того, сколько рабочих дней встретится, а это можно определить только после получения dateType на конкретные даты.
-И раз в МД нет запроса по диапазону (только по списку slug), приходится:
-
-либо дёргать МД по 1 дате (плохо),
-
-либо грузить пачками окнами (хорошо, особенно с кэшем).
 ```
