@@ -1,87 +1,51 @@
 ```java
 
 /**
- * Провайдер данных производственного календаря из МД: батч-загрузка по списку дат
- * и построение индекса {@code Map<LocalDate, CalendarDateDto>} для быстрого доступа.
- */
-
- /**
-     * Загружает календарные DTO из МД одним запросом и индексирует их по {@link LocalDate}.
-     *
-     * @param requestedDates даты, по которым нужно получить данные (дубликаты допускаются)
-     * @return индекс DTO по дате
-     * @throws MdContractViolationException если МД вернул некорректные данные (например, {@code dateShort == null}
-     *                                     или не парсится форматом {@code dd.MM.yyyy})
-     */
-
-     /**
- * Вспомогательные методы для расчёта диапазонов дат.
+ * Сервис построения диапазона календарных дней по входным параметрам запроса.
  *
- * <p>Используется в алгоритме построения диапазона:
- * <ul>
- *   <li>для "оконной" загрузки — генерирует список дат фиксированной длины в нужном направлении;</li>
- *   <li>для финального ответа — строит непрерывный диапазон между двумя датами включительно
- *       (всегда по возрастанию, независимо от направления запроса).</li>
- * </ul>
+ * <p>Алгоритм:
+ * <ol>
+ *   <li>Парсит тип диапазона ({@code all}/{@code work}) с дефолтом.</li>
+ *   <li>Определяет направление расчёта (вперёд/назад) через {@code step = +1/-1}.</li>
+ *   <li>Считает список дат выбранным калькулятором (ALL или WORK).</li>
+ *   <li>Батчем загружает данные по полученным датам из МД.</li>
+ *   <li>Маппит результат в DTO ответа.</li>
+ * </ol>
  */
-@Component
-public class CalendarRangeHelpers {
+@Service
+@RequiredArgsConstructor
+public class CalendarRangeService {
+
+    private final CalendarDataProvider dataProvider;
+    private final TypeAllRangeCalculator allCalc;
+    private final TypeWorkRangeCalculator workCalc;
+    private final CalendarRangeMapper calendarRangeMapper;
 
     /**
-     * Генерирует "окно" дат фиксированного размера в заданном направлении.
+     * Строит диапазон календарных дней от стартовой даты.
      *
-     * <p>Пример: start=01.01, windowSize=3, step=+1 → [01.01, 02.01, 03.01].</p>
-     *
-     * @param startDate   дата начала окна
-     * @param windowSize  количество дат в окне (должно быть >= 0)
-     * @param dayStep     шаг по дням: {@code +1} вперёд или {@code -1} назад
-     * @return список дат в порядке направления шага
+     * @param start      стартовая дата диапазона
+     * @param numDays    требуемое количество дней (>= 1)
+     * @param isForward  направление расчёта: {@code true} — вперёд, {@code false} — назад
+     * @param raw        тип диапазона: {@code all} или {@code work} (пустое/ null → {@code all})
+     * @return список элементов диапазона (в ответе будет отсортирован по возрастанию на этапе маппинга/калькулятора)
      */
-    public List<LocalDate> generateWindow(LocalDate startDate, int windowSize, int dayStep) {
-        List<LocalDate> windowDates = new ArrayList<>(windowSize);
-        LocalDate currentDate = startDate;
+    public List<CalendarRangeItemDto> buildRange(
+            LocalDate start,
+            int numDays,
+            boolean isForward,
+            String raw
+    ) {
+        DaysClassification daysClassification = DaysClassification.parseOrDefault(raw);
+        int step = isForward ? 1 : -1;
 
-        for (int i = 0; i < windowSize; i++) {
-            windowDates.add(currentDate);
-            currentDate = currentDate.plusDays(dayStep);
-        }
+        List<LocalDate> dates = switch (daysClassification) {
+            case ALL -> allCalc.calculate(start, numDays, step);
+            case WORK -> workCalc.calculate(start, numDays, step);
+        };
 
-        return windowDates;
-    }
-
-    /**
-     * Строит непрерывный диапазон дат между двумя датами включительно.
-     *
-     * <p>Диапазон всегда возвращается по возрастанию (это важно для ответа API),
-     * даже если входные даты переданы в обратном порядке.</p>
-     *
-     * @param firstDate  первая дата (граница диапазона)
-     * @param secondDate вторая дата (граница диапазона)
-     * @return список дат от меньшей к большей, включая обе границы
-     */
-    public List<LocalDate> inclusiveRange(LocalDate firstDate, LocalDate secondDate) {
-        LocalDate rangeStart = firstDate.isBefore(secondDate) ? firstDate : secondDate;
-        LocalDate rangeEnd = firstDate.isBefore(secondDate) ? secondDate : firstDate;
-
-        List<LocalDate> rangeDates = new ArrayList<>();
-        LocalDate currentDate = rangeStart;
-
-        while (!currentDate.isAfter(rangeEnd)) {
-            rangeDates.add(currentDate);
-            currentDate = currentDate.plusDays(1);
-        }
-
-        return rangeDates;
-    }
-
-    /**
-     * Определяет, является ли день рабочим по значению {@code dateType} из МД.
-     *
-     * @param dateType тип дня из МД
-     * @return {@code true}, если тип соответствует рабочему дню
-     */
-    public boolean isWorkday(String dateType) {
-        return "1".equals(dateType) || "2".equals(dateType);
+        Map<LocalDate, CalendarDateDto> md = dataProvider.loadByDates(dates);
+        return calendarRangeMapper.map(dates, md);
     }
 }
 ```
