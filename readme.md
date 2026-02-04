@@ -1,45 +1,82 @@
 ```java
 
-public class MdContractViolationException extends RuntimeException {
+@Override
+public List<LocalDate> calculate(LocalDate start, int numDays, int step) {
+    int windowSize = windowPolicy.initialWindowSize(numDays);
 
-    private final String messageCode;
+    // Кэш уже загруженных дат, чтобы при росте окна не дергать МД повторно
+    Map<LocalDate, CalendarDateDto> mdIndex = new HashMap<>();
 
-    public MdContractViolationException(String messageCode, String message) {
-        super(message);
-        this.messageCode = messageCode;
+    while (windowSize <= windowPolicy.maxWindowSize()) {
+
+        List<LocalDate> windowDates =
+                calendarRangeHelpers.generateWindow(start, windowSize, step);
+
+        // ВАЖНО: грузим только даты, которых ещё нет в mdIndex
+        List<LocalDate> missing = windowDates.stream()
+                .filter(d -> !mdIndex.containsKey(d))
+                .toList();
+
+        if (!missing.isEmpty()) {
+            mdIndex.putAll(dataProvider.loadByDates(missing));
+        }
+
+        Optional<LocalDate> endOpt = findEndDate(windowDates, mdIndex, numDays);
+        if (endOpt.isPresent()) {
+            return calendarRangeHelpers.inclusiveRange(start, endOpt.get());
+        }
+
+        int next = windowPolicy.nextWindowSize(windowSize, numDays);
+        if (next <= windowSize) {
+            throw new IllegalStateException(
+                    "WorkWindowPolicy must increase window size: current=" + windowSize + ", next=" + next
+            );
+        }
+        windowSize = next;
     }
 
-    public MdContractViolationException(String messageCode, String message, Throwable cause) {
-        super(message, cause);
-        this.messageCode = messageCode;
-    }
-
-    public String getMessageCode() {
-        return messageCode;
-    }
-}
-
-@ExceptionHandler(MdContractViolationException.class)
-@ResponseStatus(HttpStatus.BAD_GATEWAY) // 502 — внешний сервис вернул некорректный ответ
-public ResponseEntity<Object> handleMdContractViolation(
-        MdContractViolationException ex,
-        WebRequest request
-) {
-    log.error(ERROR_MESSAGE, ex);
-
-    // если используешь версию с messageCode:
-    String message = getLocalizedErrorMessage(ex.getMessageCode());
-
-    // если используешь простую версию без кода — тогда:
-    // String message = getLocalizedErrorMessage("error.mdInvalidResponse");
-
-    return createResponseEntity(
-            message,
-            new HttpHeaders(),
-            HttpStatus.BAD_GATEWAY,
-            request
+    // При текущих гарантиях это "такого быть не должно"
+    throw new IllegalStateException(
+            "Invariant violated: work-range end not found. start=" + start +
+            ", numDays=" + numDays +
+            ", step=" + step +
+            ", maxWindow=" + windowPolicy.maxWindowSize()
     );
 }
 
-error.mdInvalidResponse=ЦС МД вернул некорректные данные: {0}
+private Optional<LocalDate> findEndDate(
+        List<LocalDate> orderedDates,
+        Map<LocalDate, CalendarDateDto> md,
+        int targetWorkDays
+) {
+    if (targetWorkDays <= 0) {
+        return Optional.empty();
+    }
+
+    int workCount = 0;
+
+    for (LocalDate d : orderedDates) {
+        CalendarDateDto dto = requireDto(d, md);
+
+        if (calendarRangeHelpers.workdayClassifier(dto.getDateType())) {
+            workCount++;
+            if (workCount == targetWorkDays) {
+                return Optional.of(d);
+            }
+        }
+    }
+
+    return Optional.empty();
+}
+
+private CalendarDateDto requireDto(
+        LocalDate date,
+        Map<LocalDate, CalendarDateDto> md
+) {
+    CalendarDateDto dto = md.get(date);
+    if (dto == null) {
+        throw new MissingCalendarDataException(date);
+    }
+    return dto;
+}
 ```
