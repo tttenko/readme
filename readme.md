@@ -1,51 +1,47 @@
 ```java
 
 /**
- * Сервис построения диапазона календарных дней по входным параметрам запроса.
+ * Классификация диапазона дней, которую клиент передаёт в запросе.
  *
- * <p>Алгоритм:
- * <ol>
- *   <li>Парсит тип диапазона ({@code all}/{@code work}) с дефолтом.</li>
- *   <li>Определяет направление расчёта (вперёд/назад) через {@code step = +1/-1}.</li>
- *   <li>Считает список дат выбранным калькулятором (ALL или WORK).</li>
- *   <li>Батчем загружает данные по полученным датам из МД.</li>
- *   <li>Маппит результат в DTO ответа.</li>
- * </ol>
+ * <p>Значение приходит как строка (wire-format) и может быть пустым/неизвестным.
+ * В этом случае применяется безопасный дефолт {@link #ALL}.</p>
  */
-@Service
-@RequiredArgsConstructor
-public class CalendarRangeService {
+public enum DaysClassification {
 
-    private final CalendarDataProvider dataProvider;
-    private final TypeAllRangeCalculator allCalc;
-    private final TypeWorkRangeCalculator workCalc;
-    private final CalendarRangeMapper calendarRangeMapper;
+    /** Вернуть все дни подряд (календарный диапазон). */
+    ALL("all"),
+
+    /** Вернуть диапазон, в котором набирается N рабочих дней. */
+    WORK("work");
+
+    private final String wireValue;
+
+    DaysClassification(String wireValue) {
+        this.wireValue = wireValue;
+    }
 
     /**
-     * Строит диапазон календарных дней от стартовой даты.
+     * Парсит значение из запроса. Если значение отсутствует/пустое/не распознано —
+     * возвращает {@link #ALL}.
      *
-     * @param start      стартовая дата диапазона
-     * @param numDays    требуемое количество дней (>= 1)
-     * @param isForward  направление расчёта: {@code true} — вперёд, {@code false} — назад
-     * @param raw        тип диапазона: {@code all} или {@code work} (пустое/ null → {@code all})
-     * @return список элементов диапазона (в ответе будет отсортирован по возрастанию на этапе маппинга/калькулятора)
+     * @param rawValue сырое значение параметра из запроса
+     * @return распознанная классификация или {@link #ALL} по умолчанию
      */
-    public List<CalendarRangeItemDto> buildRange(
-            LocalDate start,
-            int numDays,
-            boolean isForward,
-            String raw
-    ) {
-        DaysClassification daysClassification = DaysClassification.parseOrDefault(raw);
-        int step = isForward ? 1 : -1;
+    public static DaysClassification parseOrDefault(String rawValue) {
+        if (rawValue == null || rawValue.isBlank()) {
+            return ALL;
+        }
 
-        List<LocalDate> dates = switch (daysClassification) {
-            case ALL -> allCalc.calculate(start, numDays, step);
-            case WORK -> workCalc.calculate(start, numDays, step);
-        };
+        String normalizedValue = rawValue.trim().toLowerCase();
 
-        Map<LocalDate, CalendarDateDto> md = dataProvider.loadByDates(dates);
-        return calendarRangeMapper.map(dates, md);
+        for (DaysClassification classification : values()) {
+            if (classification.wireValue.equals(normalizedValue)) {
+                return classification;
+            }
+        }
+
+        // неизвестное значение → безопасный дефолт
+        return ALL;
     }
 }
 ```
