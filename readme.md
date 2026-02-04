@@ -1,47 +1,62 @@
 ```java
-
 /**
- * Классификация диапазона дней, которую клиент передаёт в запросе.
+ * Контракт для вычисления списка дат диапазона по заданным параметрам.
  *
- * <p>Значение приходит как строка (wire-format) и может быть пустым/неизвестным.
- * В этом случае применяется безопасный дефолт {@link #ALL}.</p>
+ * <p>Реализации могут строить:
+ * <ul>
+ *   <li>календарный диапазон из {@code numDays} подряд (ALL);</li>
+ *   <li>диапазон, в котором набирается {@code numDays} рабочих дней (WORK).</li>
+ * </ul>
+ *
+ * <p>Направление задаётся параметром {@code step}:
+ * {@code +1} — вперёд по времени, {@code -1} — назад.</p>
  */
-public enum DaysClassification {
-
-    /** Вернуть все дни подряд (календарный диапазон). */
-    ALL("all"),
-
-    /** Вернуть диапазон, в котором набирается N рабочих дней. */
-    WORK("work");
-
-    private final String wireValue;
-
-    DaysClassification(String wireValue) {
-        this.wireValue = wireValue;
-    }
+public interface RangeCalculator {
 
     /**
-     * Парсит значение из запроса. Если значение отсутствует/пустое/не распознано —
-     * возвращает {@link #ALL}.
+     * Вычисляет список дат диапазона.
      *
-     * @param rawValue сырое значение параметра из запроса
-     * @return распознанная классификация или {@link #ALL} по умолчанию
+     * @param start  стартовая дата расчёта
+     * @param numDays количество дней (или рабочих дней, в зависимости от реализации), которые нужно набрать (>= 1)
+     * @param step   шаг по дням: {@code +1} или {@code -1}
+     * @return список дат, полученный алгоритмом реализации
      */
-    public static DaysClassification parseOrDefault(String rawValue) {
-        if (rawValue == null || rawValue.isBlank()) {
-            return ALL;
-        }
+    List<LocalDate> calculate(LocalDate start, int numDays, int step);
+}
 
-        String normalizedValue = rawValue.trim().toLowerCase();
+/**
+ * Калькулятор диапазона типа {@code ALL}: возвращает {@code numDays} календарных дней подряд.
+ *
+ * <p>Алгоритм:
+ * <ol>
+ *   <li>Вычисляет конечную дату: {@code end = start + step * (numDays - 1)}.</li>
+ *   <li>Возвращает непрерывный диапазон дат между {@code start} и {@code end} включительно
+ *       (через {@link CalendarRangeHelpers#inclusiveRange(LocalDate, LocalDate)}).</li>
+ * </ol>
+ *
+ * <p>Важно: даже при {@code step = -1} итоговый список будет отсортирован по возрастанию,
+ * потому что {@code inclusiveRange} всегда возвращает даты в порядке от меньшей к большей.</p>
+ */
+@Component
+@RequiredArgsConstructor
+public class TypeAllRangeCalculator implements RangeCalculator {
 
-        for (DaysClassification classification : values()) {
-            if (classification.wireValue.equals(normalizedValue)) {
-                return classification;
-            }
-        }
+    private final CalendarRangeHelpers calendarRangeHelpers;
 
-        // неизвестное значение → безопасный дефолт
-        return ALL;
+    /**
+     * Вычисляет календарный диапазон из {@code numDays} подряд идущих дней.
+     *
+     * @param start   стартовая дата
+     * @param numDays количество дней (>= 1)
+     * @param step    направление: {@code +1} — вперёд, {@code -1} — назад
+     * @return список дат диапазона (всегда по возрастанию)
+     */
+    @Override
+    public List<LocalDate> calculate(LocalDate start, int numDays, int step) {
+        LocalDate end = start.plusDays((long) step * (numDays - 1));
+        return calendarRangeHelpers.inclusiveRange(start, end);
     }
 }
+
+
 ```
