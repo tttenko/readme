@@ -1,27 +1,19 @@
 ```java
 
-public class MissingCalendarDataException extends RuntimeException {
+@ExceptionHandler(MissingCalendarDataException.class)
+@ResponseStatus(HttpStatus.NOT_FOUND)
+public ResponseEntity<Object> handleMissingCalendarData(
+        MissingCalendarDataException ex,
+        WebRequest request
+) {
+    log.error(ERROR_MESSAGE, ex);
 
-    private static final DateTimeFormatter DDMMYYYY = DateTimeFormatter.ofPattern("dd.MM.yyyy");
-
-    private final LocalDate date;
-
-    public MissingCalendarDataException(LocalDate date) {
-        super("No calendar data from MD for date: " + format(date));
-        this.date = date;
-    }
-
-    public LocalDate getDate() {
-        return date;
-    }
-
-    public String getDateShort() {
-        return format(date);
-    }
-
-    private static String format(LocalDate d) {
-        return d == null ? "null" : d.format(DDMMYYYY);
-    }
+    return createResponseEntity(
+            // если getLocalizedErrorMessage поддерживает параметры:
+            getLocalizedErrorMessage("error.calendarDataMissing", ex.getDateShort()),
+            new HttpHeaders(),
+            HttpStatus.NOT_FOUND,
+            request
+    );
 }
-
 ```
