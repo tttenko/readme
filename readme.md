@@ -1,82 +1,42 @@
 ```java
 
-@Override
-public List<LocalDate> calculate(LocalDate start, int numDays, int step) {
-    int windowSize = windowPolicy.initialWindowSize(numDays);
+@Component
+@RequiredArgsConstructor
+public class CalendarDataProvider {
 
-    // Кэш уже загруженных дат, чтобы при росте окна не дергать МД повторно
-    Map<LocalDate, CalendarDateDto> mdIndex = new HashMap<>();
+    private static final DateTimeFormatter DATE_SHORT_FORMATTER =
+            DateTimeFormatter.ofPattern("dd.MM.yyyy");
 
-    while (windowSize <= windowPolicy.maxWindowSize()) {
+    private final CalendarDateService prodCalendarDateService;
 
-        List<LocalDate> windowDates =
-                calendarRangeHelpers.generateWindow(start, windowSize, step);
-
-        // ВАЖНО: грузим только даты, которых ещё нет в mdIndex
-        List<LocalDate> missing = windowDates.stream()
-                .filter(d -> !mdIndex.containsKey(d))
+    public Map<LocalDate, CalendarDateDto> loadByDates(Collection<LocalDate> requestedDates) {
+        List<LocalDate> uniqueRequestedDates = requestedDates.stream()
+                .distinct()
                 .toList();
 
-        if (!missing.isEmpty()) {
-            mdIndex.putAll(dataProvider.loadByDates(missing));
-        }
+        List<String> dateShortKeys = uniqueRequestedDates.stream()
+                .map(date -> date.format(DATE_SHORT_FORMATTER))
+                .toList();
 
-        Optional<LocalDate> endOpt = findEndDate(windowDates, mdIndex, numDays);
-        if (endOpt.isPresent()) {
-            return calendarRangeHelpers.inclusiveRange(start, endOpt.get());
-        }
+        List<CalendarDateDto> mdCalendarDateDtos =
+                prodCalendarDateService.searchByDates(dateShortKeys);
 
-        int next = windowPolicy.nextWindowSize(windowSize, numDays);
-        if (next <= windowSize) {
-            throw new IllegalStateException(
-                    "WorkWindowPolicy must increase window size: current=" + windowSize + ", next=" + next
-            );
-        }
-        windowSize = next;
-    }
+        Map<LocalDate, CalendarDateDto> indexByDate = new HashMap<>(mdCalendarDateDtos.size() * 2);
 
-    // При текущих гарантиях это "такого быть не должно"
-    throw new IllegalStateException(
-            "Invariant violated: work-range end not found. start=" + start +
-            ", numDays=" + numDays +
-            ", step=" + step +
-            ", maxWindow=" + windowPolicy.maxWindowSize()
-    );
-}
+        for (CalendarDateDto mdDto : mdCalendarDateDtos) {
+            String dateShortFromMd = mdDto.getDateShort();
 
-private Optional<LocalDate> findEndDate(
-        List<LocalDate> orderedDates,
-        Map<LocalDate, CalendarDateDto> md,
-        int targetWorkDays
-) {
-    if (targetWorkDays <= 0) {
-        return Optional.empty();
-    }
-
-    int workCount = 0;
-
-    for (LocalDate d : orderedDates) {
-        CalendarDateDto dto = requireDto(d, md);
-
-        if (calendarRangeHelpers.workdayClassifier(dto.getDateType())) {
-            workCount++;
-            if (workCount == targetWorkDays) {
-                return Optional.of(d);
+            if (dateShortFromMd == null) {
+                throw new MdContractViolationException("MD returned dto with null dateShort");
             }
+
+            LocalDate parsedDate = LocalDate.parse(dateShortFromMd, DATE_SHORT_FORMATTER);
+
+            // если внезапно дубль — сохраняем первый
+            indexByDate.putIfAbsent(parsedDate, mdDto);
         }
-    }
 
-    return Optional.empty();
-}
-
-private CalendarDateDto requireDto(
-        LocalDate date,
-        Map<LocalDate, CalendarDateDto> md
-) {
-    CalendarDateDto dto = md.get(date);
-    if (dto == null) {
-        throw new MissingCalendarDataException(date);
+        return indexByDate;
     }
-    return dto;
 }
 ```
