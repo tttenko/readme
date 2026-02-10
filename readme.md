@@ -495,5 +495,9 @@ public class CurrencyRateKafkaListener {
 }
 
 
-
+/**
+ * DTO для элемента {@code <FXRates>} из входящего XML.
+ * Содержит атрибуты записи курса/цены и вложенный признак {@code <IsPublic>}.
+ * Используется для десериализации сообщений из Kafka через Jackson XmlMapper.
+ */
 ```
