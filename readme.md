@@ -21,8 +21,30 @@ public record CurrencyRateKafkaProps(
 @Configuration
 @EnableKafka
 @EnableConfigurationProperties(CurrencyRateKafkaProps.class)
+/**
+ * Kafka-конфигурация для чтения XML сообщений с курсами/ценами и обработки ошибок.
+ *
+ * <p>Что настраивает:
+ * <ul>
+ *   <li>ConsumerFactory для чтения сообщений как String</li>
+ *   <li>ProducerFactory + KafkaTemplate для публикации проблемных сообщений в DLT</li>
+ *   <li>Listener container factory с ручным коммитом оффсетов</li>
+ * </ul>
+ *
+ * <p>Стратегия ошибок:
+ * <ul>
+ *   <li>3 ретрая с паузой 1 секунда</li>
+ *   <li>после ретраев сообщение отправляется в DLT (&lt;topic&gt;.DLT)</li>
+ *   <li>{@link IllegalArgumentException} считается неретраибельной и сразу отправляется в DLT</li>
+ *   <li>после отправки в DLT оффсет коммитится, чтобы не зациклиться на “битом” сообщении</li>
+ * </ul>
+ */
 public class CurrencyRateKafkaConfig {
 
+  /**
+   * ConsumerFactory для чтения сообщений из Kafka.
+   * Автокоммит выключен: оффсет фиксируется только после успешной обработки.
+   */
   @Bean
   public ConsumerFactory<String, String> currencyRateConsumerFactory(CurrencyRateKafkaProps props) {
     Map<String, Object> cfg = new HashMap<>();
@@ -35,6 +57,9 @@ public class CurrencyRateKafkaConfig {
     return new DefaultKafkaConsumerFactory<>(cfg);
   }
 
+  /**
+   * ProducerFactory для отправки сообщений в DLT (dead-letter topic).
+   */
   @Bean
   public ProducerFactory<String, String> currencyRateProducerFactory(CurrencyRateKafkaProps props) {
     Map<String, Object> cfg = new HashMap<>();
@@ -44,11 +69,23 @@ public class CurrencyRateKafkaConfig {
     return new DefaultKafkaProducerFactory<>(cfg);
   }
 
+  /**
+   * KafkaTemplate для публикации сообщений в DLT.
+   */
   @Bean
   public KafkaTemplate<String, String> currencyRateKafkaTemplate(ProducerFactory<String, String> pf) {
     return new KafkaTemplate<>(pf);
   }
 
+  /**
+   * Фабрика listener-контейнеров для @KafkaListener.
+   * Настроена на:
+   * <ul>
+   *   <li>AckMode.RECORD — коммит оффсета после обработки каждой записи</li>
+   *   <li>DLT на &lt;topic&gt;.DLT</li>
+   *   <li>3 ретрая с паузой 1 секунда</li>
+   * </ul>
+   */
   @Bean(name = "currencyRateContainerFactory")
   public ConcurrentKafkaListenerContainerFactory<String, String> currencyRateContainerFactory(
       ConsumerFactory<String, String> cf,
@@ -63,8 +100,12 @@ public class CurrencyRateKafkaConfig {
     // DLT: <topic>.DLT, retry 3 раза, потом в DLT
     var recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate);
     var errorHandler = new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3L));
+
+    // Битые сообщения/валидация -> сразу в DLT
     errorHandler.addNotRetryableExceptions(IllegalArgumentException.class);
-    errorHandler.setCommitRecovered(true); // чтобы не зациклиться на битом сообщении
+
+    // Коммитить оффсет после отправки в DLT, чтобы не зациклиться
+    errorHandler.setCommitRecovered(true);
 
     factory.setCommonErrorHandler(errorHandler);
     return factory;
@@ -454,43 +495,5 @@ public class CurrencyRateKafkaListener {
 }
 
 
-<dependency>
-  <groupId>com.fasterxml.jackson.dataformat</groupId>
-  <artifactId>jackson-dataformat-xml</artifactId>
-</dependency>
 
-
-/**
- * Конфигурация Kafka для загрузки курсов/цен из топика.
- *
- * <p>Настраивает:
- * <ul>
- *   <li>ConsumerFactory для чтения сообщений как String (key/value)</li>
- *   <li>ProducerFactory + KafkaTemplate для публикации ошибок в DLT</li>
- *   <li>KafkaListenerContainerFactory с ручным коммитом оффсета (AckMode.RECORD)</li>
- * </ul>
- *
- * <p>Обработка ошибок:
- * <ul>
- *   <li>3 попытки с паузой 1 секунда</li>
- *   <li>после исчерпания ретраев сообщение отправляется в DLT (&lt;topic&gt;.DLT)</li>
- *   <li>IllegalArgumentException не ретраится и сразу уходит в DLT</li>
- *   <li>после отправки в DLT оффсет коммитится, чтобы не зациклиться на битом сообщении</li>
- * </ul>
- */
-
-
-
- /**
- * Параметры Kafka-консьюмера для загрузки курсов/цен.
- *
- * <p>Читаются из конфигурации по префиксу {@code app.kafka.currency-rate}:
- * <ul>
- *   <li>{@code topic} — имя топика с XML сообщениями</li>
- *   <li>{@code groupId} — идентификатор consumer group</li>
- *   <li>{@code servers} — список bootstrap servers</li>
- *   <li>{@code autoOffsetReset} — политика старта при отсутствии оффсета (earliest/latest)</li>
- *   <li>{@code concurrency} — число потоков/консьюмеров для listener container</li>
- * </ul>
- */
 ```
