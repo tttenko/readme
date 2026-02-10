@@ -461,8 +461,36 @@ public class CurrencyRateKafkaListener {
 
 
 /**
- * Конфигурация Jackson XmlMapper для парсинга XML сообщений.
- * Отключает падение на неизвестных полях, чтобы корректно обрабатывать
- * XML с лишними/неиспользуемыми атрибутами и элементами.
+ * Конфигурация Kafka для загрузки курсов/цен из топика.
+ *
+ * <p>Настраивает:
+ * <ul>
+ *   <li>ConsumerFactory для чтения сообщений как String (key/value)</li>
+ *   <li>ProducerFactory + KafkaTemplate для публикации ошибок в DLT</li>
+ *   <li>KafkaListenerContainerFactory с ручным коммитом оффсета (AckMode.RECORD)</li>
+ * </ul>
+ *
+ * <p>Обработка ошибок:
+ * <ul>
+ *   <li>3 попытки с паузой 1 секунда</li>
+ *   <li>после исчерпания ретраев сообщение отправляется в DLT (&lt;topic&gt;.DLT)</li>
+ *   <li>IllegalArgumentException не ретраится и сразу уходит в DLT</li>
+ *   <li>после отправки в DLT оффсет коммитится, чтобы не зациклиться на битом сообщении</li>
+ * </ul>
+ */
+
+
+
+ /**
+ * Параметры Kafka-консьюмера для загрузки курсов/цен.
+ *
+ * <p>Читаются из конфигурации по префиксу {@code app.kafka.currency-rate}:
+ * <ul>
+ *   <li>{@code topic} — имя топика с XML сообщениями</li>
+ *   <li>{@code groupId} — идентификатор consumer group</li>
+ *   <li>{@code servers} — список bootstrap servers</li>
+ *   <li>{@code autoOffsetReset} — политика старта при отсутствии оффсета (earliest/latest)</li>
+ *   <li>{@code concurrency} — число потоков/консьюмеров для listener container</li>
+ * </ul>
  */
 ```
