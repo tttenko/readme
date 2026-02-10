@@ -453,4 +453,9 @@ public class CurrencyRateKafkaListener {
   }
 }
 
+
+<dependency>
+  <groupId>com.fasterxml.jackson.dataformat</groupId>
+  <artifactId>jackson-dataformat-xml</artifactId>
+</dependency>
 ```
