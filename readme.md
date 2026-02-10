@@ -458,4 +458,11 @@ public class CurrencyRateKafkaListener {
   <groupId>com.fasterxml.jackson.dataformat</groupId>
   <artifactId>jackson-dataformat-xml</artifactId>
 </dependency>
+
+
+/**
+ * Конфигурация Jackson XmlMapper для парсинга XML сообщений.
+ * Отключает падение на неизвестных полях, чтобы корректно обрабатывать
+ * XML с лишними/неиспользуемыми атрибутами и элементами.
+ */
 ```
