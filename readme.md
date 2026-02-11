@@ -1,67 +1,56 @@
 ```java
+if (rquid == null) throw new IllegalArgumentException("Missing RQUID");
+  if (rqtm == null) throw new IllegalArgumentException("Missing RqTm");
 
-@JacksonXmlRootElement(localName = "PutEODPriceN")
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class PutEodPriceNDto implements FxEnvelope {
+  List<FxRateXmlDto> rates = message.getFxRates();
+  if (rates == null || rates.isEmpty()) return 0;
 
-  @JacksonXmlProperty(localName = "RQUID")
-  @JsonDeserialize(converter = XmlConverters.ToUuidStrict.class)
-  public UUID rquid;
+  int processed = 0;
 
-  @JacksonXmlProperty(localName = "RqTm")
-  @JsonDeserialize(converter = XmlConverters.ToLocalDateTimeLenientStrict.class)
-  public LocalDateTime rqtm;
+  for (FxRateXmlDto x : rates) {
+    if (x == null) continue;
 
-  @JacksonXmlElementWrapper(useWrapping = false)
-  @JacksonXmlProperty(localName = "FXRates")
-  public List<FxRateXmlDto> fxRates;
+    String subType = x.fxRateSubType;
+    String code1 = x.code1;
+    String code2 = x.code2;
+    LocalDate useDate = x.useDate;
 
-  @Override public UUID getRquid() { return rquid; }
-  @Override public LocalDateTime getRqtm() { return rqtm; }
-  @Override public List<FxRateXmlDto> getFxRates() { return fxRates; }
+    // ключевые поля: если чего-то нет/не распарсилось -> skip только эту запись
+    if (subType == null || code1 == null || code2 == null || useDate == null) {
+      // log.warn("Skip FXRate with missing key. rquid={}, subType={}, code1={}, code2={}, useDate={}",
+      //          rquid, subType, code1, code2, useDate);
+      continue;
+    }
+
+    BigDecimal lotSize = x.lotSize;
+    BigDecimal value = x.value;
+
+    // если число не распарсилось -> null -> skip только эту запись
+    if (lotSize == null || value == null) {
+      // log.warn("Skip FXRate with invalid numbers. rquid={}, code1={}, code2={}, useDate={}, lotSize={}, value={}",
+      //          rquid, code1, code2, useDate, lotSize, value);
+      continue;
+    }
+
+    // lotSize=0 — это не причина валить весь документ
+    if (lotSize.compareTo(BigDecimal.ZERO) == 0) {
+      // log.warn("Skip FXRate with lotSize=0. rquid={}, code1={}, code2={}, useDate={}", rquid, code1, code2, useDate);
+      continue;
+    }
+
+    repo.upsert(
+      rquid, rqtm,
+      subType,
+      code1, x.isoNum1,
+      code2, x.isoNum2,
+      useDate,
+      lotSize, value,
+      x.isPublic
+    );
+
+    processed++;
+  }
+
+  return processed;
 }
-
-@JacksonXmlRootElement(localName = "FXRates")
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class FxRateXmlDto {
-
-  @JacksonXmlProperty(localName = "IsPublic")
-  @JsonDeserialize(converter = XmlConverters.TrimToNull.class)
-  public String isPublic;
-
-  @JacksonXmlProperty(isAttribute = true, localName = "FXRateSubType")
-  @JsonDeserialize(converter = XmlConverters.UpperTrimToNull.class)
-  public String fxRateSubType;
-
-  @JacksonXmlProperty(isAttribute = true, localName = "Code1")
-  @JsonDeserialize(converter = XmlConverters.UpperTrimToNull.class)
-  public String code1;
-
-  @JacksonXmlProperty(isAttribute = true, localName = "ISONum1")
-  @JsonDeserialize(converter = XmlConverters.TrimToNull.class)
-  public String isoNum1;
-
-  @JacksonXmlProperty(isAttribute = true, localName = "Code2")
-  @JsonDeserialize(converter = XmlConverters.NormalizeRubUpper.class)
-  public String code2;
-
-  @JacksonXmlProperty(isAttribute = true, localName = "ISONum2")
-  @JsonDeserialize(converter = XmlConverters.TrimToNull.class)
-  public String isoNum2;
-
-  // ВАЖНО: lenient -> null если не парсится
-  @JacksonXmlProperty(isAttribute = true, localName = "UseDate")
-  @JsonDeserialize(converter = XmlConverters.ToLocalDateLenientOrNull.class)
-  public LocalDate useDate;
-
-  @JacksonXmlProperty(isAttribute = true, localName = "LotSize")
-  @JsonDeserialize(converter = XmlConverters.ToBigDecimalLenient.class)
-  public BigDecimal lotSize;
-
-  @JacksonXmlProperty(isAttribute = true, localName = "Value")
-  @JsonDeserialize(converter = XmlConverters.ToBigDecimalLenient.class)
-  public BigDecimal value;
-}
-
-
 ```
