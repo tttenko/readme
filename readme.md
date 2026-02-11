@@ -1,322 +1,161 @@
 ```java
 
- key-aliases:
-        putEodPriceN: PutEODPriceN
-        putEodPriceNf: PutEODPriceNf
+ public final class XmlConverters {
 
-@Getter
-@AllArgsConstructor
-public class RouteDefinition<T> {
+  private XmlConverters() {}
 
-  @NonNull
-  private final String key;
+  // ======================
+  // String normalizers
+  // ======================
 
-  @NonNull
-  private final Class<T> dtoClass;
-
-  @NonNull
-  private final Consumer<T> consumer;
-
-  public static <T> RouteDefinition<T> route(
-      @NonNull final String key,
-      @NonNull final Class<T> dtoClass,
-      @NonNull final Consumer<T> consumer
-  ) {
-    return new RouteDefinition<>(key, dtoClass, consumer);
-  }
-}
-
-public interface KafkaRoutesProvider {
-  List<RouteDefinition<?>> routes();
-}
-
-public class RoutesRegistry {
-
-  private final Map<String, RouteDefinition<?>> routesByKey;
-
-  public RoutesRegistry(@NonNull final List<? extends KafkaRoutesProvider> providers) {
-    this.routesByKey = providers.stream()
-        .flatMap(p -> p.routes().stream())
-        .collect(Collectors.toUnmodifiableMap(
-            RouteDefinition::getKey,
-            Function.identity(),
-            (a, b) -> {
-              throw new IllegalStateException("Дублирующийся маршрут для key=" + a.getKey());
-            }
-        ));
-  }
-
-  @SuppressWarnings("unchecked")
-  public <T> RouteDefinition<T> getRequired(@NonNull final String key) {
-    final RouteDefinition<?> route = routesByKey.get(key);
-    if (route == null) {
-      throw new UnsupportedOperationException("Нет маршрута для key=" + key);
+  public static class TrimToNull extends StdConverter<String, String> {
+    @Override public String convert(String s) {
+      return trimToNull(s);
     }
-    return (RouteDefinition<T>) route;
   }
-}
 
-// CurrencyRateKafkaRoutesProvider.java
-public interface CurrencyRateKafkaRoutesProvider extends KafkaRoutesProvider {
-  // marker interface
-}
-
-@Component
-public class CurrencyRateRoutesRegistry extends RoutesRegistry {
-
-  public CurrencyRateRoutesRegistry(List<CurrencyRateKafkaRoutesProvider> providers) {
-    super(providers);
+  public static class UpperTrimToNull extends StdConverter<String, String> {
+    @Override public String convert(String s) {
+      String t = trimToNull(s);
+      return t == null ? null : t.toUpperCase(Locale.ROOT);
+    }
   }
-}
 
-public final class FxRateXmlSupport {
+  /** Upper + trim + RUR -> RUB */
+  public static class NormalizeRubUpper extends StdConverter<String, String> {
+    @Override public String convert(String s) {
+      String t = trimToNull(s);
+      if (t == null) return null;
+      t = t.toUpperCase(Locale.ROOT);
+      return "RUR".equals(t) ? "RUB" : t;
+    }
+  }
 
-  private FxRateXmlSupport() {}
+  // ======================
+  // Simple type converters
+  // ======================
 
-  // первый тег документа (root)
-  private static final Pattern ROOT_TAG = Pattern.compile("<\\s*([A-Za-z_][^\\s>/]*)");
+  public static class ToUuid extends StdConverter<String, UUID> {
+    @Override public UUID convert(String s) {
+      String t = trimToNull(s);
+      if (t == null) return null;
+      return UUID.fromString(t);
+    }
+  }
 
-  public static String stripBom(String s) {
-    if (s == null) return "";
+  public static class ToBigDecimal extends StdConverter<String, BigDecimal> {
+    @Override public BigDecimal convert(String s) {
+      String t = trimToNull(s);
+      if (t == null) return null;
+      return new BigDecimal(t);
+    }
+  }
+
+  // ======================
+  // Date/Time converters
+  // ======================
+
+  /** "2026-02-09T18:00:06" или "2026-02-09T18:00:06Z" / "+03:00" -> LocalDateTime */
+  public static class ToLocalDateTimeLenient extends StdConverter<String, LocalDateTime> {
+    @Override public LocalDateTime convert(String s) {
+      return toLocalDateTimeLenient(s);
+    }
+  }
+
+  /** "2026-02-10" или "2026-02-10T00:00:00" или "2026-02-10T00:00:00Z"/"+03:00" -> LocalDate */
+  public static class ToLocalDateLenient extends StdConverter<String, LocalDate> {
+    @Override public LocalDate convert(String s) {
+      return toLocalDateLenient(s);
+    }
+  }
+
+  // ======================
+  // private helpers
+  // ======================
+
+  private static String trimToNull(String s) {
+    if (s == null) return null;
     String t = s.trim();
-    return t.startsWith("\uFEFF") ? t.substring(1).trim() : t;
+    return t.isEmpty() ? null : t;
   }
 
-  public static String extractRoot(String xml) {
-    if (xml == null) return "UNKNOWN";
-    var m = ROOT_TAG.matcher(xml);
-    if (!m.find()) return "UNKNOWN";
-    String tag = m.group(1);
-    int idx = tag.indexOf(':');
-    return (idx >= 0) ? tag.substring(idx + 1) : tag; // убираем ns:
+  private static LocalDateTime toLocalDateTimeLenient(String s) {
+    String t = trimToNull(s);
+    if (t == null) return null;
+
+    // 1) без зоны: "2026-02-09T18:00:06"
+    try { return LocalDateTime.parse(t); } catch (Exception ignore) {}
+
+    // 2) с offset/Z: "2026-02-09T18:00:06Z" или "+03:00"
+    try { return OffsetDateTime.parse(t).toLocalDateTime(); } catch (Exception ignore) {}
+
+    throw new IllegalArgumentException("Invalid LocalDateTime: " + t);
   }
 
-  public static String snippet(String xml) {
-    if (xml == null) return "";
-    String oneLine = xml.replaceAll("\\s+", " ").trim();
-    return oneLine.length() <= 200 ? oneLine : oneLine.substring(0, 200) + "...";
-  }
-}
+  private static LocalDate toLocalDateLenient(String s) {
+    String t = trimToNull(s);
+    if (t == null) return null;
 
-@ConfigurationProperties(prefix = "app.kafka.currency-rate")
-public record CurrencyRateKafkaProps(
-    String topic,
-    String groupId,
-    String servers,
-    String autoOffsetReset,
-    int concurrency,
-    Map<String, String> keyAliases
-) {
-  public CurrencyRateKafkaProps {
-    if (autoOffsetReset == null || autoOffsetReset.isBlank()) {
-      autoOffsetReset = "earliest";
-    }
-    if (keyAliases == null) {
-      keyAliases = Map.of();
-    }
+    // 1) date: "2026-02-10"
+    try { return LocalDate.parse(t); } catch (Exception ignore) {}
+
+    // 2) datetime без зоны: "2026-02-10T00:00:00"
+    try { return LocalDateTime.parse(t).toLocalDate(); } catch (Exception ignore) {}
+
+    // 3) datetime c offset/Z
+    try { return OffsetDateTime.parse(t).toLocalDate(); } catch (Exception ignore) {}
+
+    throw new IllegalArgumentException("Invalid LocalDate: " + t);
   }
 }
 
-@Configuration
-@EnableKafka
-@EnableConfigurationProperties(CurrencyRateKafkaProps.class)
-public class CurrencyRateKafkaConfig {
-
-  @Bean
-  public ConsumerFactory<String, String> currencyRateConsumerFactory(CurrencyRateKafkaProps props) {
-    Map<String, Object> cfg = new HashMap<>();
-    cfg.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, props.servers());
-    cfg.put(ConsumerConfig.GROUP_ID_CONFIG, props.groupId());
-    cfg.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, props.autoOffsetReset());
-    cfg.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-    cfg.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-    cfg.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-    return new DefaultKafkaConsumerFactory<>(cfg);
-  }
-
-  @Bean
-  public ProducerFactory<String, String> currencyRateProducerFactory(CurrencyRateKafkaProps props) {
-    Map<String, Object> cfg = new HashMap<>();
-    cfg.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, props.servers());
-    cfg.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-    cfg.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-    return new DefaultKafkaProducerFactory<>(cfg);
-  }
-
-  @Bean
-  public KafkaTemplate<String, String> currencyRateKafkaTemplate(ProducerFactory<String, String> pf) {
-    return new KafkaTemplate<>(pf);
-  }
-
-  @Bean(name = "currencyRateContainerFactory")
-  public ConcurrentKafkaListenerContainerFactory<String, String> currencyRateContainerFactory(
-      ConsumerFactory<String, String> cf,
-      KafkaTemplate<String, String> kafkaTemplate,
-      CurrencyRateKafkaProps props
-  ) {
-    var factory = new ConcurrentKafkaListenerContainerFactory<String, String>();
-    factory.setConsumerFactory(cf);
-    factory.setConcurrency(props.concurrency());
-    factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
-
-    var recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate);
-    var errorHandler = new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 3L));
-    errorHandler.addNotRetryableExceptions(IllegalArgumentException.class, UnsupportedOperationException.class);
-    errorHandler.setCommitRecovered(true);
-
-    factory.setCommonErrorHandler(errorHandler);
-    return factory;
-  }
-}
-
-@Component
-public class CurrencyRateKeyResolver {
-
-  private final CurrencyRateKafkaProps props;
-
-  public CurrencyRateKeyResolver(CurrencyRateKafkaProps props) {
-    this.props = props;
-  }
-
-  public String resolve(ConsumerRecord<String, String> record) {
-    // 1) пробуем key
-    String key = record.key();
-    if (key != null && !key.isBlank()) {
-      String normalized = key.trim();
-      String alias = props.keyAliases().get(normalized);
-      return (alias != null) ? alias : normalized;
-    }
-
-    // 2) fallback: корневой тег XML
-    String xml = FxRateXmlSupport.stripBom(record.value());
-    String root = FxRateXmlSupport.extractRoot(xml);
-
-    String alias = props.keyAliases().get(root);
-    return (alias != null) ? alias : root;
-  }
-}
-
-@Component
-public class XmlKafkaRecordProcessor {
-
-  private final XmlMapper xmlMapper;
-  private final CurrencyRateKeyResolver keyResolver;
-
-  // validator опционален (если нет starter-validation, просто не валидируем)
-  @Autowired(required = false)
-  private Validator validator;
-
-  public XmlKafkaRecordProcessor(XmlMapper xmlMapper, CurrencyRateKeyResolver keyResolver) {
-    this.xmlMapper = xmlMapper;
-    this.keyResolver = keyResolver;
-  }
-
-  public void process(ConsumerRecord<String, String> record, RoutesRegistry registry) throws Exception {
-    String routeKey = keyResolver.resolve(record);
-    RouteDefinition<?> route = registry.getRequired(routeKey);
-    processTyped(record, route);
-  }
-
-  private <T> void processTyped(ConsumerRecord<String, String> record, RouteDefinition<T> route) {
-    final String xml = FxRateXmlSupport.stripBom(record.value());
-
-    final T dto;
-    try {
-      dto = xmlMapper.readValue(xml, route.getDtoClass());
-    } catch (Exception e) {
-      throw new IllegalArgumentException(
-          "Не удалось распарсить XML для routeKey=" + route.getKey()
-              + ", record.key=" + record.key()
-              + ", snippet=" + FxRateXmlSupport.snippet(xml),
-          e
-      );
-    }
-
-    validate(dto);
-    route.getConsumer().accept(dto);
-  }
-
-  private void validate(Object dto) {
-    if (validator == null || dto == null) return;
-    Set<ConstraintViolation<Object>> violations = validator.validate(dto);
-    if (!violations.isEmpty()) {
-      throw new ConstraintViolationException(violations);
-    }
-  }
-}
-
-@Component
-public class CurrencyRateIngestRoutesProvider implements CurrencyRateKafkaRoutesProvider {
-
-  private final FxRateIngestService ingestService;
-
-  public CurrencyRateIngestRoutesProvider(FxRateIngestService ingestService) {
-    this.ingestService = ingestService;
-  }
-
-  @Override
-  public List<RouteDefinition<?>> routes() {
-    return List.of(
-        RouteDefinition.route("PutEODPriceN", PutEodPriceNDto.class, dto -> ingestService.ingest(dto)),
-        RouteDefinition.route("PutEODPriceNf", PutEodPriceNfDto.class, dto -> ingestService.ingest(dto))
-    );
-  }
-}
-
-@Component
-public class CurrencyRateKafkaListener {
-
-  private final XmlKafkaRecordProcessor recordProcessor;
-  private final CurrencyRateRoutesRegistry routesRegistry;
-
-  public CurrencyRateKafkaListener(XmlKafkaRecordProcessor recordProcessor,
-                                   CurrencyRateRoutesRegistry routesRegistry) {
-    this.recordProcessor = recordProcessor;
-    this.routesRegistry = routesRegistry;
-  }
-
-  @KafkaListener(
-      topics = "${app.kafka.currency-rate.topic}",
-      containerFactory = "currencyRateContainerFactory"
-  )
-  public void handleMessage(final ConsumerRecord<String, String> record) throws Exception {
-    recordProcessor.process(record, routesRegistry);
-  }
-}
 
 @JacksonXmlRootElement(localName = "FXRates")
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class FxRateXmlDto {
 
+  // элемент <IsPublic>...</IsPublic>
   @JacksonXmlProperty(localName = "IsPublic")
+  @JsonDeserialize(converter = XmlConverters.TrimToNull.class)
   public String isPublic;
 
+  // атрибуты FXRates ...
   @JacksonXmlProperty(isAttribute = true, localName = "FXRateSubType")
+  @JsonDeserialize(converter = XmlConverters.UpperTrimToNull.class)
   public String fxRateSubType;
 
   @JacksonXmlProperty(isAttribute = true, localName = "Code1")
+  @JsonDeserialize(converter = XmlConverters.UpperTrimToNull.class)
   public String code1;
 
   @JacksonXmlProperty(isAttribute = true, localName = "ISONum1")
+  @JsonDeserialize(converter = XmlConverters.TrimToNull.class)
   public String isoNum1;
 
   @JacksonXmlProperty(isAttribute = true, localName = "Code2")
+  @JsonDeserialize(converter = XmlConverters.NormalizeRubUpper.class)
   public String code2;
 
   @JacksonXmlProperty(isAttribute = true, localName = "ISONum2")
+  @JsonDeserialize(converter = XmlConverters.TrimToNull.class)
   public String isoNum2;
 
+  // если не сохраняешь — можешь вообще убрать поле
   @JacksonXmlProperty(isAttribute = true, localName = "PublicationDate")
+  @JsonDeserialize(converter = XmlConverters.TrimToNull.class)
   public String publicationDate;
 
   @JacksonXmlProperty(isAttribute = true, localName = "UseDate")
-  public String useDate;
+  @JsonDeserialize(converter = XmlConverters.ToLocalDateLenient.class)
+  public LocalDate useDate;
 
   @JacksonXmlProperty(isAttribute = true, localName = "LotSize")
-  public String lotSize;
+  @JsonDeserialize(converter = XmlConverters.ToBigDecimal.class)
+  public BigDecimal lotSize;
 
   @JacksonXmlProperty(isAttribute = true, localName = "Value")
-  public String value;
+  @JsonDeserialize(converter = XmlConverters.ToBigDecimal.class)
+  public BigDecimal value;
 }
 
 @JacksonXmlRootElement(localName = "PutEODPriceN")
@@ -324,10 +163,12 @@ public class FxRateXmlDto {
 public class PutEodPriceNDto {
 
   @JacksonXmlProperty(localName = "RQUID")
-  public String rquid;
+  @JsonDeserialize(converter = XmlConverters.ToUuid.class)
+  public UUID rquid;
 
   @JacksonXmlProperty(localName = "RqTm")
-  public String rqtm;
+  @JsonDeserialize(converter = XmlConverters.ToLocalDateTimeLenient.class)
+  public LocalDateTime rqtm;
 
   @JacksonXmlElementWrapper(useWrapping = false)
   @JacksonXmlProperty(localName = "FXRates")
@@ -339,89 +180,17 @@ public class PutEodPriceNDto {
 public class PutEodPriceNfDto {
 
   @JacksonXmlProperty(localName = "RQUID")
-  public String rquid;
+  @JsonDeserialize(converter = XmlConverters.ToUuid.class)
+  public UUID rquid;
 
   @JacksonXmlProperty(localName = "RqTm")
-  public String rqtm;
+  @JsonDeserialize(converter = XmlConverters.ToLocalDateTimeLenient.class)
+  public LocalDateTime rqtm;
 
   @JacksonXmlElementWrapper(useWrapping = false)
   @JacksonXmlProperty(localName = "FXRates")
   public List<FxRateXmlDto> fxRates;
 }
-
-@Service
-public class FxRateIngestService {
-
-  private static final Logger log = LoggerFactory.getLogger(FxRateIngestService.class);
-
-  private final FxRateRepository repo;
-
-  public FxRateIngestService(FxRateRepository repo) {
-    this.repo = repo;
-  }
-
-  @Transactional
-  public int ingest(PutEodPriceNDto doc) {
-    if (doc == null) throw new IllegalArgumentException("doc is null");
-    return ingestInternal(doc.rquid, doc.rqtm, doc.fxRates);
-  }
-
-  @Transactional
-  public int ingest(PutEodPriceNfDto doc) {
-    if (doc == null) throw new IllegalArgumentException("doc is null");
-    return ingestInternal(doc.rquid, doc.rqtm, doc.fxRates);
-  }
-
-  private int ingestInternal(String rquidStr, String rqtmStr, List<FxRateXmlDto> rates) {
-    UUID rquid = FxRateMapper.uuidOrThrow(rquidStr, "RQUID");
-    LocalDateTime rqtm = FxRateMapper.dateTimeOrThrow(rqtmStr, "RqTm");
-
-    if (rates == null || rates.isEmpty()) {
-      log.info("No FXRates in message. rquid={}", rquid);
-      return 0;
-    }
-
-    int processed = 0;
-
-    for (FxRateXmlDto x : rates) {
-      if (x == null) continue;
-
-      String subType = FxRateMapper.upperTrim(x.fxRateSubType);
-      String code1 = FxRateMapper.upperTrim(x.code1);
-      String code2 = FxRateMapper.normalizeRub(FxRateMapper.upperTrim(x.code2));
-      LocalDate useDate = FxRateMapper.useDateOrThrow(x.useDate);
-
-      if (subType == null || code1 == null || code2 == null) {
-        log.debug("Skip record with missing key. rquid={}, subType={}, code1={}, code2={}, useDate={}",
-            rquid, subType, code1, code2, useDate);
-        continue;
-      }
-
-      BigDecimal lotSize = FxRateMapper.decimal(x.lotSize);
-      BigDecimal value = FxRateMapper.decimal(x.value);
-
-      if (lotSize != null && BigDecimal.ZERO.compareTo(lotSize) == 0) {
-        throw new IllegalArgumentException("LotSize=0 for " + code1 + "/" + code2 + " useDate=" + useDate + " rquid=" + rquid);
-      }
-
-      repo.upsert(
-          rquid, rqtm,
-          subType,
-          code1, FxRateMapper.trimToNull(x.isoNum1),
-          code2, FxRateMapper.trimToNull(x.isoNum2),
-          useDate,
-          lotSize, value,
-          FxRateMapper.trimToNull(x.isPublic)
-      );
-
-      processed++;
-    }
-
-    log.info("Ingest done. rquid={}, processed={}", rquid, processed);
-    return processed;
-  }
-}
-
 
 
 ```
