@@ -1,74 +1,97 @@
 ```java
 
-@Component
-@RequiredArgsConstructor
-public class FxRateXmlParser {
-  private static final Logger log = LoggerFactory.getLogger(FxRateXmlParser.class);
+public final class XmlConverters {
+  private XmlConverters() {}
 
-  // первый "нормальный" тег (не <?xml ... и не <!DOCTYPE/комментарий и не </close>)
-  private static final Pattern ROOT_TAG = Pattern.compile("<\\s*(?!\\?|!|/)([^\\s/>]+)");
+  // --- string нормализация (как у тебя) ---
+  public static class TrimToNull extends StdConverter<String, String> {
+    @Override public String convert(String s) { return trimToNull(s); }
+  }
 
-  private static final Map<String, Class<? extends FxEnvelope>> ROOT_TO_DTO = Map.of(
-    "PutEODPriceN",  PutEodPriceNDto.class,
-    "PutEODPriceNF", PutEodPriceNFDto.class
-  );
-
-  private final XmlMapper xmlMapper;
-
-  /** Унифицированный результат, root в бизнес-логике не нужен */
-  public FxMessage parse(String xml) {
-    if (xml == null || xml.isBlank()) throw new IllegalArgumentException("XML is blank");
-
-    String cleaned = stripBom(xml);
-    String root = extractRoot(cleaned);
-
-    Class<? extends FxEnvelope> dtoClass = ROOT_TO_DTO.get(root);
-    if (dtoClass == null) {
-      throw new IllegalArgumentException("Unsupported XML root: " + root);
-    }
-
-    try {
-      FxEnvelope doc = xmlMapper.readValue(cleaned, dtoClass);
-      return new FxMessage(doc.getRquid(), doc.getRqtm(), doc.getFxRates());
-    } catch (Exception e) {
-      log.warn("Failed to parse FX XML. root={}, snippet={}", root, snippet(cleaned), e);
-      throw (e instanceof IllegalArgumentException)
-        ? (IllegalArgumentException) e
-        : new IllegalArgumentException("Failed to parse FX XML. root=" + root, e);
+  public static class UpperTrimToNull extends StdConverter<String, String> {
+    @Override public String convert(String s) {
+      String t = trimToNull(s);
+      return t == null ? null : t.toUpperCase(Locale.ROOT);
     }
   }
 
-  private static String stripBom(String s) {
+  public static class NormalizeRubUpper extends StdConverter<String, String> {
+    @Override public String convert(String s) {
+      String t = trimToNull(s);
+      if (t == null) return null;
+      t = t.toUpperCase(Locale.ROOT);
+      return "RUR".equals(t) ? "RUB" : t;
+    }
+  }
+
+  // --- STRICT: для ROOT (RQUID/RqTm) ---
+
+  /** null/blank -> null (пусть потом проверит сервис или валидатор), но невалидный UUID -> exception */
+  public static class ToUuidStrict extends StdConverter<String, UUID> {
+    @Override public UUID convert(String s) {
+      String t = trimToNull(s);
+      if (t == null) return null;
+      try {
+        return UUID.fromString(t);
+      } catch (Exception e) {
+        throw new IllegalArgumentException("Invalid UUID: " + t, e);
+      }
+    }
+  }
+
+  /** поддержка: "2026-02-09T18:00:06", "2026-02-09T18:00:06Z", "+03:00" и т.п.; невалидное -> exception */
+  public static class ToLocalDateTimeLenientStrict extends StdConverter<String, LocalDateTime> {
+    @Override public LocalDateTime convert(String s) {
+      String t = trimToNull(s);
+      if (t == null) return null;
+
+      try { return LocalDateTime.parse(t); } catch (Exception ignore) {}
+      try { return OffsetDateTime.parse(t).toLocalDateTime(); } catch (Exception ignore) {}
+      try { return Instant.parse(t).atOffset(ZoneOffset.UTC).toLocalDateTime(); } catch (Exception ignore) {}
+
+      throw new IllegalArgumentException("Invalid LocalDateTime: " + t);
+    }
+  }
+
+  // --- LENIENT: для FXRates (useDate/lotSize/value) ---
+
+  /** null/blank -> null; невалидное число -> null (чтобы скипнуть одну запись, а не всё сообщение) */
+  public static class ToBigDecimalLenient extends StdConverter<String, BigDecimal> {
+    @Override public BigDecimal convert(String s) {
+      String t = trimToNull(s);
+      if (t == null) return null;
+
+      // если вдруг прилетает "12,34"
+      t = t.replace(',', '.');
+
+      try {
+        return new BigDecimal(t);
+      } catch (Exception e) {
+        return null;
+      }
+    }
+  }
+
+  /** null/blank -> null; невалидная дата -> null */
+  public static class ToLocalDateLenientOrNull extends StdConverter<String, LocalDate> {
+    @Override public LocalDate convert(String s) {
+      String t = trimToNull(s);
+      if (t == null) return null;
+
+      try { return LocalDate.parse(t); } catch (Exception ignore) {}
+      try { return LocalDateTime.parse(t).toLocalDate(); } catch (Exception ignore) {}
+      try { return OffsetDateTime.parse(t).toLocalDate(); } catch (Exception ignore) {}
+      try { return Instant.parse(t).atOffset(ZoneOffset.UTC).toLocalDate(); } catch (Exception ignore) {}
+
+      return null;
+    }
+  }
+
+  // --- helpers ---
+  private static String trimToNull(String s) {
+    if (s == null) return null;
     String t = s.trim();
-    return t.startsWith("\uFEFF") ? t.substring(1).trim() : t;
-  }
-
-  private static String extractRoot(String xml) {
-    Matcher m = ROOT_TAG.matcher(xml);
-    if (!m.find()) return "UNKNOWN";
-
-    String tag = m.group(1);
-    int idx = tag.lastIndexOf(':'); // убираем namespace prefix если есть
-    return idx >= 0 ? tag.substring(idx + 1) : tag;
-  }
-
-  private static String snippet(String s) {
-    if (s == null) return "";
-    String oneLine = s.replaceAll("\\s+", " ").trim();
-    return oneLine.length() <= 200 ? oneLine : oneLine.substring(0, 200) + "...";
-  }
-
-  /** То, что реально нужно дальше в сервисе */
-  public record FxMessage(UUID rquid, LocalDateTime rqtm, List<FxRateXmlDto> fxRates) {}
-
-  /**
-   * Общий контракт для "N" и "NF" dto.
-   * Можно сделать interface и реализовать в обоих DTO без дублирования бизнес-логики.
-   */
-  public interface FxEnvelope {
-    UUID getRquid();
-    LocalDateTime getRqtm();
-    List<FxRateXmlDto> getFxRates();
+    return t.isEmpty() ? null : t;
   }
 }
 ```
