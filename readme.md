@@ -1,97 +1,67 @@
 ```java
 
-public final class XmlConverters {
-  private XmlConverters() {}
+@JacksonXmlRootElement(localName = "PutEODPriceN")
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class PutEodPriceNDto implements FxEnvelope {
 
-  // --- string нормализация (как у тебя) ---
-  public static class TrimToNull extends StdConverter<String, String> {
-    @Override public String convert(String s) { return trimToNull(s); }
-  }
+  @JacksonXmlProperty(localName = "RQUID")
+  @JsonDeserialize(converter = XmlConverters.ToUuidStrict.class)
+  public UUID rquid;
 
-  public static class UpperTrimToNull extends StdConverter<String, String> {
-    @Override public String convert(String s) {
-      String t = trimToNull(s);
-      return t == null ? null : t.toUpperCase(Locale.ROOT);
-    }
-  }
+  @JacksonXmlProperty(localName = "RqTm")
+  @JsonDeserialize(converter = XmlConverters.ToLocalDateTimeLenientStrict.class)
+  public LocalDateTime rqtm;
 
-  public static class NormalizeRubUpper extends StdConverter<String, String> {
-    @Override public String convert(String s) {
-      String t = trimToNull(s);
-      if (t == null) return null;
-      t = t.toUpperCase(Locale.ROOT);
-      return "RUR".equals(t) ? "RUB" : t;
-    }
-  }
+  @JacksonXmlElementWrapper(useWrapping = false)
+  @JacksonXmlProperty(localName = "FXRates")
+  public List<FxRateXmlDto> fxRates;
 
-  // --- STRICT: для ROOT (RQUID/RqTm) ---
-
-  /** null/blank -> null (пусть потом проверит сервис или валидатор), но невалидный UUID -> exception */
-  public static class ToUuidStrict extends StdConverter<String, UUID> {
-    @Override public UUID convert(String s) {
-      String t = trimToNull(s);
-      if (t == null) return null;
-      try {
-        return UUID.fromString(t);
-      } catch (Exception e) {
-        throw new IllegalArgumentException("Invalid UUID: " + t, e);
-      }
-    }
-  }
-
-  /** поддержка: "2026-02-09T18:00:06", "2026-02-09T18:00:06Z", "+03:00" и т.п.; невалидное -> exception */
-  public static class ToLocalDateTimeLenientStrict extends StdConverter<String, LocalDateTime> {
-    @Override public LocalDateTime convert(String s) {
-      String t = trimToNull(s);
-      if (t == null) return null;
-
-      try { return LocalDateTime.parse(t); } catch (Exception ignore) {}
-      try { return OffsetDateTime.parse(t).toLocalDateTime(); } catch (Exception ignore) {}
-      try { return Instant.parse(t).atOffset(ZoneOffset.UTC).toLocalDateTime(); } catch (Exception ignore) {}
-
-      throw new IllegalArgumentException("Invalid LocalDateTime: " + t);
-    }
-  }
-
-  // --- LENIENT: для FXRates (useDate/lotSize/value) ---
-
-  /** null/blank -> null; невалидное число -> null (чтобы скипнуть одну запись, а не всё сообщение) */
-  public static class ToBigDecimalLenient extends StdConverter<String, BigDecimal> {
-    @Override public BigDecimal convert(String s) {
-      String t = trimToNull(s);
-      if (t == null) return null;
-
-      // если вдруг прилетает "12,34"
-      t = t.replace(',', '.');
-
-      try {
-        return new BigDecimal(t);
-      } catch (Exception e) {
-        return null;
-      }
-    }
-  }
-
-  /** null/blank -> null; невалидная дата -> null */
-  public static class ToLocalDateLenientOrNull extends StdConverter<String, LocalDate> {
-    @Override public LocalDate convert(String s) {
-      String t = trimToNull(s);
-      if (t == null) return null;
-
-      try { return LocalDate.parse(t); } catch (Exception ignore) {}
-      try { return LocalDateTime.parse(t).toLocalDate(); } catch (Exception ignore) {}
-      try { return OffsetDateTime.parse(t).toLocalDate(); } catch (Exception ignore) {}
-      try { return Instant.parse(t).atOffset(ZoneOffset.UTC).toLocalDate(); } catch (Exception ignore) {}
-
-      return null;
-    }
-  }
-
-  // --- helpers ---
-  private static String trimToNull(String s) {
-    if (s == null) return null;
-    String t = s.trim();
-    return t.isEmpty() ? null : t;
-  }
+  @Override public UUID getRquid() { return rquid; }
+  @Override public LocalDateTime getRqtm() { return rqtm; }
+  @Override public List<FxRateXmlDto> getFxRates() { return fxRates; }
 }
+
+@JacksonXmlRootElement(localName = "FXRates")
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class FxRateXmlDto {
+
+  @JacksonXmlProperty(localName = "IsPublic")
+  @JsonDeserialize(converter = XmlConverters.TrimToNull.class)
+  public String isPublic;
+
+  @JacksonXmlProperty(isAttribute = true, localName = "FXRateSubType")
+  @JsonDeserialize(converter = XmlConverters.UpperTrimToNull.class)
+  public String fxRateSubType;
+
+  @JacksonXmlProperty(isAttribute = true, localName = "Code1")
+  @JsonDeserialize(converter = XmlConverters.UpperTrimToNull.class)
+  public String code1;
+
+  @JacksonXmlProperty(isAttribute = true, localName = "ISONum1")
+  @JsonDeserialize(converter = XmlConverters.TrimToNull.class)
+  public String isoNum1;
+
+  @JacksonXmlProperty(isAttribute = true, localName = "Code2")
+  @JsonDeserialize(converter = XmlConverters.NormalizeRubUpper.class)
+  public String code2;
+
+  @JacksonXmlProperty(isAttribute = true, localName = "ISONum2")
+  @JsonDeserialize(converter = XmlConverters.TrimToNull.class)
+  public String isoNum2;
+
+  // ВАЖНО: lenient -> null если не парсится
+  @JacksonXmlProperty(isAttribute = true, localName = "UseDate")
+  @JsonDeserialize(converter = XmlConverters.ToLocalDateLenientOrNull.class)
+  public LocalDate useDate;
+
+  @JacksonXmlProperty(isAttribute = true, localName = "LotSize")
+  @JsonDeserialize(converter = XmlConverters.ToBigDecimalLenient.class)
+  public BigDecimal lotSize;
+
+  @JacksonXmlProperty(isAttribute = true, localName = "Value")
+  @JsonDeserialize(converter = XmlConverters.ToBigDecimalLenient.class)
+  public BigDecimal value;
+}
+
+
 ```
