@@ -254,4 +254,81 @@ public class FxRateXmlParser {
   public record ParsedFxRates(String root, UUID rquid, LocalDateTime rqtm, List<FxRateXmlDto> fxRates) {}
 }
 
+
+@Service
+@RequiredArgsConstructor
+public class FxRateIngestService {
+  private static final Logger log = LoggerFactory.getLogger(FxRateIngestService.class);
+
+  private final FxRateRepository repo;
+
+  @Transactional
+  public int ingest(PutEodPriceNDto doc) {
+    if (doc == null) throw new IllegalArgumentException("doc is null");
+    return ingestInternal(doc.rquid, doc.rqtm, doc.fxRates);
+  }
+
+  @Transactional
+  public int ingest(PutEodPriceNFDto doc) {
+    if (doc == null) throw new IllegalArgumentException("doc is null");
+    return ingestInternal(doc.rquid, doc.rqtm, doc.fxRates);
+  }
+
+  // удобно если ты парсишь через FxRateXmlParser и хочешь сразу прокинуть ParsedFxRates
+  @Transactional
+  public int ingest(FxRateXmlParser.ParsedFxRates msg) {
+    if (msg == null) throw new IllegalArgumentException("msg is null");
+    return ingestInternal(msg.rquid(), msg.rqtm(), msg.fxRates());
+  }
+
+  private int ingestInternal(UUID rquid, LocalDateTime rqtm, List<FxRateXmlDto> rates) {
+    if (rquid == null) throw new IllegalArgumentException("Missing RQUID");
+    if (rqtm == null) throw new IllegalArgumentException("Missing RqTm");
+
+    if (rates == null || rates.isEmpty()) {
+      log.info("No FXRates in message. rquid={}", rquid);
+      return 0;
+    }
+
+    int processed = 0;
+
+    for (FxRateXmlDto x : rates) {
+      if (x == null) continue;
+
+      // уже нормализовано конвертерами в DTO
+      String subType = x.fxRateSubType;
+      String code1 = x.code1;
+      String code2 = x.code2;
+      LocalDate useDate = x.useDate;
+
+      if (subType == null || code1 == null || code2 == null || useDate == null) {
+        log.info("Skip record with missing key. rquid={}, subType={}, code1={}, code2={}, useDate={}",
+          rquid, subType, code1, code2, useDate);
+        continue;
+      }
+
+      BigDecimal lotSize = x.lotSize;
+      if (lotSize != null && lotSize.compareTo(BigDecimal.ZERO) == 0) {
+        throw new IllegalArgumentException(
+          "LotSize=0 for " + code1 + "/" + code2 + " useDate=" + useDate + " rquid=" + rquid
+        );
+      }
+
+      repo.upsert(
+        rquid, rqtm,
+        subType,
+        code1, x.isoNum1,
+        code2, x.isoNum2,
+        useDate,
+        x.lotSize, x.value,
+        x.isPublic
+      );
+
+      processed++;
+    }
+
+    log.info("Ingest done. rquid={}, processed={}", rquid, processed);
+    return processed;
+  }
+}
 ```
