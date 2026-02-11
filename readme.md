@@ -1,5 +1,9 @@
 ```java
 
+ key-aliases:
+        putEodPriceN: PutEODPriceN
+        putEodPriceNf: PutEODPriceNf
+
 @Getter
 @AllArgsConstructor
 public class RouteDefinition<T> {
