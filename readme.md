@@ -193,4 +193,65 @@ public class PutEodPriceNfDto {
 }
 
 
+@Component
+@RequiredArgsConstructor
+public class FxRateXmlParser {
+  private static final Logger log = LoggerFactory.getLogger(FxRateXmlParser.class);
+
+  // первый "нормальный" тег (не <?xml ... и не <!DOCTYPE/комментарий и не </close>)
+  private static final Pattern ROOT_TAG = Pattern.compile("<\\s*(?!\\?|!|/)([^\\s/>]+)");
+
+  private final XmlMapper xmlMapper;
+
+  public ParsedFxRates parse(String xml) {
+    if (xml == null || xml.isBlank()) {
+      throw new IllegalArgumentException("XML is blank");
+    }
+
+    String cleaned = stripBom(xml);
+    String root = extractRoot(cleaned);
+
+    try {
+      return switch (root) {
+        case "PutEODPriceNF" -> {
+          PutEodPriceNFDto doc = xmlMapper.readValue(cleaned, PutEodPriceNFDto.class);
+          yield new ParsedFxRates(root, doc.rquid, doc.rqtm, doc.fxRates);
+        }
+        case "PutEODPriceN" -> {
+          PutEodPriceNDto doc = xmlMapper.readValue(cleaned, PutEodPriceNDto.class);
+          yield new ParsedFxRates(root, doc.rquid, doc.rqtm, doc.fxRates);
+        }
+        default -> throw new IllegalArgumentException("Unsupported XML root: " + root);
+      };
+    } catch (Exception e) {
+      log.warn("Failed to parse FX XML. root={}, snippet={}", root, snippet(cleaned), e);
+      throw (e instanceof IllegalArgumentException)
+        ? (IllegalArgumentException) e
+        : new IllegalArgumentException("Failed to parse FX XML. root=" + root, e);
+    }
+  }
+
+  private static String stripBom(String s) {
+    String t = s.trim();
+    return t.startsWith("\uFEFF") ? t.substring(1).trim() : t;
+  }
+
+  private static String extractRoot(String xml) {
+    Matcher m = ROOT_TAG.matcher(xml);
+    if (!m.find()) return "UNKNOWN";
+
+    String tag = m.group(1);
+    int idx = tag.lastIndexOf(':'); // убираем namespace prefix если есть
+    return idx >= 0 ? tag.substring(idx + 1) : tag;
+  }
+
+  private static String snippet(String s) {
+    if (s == null) return "";
+    String oneLine = s.replaceAll("\\s+", " ").trim();
+    return oneLine.length() <= 200 ? oneLine : oneLine.substring(0, 200) + "...";
+  }
+
+  public record ParsedFxRates(String root, UUID rquid, LocalDateTime rqtm, List<FxRateXmlDto> fxRates) {}
+}
+
 ```
