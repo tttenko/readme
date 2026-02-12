@@ -1,7 +1,7 @@
 ```java
  spring:
   datasource:
-    url: jdbc:h2:mem:fxrate;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_UPPER=false
+    url: jdbc:h2:file:./.h2/fxrate;MODE=PostgreSQL;AUTO_SERVER=TRUE;DATABASE_TO_UPPER=false
     driver-class-name: org.h2.Driver
     username: sa
     password:
