@@ -1,29 +1,24 @@
 ```java
- spring:
-  datasource:
-    url: jdbc:h2:file:./.h2/fxrate;MODE=PostgreSQL;AUTO_SERVER=TRUE;DATABASE_TO_UPPER=false
-    driver-class-name: org.h2.Driver
-    username: sa
-    password:
+ db:
+  url: jdbc:h2:mem:masterdata;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+  username: sa
+  password: ""
 
+spring:
+  datasource:
+    driver-class-name: org.h2.Driver
+
+  # чтобы локально быстро поднять таблицу из Entity (а не мучать liquibase)
   jpa:
     hibernate:
-      ddl-auto: create-drop   # для локального smoke-теста
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.H2Dialect
-        format_sql: true
-    show-sql: true
+      ddl-auto: create-drop
+    database-platform: org.hibernate.dialect.H2Dialect
 
   liquibase:
-    enabled: false            # чтобы не упереться в postgres-специфичный ddl
+    enabled: false
 
   h2:
     console:
       enabled: true
       path: /h2-console
-
-fxrate:
-  storage:
-    mode: jpa    
 ```
