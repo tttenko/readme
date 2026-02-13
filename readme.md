@@ -34,4 +34,14 @@
 
         return errorHandler;
     }
+
+    public class InvalidCurrencyRateXmlException extends RuntimeException {
+    public InvalidCurrencyRateXmlException(String message, Throwable cause) {
+        super(message, cause);
+    }
+
+    public InvalidCurrencyRateXmlException(String message) {
+        super(message);
+    }
+}
 ```
