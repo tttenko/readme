@@ -1,40 +1,10 @@
 ```java
-log.info(
-                "Kafka message received: topic={}, partition={}, offset={}, timestamp={}, key={}, valueSize={}",
-                record.topic(),
-                record.partition(),
-                record.offset(),
-                record.timestamp(),
-                record.key(),
-                record.value() == null ? null : record.value().length()
-        );
+@Test
+void parseLenient_when32Hex_thenParsesUuid() {
+    String raw = "91B68C835ECD364AD4EEB72F0BFA319A";
+    UUID uuid = UuidUtils.parseLenient(raw);
 
-        // Если надо видеть часть XML/JSON — аккуратно обрежем
-        if (log.isDebugEnabled()) {
-            log.debug("Kafka message payload (trimmed): {}", trim(record.value()));
-        }
-
-        try {
-            recordProcessor.process(record, routesRegistry);
-
-            log.info(
-                    "Kafka message processed OK: topic={}, partition={}, offset={}, key={}",
-                    record.topic(), record.partition(), record.offset(), record.key()
-            );
-        } catch (Exception e) {
-            log.error(
-                    "Kafka message processing FAILED: topic={}, partition={}, offset={}, key={}",
-                    record.topic(), record.partition(), record.offset(), record.key(),
-                    e
-            );
-            throw e; // важно пробросить, чтобы поведение retry/DLT осталось таким, как настроено
-        }
-    }
-
-    private static String trim(String s) {
-        if (s == null) return null;
-        if (s.length() <= MAX_VALUE_LOG_LEN) return s;
-        return s.substring(0, MAX_VALUE_LOG_LEN) + "...(trimmed, len=" + s.length() + ")";
-    }
+    assertThat(uuid.toString()).isEqualTo("91b68c83-5ecd-364a-d4ee-b72f0bfa319a");
+}
 
 ```
