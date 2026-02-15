@@ -109,7 +109,25 @@ public class CurrencyRateDto implements Serializable {
     private BigDecimal currencyRate;
 }
 
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@Schema(description = "Информация о курсе валюты/металла")
+public class CurrencyRateDto implements Serializable {
 
+    @Schema(description = "Дата в формате dd.MM.yyyy. Дата начиная с которой действует курс")
+    private String date;
+
+    @Schema(description = "Курс (Value) из источника")
+    private BigDecimal value;
+
+    @Schema(description = "Коэффициент (LotSize) из источника")
+    private BigDecimal lotSize;
+
+    @Schema(description = "Курс для 1 единицы: Value / LotSize (4 знака после запятой)")
+    private BigDecimal currencyRate;
+}
 
 
 
