@@ -1,75 +1,131 @@
 ```java
 /**
- * Конфигурация Kafka для обработки сообщений с курсами валют.
+ * Реестр маршрутов обработки сообщений.
  * <p>
- * Создаёт и настраивает фабрики Kafka consumer/producer, {@link KafkaTemplate},
- * а также фабрику контейнеров слушателей и обработчик ошибок.
+ * Собирает маршруты из провайдеров ({@link KafkaRoutesProvider}) и предоставляет доступ к ним по ключу.
  */
-@Configuration
-@EnableKafka
-@EnableConfigurationProperties(CurrencyRateKafkaProps.class)
-public class CurrencyRateKafkaConfig {
+public class RoutesRegistry {
 
     /**
-     * Создаёт {@link ConsumerFactory} для потребителей Kafka, читающих сообщения курсов валют.
-     * <p>
-     * Настраивает подключение к брокерам, группу, стратегию смещения, десериализаторы
-     * и отключает автокоммит (подтверждение выполняется вручную контейнером).
+     * Создает реестр маршрутов и индексирует их по ключу.
      *
-     * @param props свойства Kafka для курсов валют
-     * @return фабрика consumer'ов Kafka
+     * @param providers список провайдеров маршрутов
+     * @throws IllegalStateException если обнаружены дублирующиеся маршруты с одинаковым ключом
      */
-    @Bean
-    public ConsumerFactory<String, String> currencyRateConsumerFactory(CurrencyRateKafkaProps props) { /* ... */ }
+    public RoutesRegistry(List<? extends KafkaRoutesProvider> providers) {
+    }
 
     /**
-     * Создаёт {@link ProducerFactory} для продюсеров Kafka, отправляющих сообщения курсов валют.
-     * <p>
-     * Настраивает подключение к брокерам и сериализаторы ключа/значения.
+     * Возвращает маршрут по ключу.
      *
-     * @param props свойства Kafka для курсов валют
-     * @return фабрика producer'ов Kafka
+     * @param key ключ маршрута
+     * @param <T> тип DTO, который ожидает consumer маршрута
+     * @return определение маршрута
+     * @throws UnsupportedOperationException если маршрут по ключу не найден
      */
-    @Bean
-    public ProducerFactory<String, String> currencyRateProducerFactory(CurrencyRateKafkaProps props) { /* ... */ }
-
-    /**
-     * Создаёт {@link KafkaTemplate} для отправки сообщений в Kafka.
-     *
-     * @param pf фабрика producer'ов
-     * @return KafkaTemplate для строковых ключей и значений
-     */
-    @Bean
-    public KafkaTemplate<String, String> currencyRateKafkaTemplate(ProducerFactory<String, String> pf) { /* ... */ }
-
-    /**
-     * Создаёт {@link ConcurrentKafkaListenerContainerFactory} для слушателей Kafka.
-     * <p>
-     * Настраивает конкурентность, режим подтверждения (ACK) на уровне записи (RECORD)
-     * и общий обработчик ошибок.
-     *
-     * @param cf фабрика consumer'ов
-     * @param props свойства Kafka для курсов валют
-     * @return фабрика контейнеров слушателей с заданными настройками
-     */
-    @Bean(name = "currencyRateContainerFactory")
-    public ConcurrentKafkaListenerContainerFactory<String, String> currencyRateContainerFactory(
-            ConsumerFactory<String, String> cf,
-            CurrencyRateKafkaProps props
-    ) { /* ... */ }
-
-    /**
-     * Создаёт обработчик ошибок Kafka {@link DefaultErrorHandler}.
-     * <p>
-     * Настраивает политику повторов через {@link FixedBackOff}, список исключений без повторов
-     * и поведение коммита смещений для "восстановленных" записей.
-     *
-     * @param props свойства Kafka для курсов валют
-     * @return обработчик ошибок для контейнеров слушателей
-     */
-    @Bean
-    public DefaultErrorHandler currencyRateErrorHandler(CurrencyRateKafkaProps props) { /* ... */ }
+    public <T> RouteDefinition<T> getRequired(String key) {
+        return null;
+    }
 }
+import java.util.List;
 
+/**
+ * Провайдер набора маршрутов для обработки сообщений.
+ * <p>
+ * Используется для декларативного описания доступных маршрутов и их обработчиков.
+ */
+public interface KafkaRoutesProvider {
+
+    /**
+     * Возвращает список определений маршрутов.
+     *
+     * @return список маршрутов
+     */
+    List<RouteDefinition<?>> routes();
+}
+/**
+ * Маркерный интерфейс провайдера маршрутов для домена курсов/ставок.
+ * <p>
+ * Нужен для группировки и автоматического подхвата соответствующих провайдеров в реестр.
+ */
+public interface RateKafkaRoutesProvider extends KafkaRoutesProvider {
+}
+import java.util.function.Consumer;
+
+/**
+ * Определение маршрута обработки сообщения.
+ *
+ * @param <T> тип DTO, который будет передан в обработчик
+ */
+public class RouteDefinition<T> {
+
+    /**
+     * Создает определение маршрута.
+     *
+     * @param key      ключ маршрута (идентификатор)
+     * @param dtoClass класс DTO для десериализации/валидации
+     * @param consumer обработчик сообщения
+     */
+    public RouteDefinition(String key, Class<T> dtoClass, Consumer<T> consumer) {
+    }
+
+    /**
+     * Фабричный метод для удобного создания маршрута.
+     *
+     * @param key      ключ маршрута
+     * @param dtoClass класс DTO
+     * @param consumer обработчик
+     * @param <T>      тип DTO
+     * @return определение маршрута
+     */
+    public static <T> RouteDefinition<T> route(String key, Class<T> dtoClass, Consumer<T> consumer) {
+        return null;
+    }
+
+    /**
+     * Возвращает ключ маршрута.
+     *
+     * @return ключ
+     */
+    public String getKey() {
+        return null;
+    }
+
+    /**
+     * Возвращает класс DTO маршрута.
+     *
+     * @return класс DTO
+     */
+    public Class<T> getDtoClass() {
+        return null;
+    }
+
+    /**
+     * Возвращает обработчик сообщения.
+     *
+     * @return consumer
+     */
+    public Consumer<T> getConsumer() {
+        return null;
+    }
+}
+import java.util.List;
+
+/**
+ * Реестр маршрутов обработки для домена курсов валют/металлов.
+ * <p>
+ * Специализация {@link RoutesRegistry}, которая собирает маршруты из {@link RateKafkaRoutesProvider}.
+ */
+public class CurrencyRateRoutesRegistry extends RoutesRegistry {
+
+    /**
+     * Создает реестр маршрутов курсов и регистрирует их из провайдеров.
+     *
+     * @param providers список провайдеров маршрутов курсов
+     */
+    public CurrencyRateRoutesRegistry(List<RateKafkaRoutesProvider> providers) {
+        super(providers);
+    }
+}
 
 ```
