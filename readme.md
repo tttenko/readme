@@ -1,122 +1,198 @@
 ```java
 /**
- * Преобразует набор значений и атрибутов мастер-данных в {@link CurrencyDto}.
+ * Провайдер маршрутов Kafka для загрузки (ingest) курсов валют.
  * <p>
- * Заполняет идентификатор и основные поля валюты (наименование, ISO-коды, код АСТ),
- * а также при возможности дополняет DTO символом валюты и его кодом на основании
- * {@link CurrencySymbolDictionary}.
- *
- * @param values базовые значения записи (например, идентификатор)
- * @param attributes карта атрибутов записи (значения по именам атрибутов)
- * @return заполненный {@link CurrencyDto}
- */
-
- /**
- * Маппер для преобразования DTO курса валют из XML в сущность {@link FxRateEntity}.
- * <p>
- * Используется для подготовки данных к сохранению, дополняя сущность служебными полями
- * (RQUID и RGTm) и перенося значения курса, кодов валют и параметров расчёта из {@link FxRateXmlDto}.
+ * Формирует список {@link RouteDefinition} с привязкой ключа сообщения к DTO и обработчику,
+ * используя настройки из {@link CurrencyRateKafkaProps} и сервис {@link FxRateIngestService}.
  */
 @Component
-public class FxRateEntityMapper {
+@RequiredArgsConstructor
+public class CurrencyRateIngestRoutesProvider implements RateKafkaRoutesProvider {
+
+    private final FxRateIngestService ingestService;
+    private final CurrencyRateKafkaProps props;
 
     /**
-     * Преобразует {@link FxRateXmlDto} в {@link FxRateEntity} и заполняет служебные поля записи.
-     *
-     * @param rquid уникальный идентификатор записи/сообщения
-     * @param rgtm дата-время регистрации/получения записи
-     * @param x DTO с данными курса валют, полученными из XML
-     * @return заполненная сущность {@link FxRateEntity}
-     */
-    public FxRateEntity toEntity(String rquid, LocalDateTime rgtm, FxRateXmlDto x) { /* ... */ }
-
-}
-
-/**
- * DTO для входящего XML-сообщения {@code PutEODPriceNf}.
- * <p>
- * Содержит идентификатор запроса, время формирования и список курсов валют/металлов ({@code FXRates}).
- */
-@JacksonXmlRootElement(localName = "PutEODPriceNf")
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class PutEodPriceNfDto {
-
-/**
- * JPA-сущность, представляющая запись курса валют в таблице {@code fx_rate}.
- * <p>
- * Хранит служебные поля записи (RQUID, RGTm), тип курса, коды и числовые ISO-коды валют,
- * дату применения курса, а также параметры курса (лот и значение).
- */
-@Entity
-@Setter
-@Getter
-@Table(name = "fx_rate")
-public class FxRateEntity {
-    // ...
-}
-
-/**
- * Репозиторий для работы с курсами валют ({@link FxRateEntity}).
- * <p>
- * Помимо стандартных CRUD-операций {@link JpaRepository} содержит:
- * <ul>
- *   <li>upsert (insert/update) записи курса по бизнес-ключу (subType, isoNum1, isoNum2, useDate)</li>
- *   <li>поиск последнего курса до указанной даты</li>
- * </ul>
- */
-public interface FxRateRepository extends JpaRepository<FxRateEntity, Long> {
-
-    /**
-     * Выполняет upsert записи курса в таблицу {@code master_data_adapter.exchange_rate}.
+     * Возвращает список маршрутов обработки сообщений.
      * <p>
-     * Если запись с тем же бизнес-ключом {@code (fxratesubtype, isonum1, isonum2, use_date)} уже существует,
-     * обновляет служебные поля и значения курса (коды валют, лот, значение).
+     * Каждый маршрут определяет ключ (алиас) сообщения, класс DTO для парсинга и consumer,
+     * который выполняет обработку (ingest).
      *
-     * @param rquid уникальный идентификатор записи/сообщения
-     * @param rgtm дата-время регистрации/получения записи
-     * @param subType подтип курса
-     * @param code1 буквенный код первой валюты
-     * @param isoNum1 числовой ISO-код первой валюты
-     * @param code2 буквенный код второй валюты
-     * @param isoNum2 числовой ISO-код второй валюты
-     * @param useDate дата применения курса
-     * @param lotSize размер лота (если применимо)
-     * @param value значение курса
-     * @return количество затронутых строк (в зависимости от реализации БД/драйвера)
+     * @return неизменяемый список маршрутов обработки
      */
-    @Modifying
-    @Query(/* ... */)
-    int upsert(
-        @Param("rquid") String rquid,
-        @Param("rgtm") LocalDateTime rgtm,
-        @Param("subType") String subType,
-        @Param("code1") String code1,
-        @Param("isoNum1") String isoNum1,
-        @Param("code2") String code2,
-        @Param("isoNum2") String isoNum2,
-        @Param("useDate") LocalDateTime useDate,
-        @Param("lotSize") BigDecimal lotSize,
-        @Param("value") BigDecimal value
-    );
-
-    /**
-     * Возвращает самый последний курс для пары валют до указанной даты (исключая её).
-     * <p>
-     * Ищет записи по {@code isoNum1/isoNum2} и выбирает запись с максимальной {@code use_date},
-     * где {@code use_date < useDateExclusive}.
-     *
-     * @param isoNum1 числовой ISO-код первой валюты
-     * @param isoNum2 числовой ISO-код второй валюты
-     * @param useDateExclusive верхняя граница даты применения (исключающая)
-     * @return найденный курс или {@link Optional#empty()}, если подходящих записей нет
-     */
-    @Query(/* ... */)
-    Optional<FxRateEntity> findLatestRate(
-        @Param("isoNum1") String isoNum1,
-        @Param("isoNum2") String isoNum2,
-        @Param("useDateExclusive") LocalDateTime useDateExclusive
-    );
+    @Override
+    public List<RouteDefinition<?>> routes() { /* ... */ }
 }
 
+/**
+ * Kafka-слушатель сообщений с курсами валют.
+ * <p>
+ * Получает записи из Kafka-топика, указанного в настройках приложения, и делегирует
+ * обработку {@link XmlKafkaRecordProcessor}, используя {@link CurrencyRateRoutesRegistry}
+ * для выбора нужного маршрута обработки.
+ */
+@Component
+@RequiredArgsConstructor
+@Log4j2
+public class CurrencyRateKafkaListener {
 
+    private final XmlKafkaRecordProcessor recordProcessor;
+    private final CurrencyRateRoutesRegistry routesRegistry;
+
+    /**
+     * Обрабатывает входящее сообщение из Kafka.
+     * <p>
+     * Метод вызывается контейнером {@link org.springframework.kafka.annotation.KafkaListener}
+     * и передаёт запись в {@link XmlKafkaRecordProcessor} вместе с реестром маршрутов.
+     *
+     * @param record запись Kafka с ключом и XML/строковым содержимым сообщения
+     * @throws Exception если в процессе обработки произошла ошибка
+     */
+    @KafkaListener(
+            topics = "${app.kafka.currency-rate.topic}",
+            containerFactory = "currencyRateContainerFactory")
+    public void handleMessage(final ConsumerRecord<String, String> record) throws Exception { /* ... */ }
+
+}
+
+/**
+ * Резолвер ключа маршрутизации для сообщений с курсами валют.
+ * <p>
+ * Извлекает routeKey из XML-содержимого записи Kafka (как правило, по корневому тегу),
+ * используя {@link FxRateXmlSupport}. В случае некорректного XML выбрасывает
+ * {@link InvalidCurrencyRateXmlException} с диагностической информацией о записи.
+ */
+@Component
+@RequiredArgsConstructor
+public class CurrencyRateKeyResolver {
+
+    private final FxRateXmlSupport fxRateXmlSupport;
+
+    /**
+     * Определяет ключ маршрута для входящей записи Kafka.
+     *
+     * @param record запись Kafka, содержащая XML в {@code value}
+     * @return ключ маршрута (например, имя корневого тега XML)
+     * @throws InvalidCurrencyRateXmlException если ключ невозможно извлечь из-за некорректного XML
+     */
+    public String resolve(ConsumerRecord<String, String> record) { /* ... */ }
+
+}
+
+/**
+ * Возвращает актуальный (последний) курс для пары валют на указанную дату.
+ * <p>
+ * Ищет запись с максимальной {@code useDate}, которая строго меньше начала следующего дня
+ * (т.е. курс «на дату»). Если курс не найден — возвращает пустой список.
+ *
+ * @param date дата, на которую требуется курс
+ * @param isoNum1 числовой ISO-код базовой валюты
+ * @param isoNum2 числовой ISO-код котируемой валюты
+ * @return список из одного элемента с найденным курсом либо пустой список
+ */
+public List<CurrencyRateDto> getCurrencyRate(LocalDate date, String isoNum1, String isoNum2) { /* ... */ }
+
+/**
+ * Сервис загрузки (ingest) курсов валют/металлов из входящего XML-сообщения.
+ * <p>
+ * Выполняет валидацию обязательных полей, преобразует XML DTO в сущности и сохраняет их в БД через upsert.
+ */
+@Service
+@RequiredArgsConstructor
+@Log4j2
+public class FxRateIngestService {
+
+    private final FxRateRepository repo;
+    private final FxRateEntityMapper fxRateEntityMapper;
+
+    /**
+     * Обрабатывает входящее сообщение {@link PutEodPriceNfDto} и сохраняет курсы в БД.
+     *
+     * @param message входящее XML-сообщение с курсами
+     * @throws IllegalArgumentException       если сообщение равно {@code null}
+     * @throws InvalidCurrencyRateXmlException если отсутствуют обязательные поля (RqUID/RqTm)
+     */
+    @Transactional
+    public void ingest(PutEodPriceNfDto message) {
+    }
+
+    /**
+     * Внутренняя обработка списка курсов: преобразование в сущности и сохранение через upsert.
+     *
+     * @param rquid идентификатор запроса
+     * @param rgtm  время формирования сообщения
+     * @param rates список курсов валют/металлов
+     * @throws InvalidCurrencyRateXmlException если отсутствуют обязательные параметры
+     */
+    private void ingestInternal(String rquid, LocalDateTime rgtm, List<FxRateXmlDto> rates) {
+    }
+}
+
+/**
+ * Утилиты для безопасной предобработки и разбора XML-строки.
+ * <p>
+ * Используется для удаления BOM и извлечения имени корневого XML-тега (routeKey).
+ */
+@Component
+public class FxRateXmlSupport {
+
+    /**
+     * Удаляет BOM (U+FEFF) и лишние пробелы из строки.
+     *
+     * @param s исходная строка
+     * @return строка без BOM (или пустая строка, если {@code s == null})
+     */
+    public String stripBom(String s) {
+    }
+
+    /**
+     * Извлекает имя корневого элемента XML (localName первого START_ELEMENT).
+     *
+     * @param xml XML в виде строки
+     * @return имя корневого тега
+     * @throws IllegalArgumentException если XML пустой/некорректный или корневой элемент не найден
+     */
+    public String extractRoot(String xml) {
+    }
+}
+
+/**
+ * Процессор Kafka-записей с XML-сообщениями.
+ * <p>
+ * Определяет ключ маршрута по содержимому XML, находит соответствующий {@link RouteDefinition}
+ * в {@link RoutesRegistry}, десериализует XML в нужный DTO с помощью {@link XmlMapper}
+ * и передаёт DTO в обработчик (consumer) маршрута.
+ */
+@Component
+@RequiredArgsConstructor
+public class XmlKafkaRecordProcessor {
+
+    private final XmlMapper xmlMapper;
+    private final CurrencyRateKeyResolver keyResolver;
+    private final FxRateXmlSupport fxRateXmlSupport;
+
+    /**
+     * Обрабатывает запись Kafka: валидирует входные параметры, определяет routeKey,
+     * извлекает маршрут из реестра и запускает типизированную обработку.
+     *
+     * @param record запись Kafka с XML в {@code value}
+     * @param registry реестр маршрутов обработки
+     * @throws Exception если возникла ошибка на этапе разрешения маршрута или обработки
+     *                  (включая возможные исключения, прокинутые вызываемыми компонентами)
+     */
+    public void process(ConsumerRecord<String, String> record, RoutesRegistry registry) throws Exception { /* ... */ }
+
+    /**
+     * Типизированная обработка записи: удаляет BOM из XML (при наличии), парсит XML в DTO
+     * класса маршрута и передаёт результат в consumer маршрута.
+     * <p>
+     * При ошибке парсинга выбрасывает {@link IllegalArgumentException} с диагностикой.
+     *
+     * @param record запись Kafka с исходным XML
+     * @param route определение маршрута (ключ, класс DTO и обработчик)
+     * @param <T> тип DTO маршрута
+     * @throws IllegalArgumentException если XML не удалось распарсить в DTO маршрута
+     */
+    private <T> void processTyped(ConsumerRecord<String, String> record, RouteDefinition<T> route) { /* ... */ }
+}
 ```
