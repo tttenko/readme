@@ -1,84 +1,61 @@
 ```java/**
-class FxRateXmlSupportTest {
+@SpringBootTest(classes = CurrencyRateKafkaPropsTest.TestConfig.class)
+@TestPropertySource(properties = {
+        "app.kafka.currency-rate.topic=topic-1",
+        "app.kafka.currency-rate.group-id=group-1",
+        "app.kafka.currency-rate.servers=localhost:9092",
+        "app.kafka.currency-rate.auto-offset-reset=earliest",
+        "app.kafka.currency-rate.concurrency=3",
+        "app.kafka.currency-rate.backoff-ms=1500",
+        "app.kafka.currency-rate.max-attempts=7",
+        "app.kafka.currency-rate.key-aliases=alias1,alias2"
+})
+class CurrencyRateKafkaPropsTest {
 
-    private final FxRateXmlSupport support = new FxRateXmlSupport();
-
-    // ---------------- stripBom ----------------
+    @Autowired
+    private CurrencyRateKafkaProps props;
 
     @Test
-    void stripBom_whenNull_thenReturnEmptyString() {
-        assertThat(support.stripBom(null)).isEqualTo("");
+    void shouldBindConfigurationProperties() {
+        assertThat(props.topic()).isEqualTo("topic-1");
+        assertThat(props.groupId()).isEqualTo("group-1");
+        assertThat(props.servers()).isEqualTo("localhost:9092");
+        assertThat(props.autoOffsetReset()).isEqualTo("earliest");
+        assertThat(props.concurrency()).isEqualTo(3);
+        assertThat(props.backoffMs()).isEqualTo(1500L);
+        assertThat(props.maxAttempts()).isEqualTo(7L);
+        assertThat(props.keyAliases()).isEqualTo("alias1,alias2");
+    }
+
+    @Configuration
+    @EnableConfigurationProperties(CurrencyRateKafkaProps.class)
+    static class TestConfig {
+    }
+}
+
+class FxRateEntityMapperTest {
+
+    private final FxRateEntityMapper mapper = new FxRateEntityMapper() {
+        @Override
+        public FxRateEntity toEntity(String requestUid, LocalDateTime requestTime, FxRateXmlDto fxRateXmlDto) {
+            return null; // нам в этих тестах не нужен mapstruct mapping
+        }
+    };
+
+    @Test
+    void toZoned_whenNull_thenReturnNull() {
+        assertThat(mapper.toZoned(null)).isNull();
     }
 
     @Test
-    void stripBom_whenOnlySpaces_thenReturnEmptyString() {
-        assertThat(support.stripBom("   \n\t  ")).isEqualTo("");
-    }
+    void toZoned_whenNotNull_thenReturnZonedInEuropeMoscow() {
+        LocalDateTime dt = LocalDateTime.of(2026, 2, 17, 10, 11, 12);
 
-    @Test
-    void stripBom_whenBomAtBeginning_thenRemoveBomAndTrim() {
-        String xml = "\uFEFF   <root/>   ";
-        assertThat(support.stripBom(xml)).isEqualTo("<root/>");
-    }
+        ZonedDateTime zdt = mapper.toZoned(dt);
 
-    @Test
-    void stripBom_whenNoBom_thenJustTrim() {
-        String xml = "   <root/>   ";
-        assertThat(support.stripBom(xml)).isEqualTo("<root/>");
-    }
-
-    @Test
-    void stripBom_whenBomNotAtBeginning_thenDoNotRemoveIt() {
-        // BOM внутри строки не должен удаляться (replaceFirst только в начале)
-        String xml = " <r>\uFEFF</r> ";
-        assertThat(support.stripBom(xml)).isEqualTo("<r>\uFEFF</r>");
-    }
-
-    // ---------------- extractRoot ----------------
-
-    @Test
-    void extractRoot_whenBlankAfterStrip_thenThrowIllegalArgumentException() {
-        assertThatThrownBy(() -> support.extractRoot("   \n\t  "))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessage("XML is blank");
-    }
-
-    @Test
-    void extractRoot_whenValidXml_thenReturnRootLocalName() {
-        String xml = "<PutEODPriceNF><a/></PutEODPriceNF>";
-        assertThat(support.extractRoot(xml)).isEqualTo("PutEODPriceNF");
-    }
-
-    @Test
-    void extractRoot_whenValidXmlWithPrologAndWhitespace_thenReturnRootLocalName() {
-        String xml = "   <?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                     "   <root attr=\"1\"><child/></root>";
-        assertThat(support.extractRoot(xml)).isEqualTo("root");
-    }
-
-    @Test
-    void extractRoot_whenValidXmlWithBom_thenReturnRootLocalName() {
-        String xml = "\uFEFF  <root><child/></root> ";
-        assertThat(support.extractRoot(xml)).isEqualTo("root");
-    }
-
-    @Test
-    void extractRoot_whenNoRootElement_thenThrowIllegalArgumentExceptionNoRoot() {
-        // Пустой документ не blank (есть символы), но START_ELEMENT не встретится
-        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
-        assertThatThrownBy(() -> support.extractRoot(xml))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessage("No root element in XML");
-    }
-
-    @Test
-    void extractRoot_whenInvalidXml_thenThrowIllegalArgumentExceptionWrapped() {
-        String xml = "<root>"; // не закрыт
-
-        assertThatThrownBy(() -> support.extractRoot(xml))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessage("Cannot read XML root tag")
-            .hasCauseInstanceOf(Exception.class);
+        assertThat(zdt).isNotNull();
+        assertThat(zdt.toLocalDateTime()).isEqualTo(dt);
+        assertThat(zdt.getZone()).isEqualTo(ZoneId.of("Europe/Moscow"));
     }
 }
 
