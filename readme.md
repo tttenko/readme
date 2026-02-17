@@ -1,266 +1,186 @@
 ```java/**
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
-class FxRateIngestServiceTest {
+class CurrencyServiceTest {
 
     @Mock
-    private FxRateRepository repo;
+    private CurrencyCacheOps currencyCacheOps;
 
     @Mock
-    private FxRateEntityMapper fxRateEntityMapper;
+    private CacheGetOrLoadService cacheGetOrLoadService;
+
+    @Mock
+    private FxRateRepository fxRateRepository;
 
     @InjectMocks
-    private FxRateIngestService service;
+    private CurrencyService currencyService2;
 
     @Test
-    void ingest_whenMessageIsNull_shouldThrowIllegalArgumentException() {
-        assertThatThrownBy(() -> service.ingest(null))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("PutEodPriceNFDto равно null");
-
-        verifyNoInteractions(repo, fxRateEntityMapper);
-    }
-
-    @Test
-    void ingest_whenRequestUidIsNull_shouldThrowInvalidCurrencyRateXmlException() {
-        PutEodPriceNFDto message = msg(null, LocalDateTime.now(), List.of(mock(FxRateXmlDto.class)));
-
-        assertThatThrownBy(() -> service.ingest(message))
-            .isInstanceOf(InvalidCurrencyRateXmlException.class)
-            .hasMessageContaining("отсутствует обязательный идентификатор запроса RqUID");
-
-        verifyNoInteractions(repo, fxRateEntityMapper);
-    }
-
-    @Test
-    void ingest_whenRequestUidIsBlank_shouldThrowInvalidCurrencyRateXmlException() {
-        PutEodPriceNFDto message = msg("   \t\n", LocalDateTime.now(), List.of(mock(FxRateXmlDto.class)));
-
-        assertThatThrownBy(() -> service.ingest(message))
-            .isInstanceOf(InvalidCurrencyRateXmlException.class)
-            .hasMessageContaining("отсутствует обязательный идентификатор запроса RqUID");
-
-        verifyNoInteractions(repo, fxRateEntityMapper);
-    }
-
-    @Test
-    void ingest_whenRequestTimeIsNull_shouldThrowInvalidCurrencyRateXmlException_andIncludeRqUidInMessage() {
-        PutEodPriceNFDto message = msg("REQ-123", null, List.of(mock(FxRateXmlDto.class)));
-
-        assertThatThrownBy(() -> service.ingest(message))
-            .isInstanceOf(InvalidCurrencyRateXmlException.class)
-            .hasMessageContaining("отсутствует обязательное время запроса RqTm")
-            .hasMessageContaining("RqUID=REQ-123");
-
-        verifyNoInteractions(repo, fxRateEntityMapper);
-    }
-
-    @Test
-    void ingest_whenRatesEmpty_shouldDoNothing() {
-        PutEodPriceNFDto message = msg("REQ-1", LocalDateTime.now(), List.of());
-
-        service.ingest(message);
-
-        verifyNoInteractions(repo, fxRateEntityMapper);
-    }
-
-    @Test
-    void ingest_whenRatesPresent_shouldMapEachRate_andCallUpsertForEachRate() {
-        Fixture f = fixtureTwoRates();
-
-        service.ingest(f.message);
-
-        verify(fxRateEntityMapper).toEntity(f.requestUid, f.requestTime, f.rate1);
-        verify(fxRateEntityMapper).toEntity(f.requestUid, f.requestTime, f.rate2);
-
-        verify(repo, times(2)).upsert(any(ExchangeRateUpsertParams.class));
-
-        verifyNoMoreInteractions(repo, fxRateEntityMapper);
-    }
-
-    @Test
-    void ingest_whenRatesPresent_shouldPassExpectedParamsToUpsert() {
-        Fixture f = fixtureTwoRates();
-
-        service.ingest(f.message);
-
-        ArgumentCaptor<ExchangeRateUpsertParams> captor =
-            ArgumentCaptor.forClass(ExchangeRateUpsertParams.class);
-
-        verify(repo, times(2)).upsert(captor.capture());
-
-        List<ExchangeRateUpsertParams> actual = captor.getAllValues();
-        assertThat(actual).hasSize(2);
-
-        assertThat(actual.get(0)).usingRecursiveComparison().isEqualTo(f.expected1);
-        assertThat(actual.get(1)).usingRecursiveComparison().isEqualTo(f.expected2);
-    }
-
-    /**
-     * (Опционально) фиксирует текущее поведение: если message.fxRates == null, будет NPE на for-each.
-     */
-    @Test
-    void ingest_whenRatesIsNull_shouldThrowNullPointerException_currentBehavior() {
-        PutEodPriceNFDto message = msg("REQ-1", LocalDateTime.now(), null);
-
-        assertThatThrownBy(() -> service.ingest(message))
-            .isInstanceOf(NullPointerException.class);
-
-        verifyNoInteractions(repo, fxRateEntityMapper);
-    }
-
-    // ---------------- helpers ----------------
-
-    private Fixture fixtureTwoRates() {
-        String requestUid = "REQ-777";
-        LocalDateTime requestTime = LocalDateTime.of(2026, 2, 17, 10, 11, 12);
-
-        // то, что реально уйдёт в upsert (берётся из entity)
-        ZonedDateTime rqtm = requestTime.atZone(ZoneOffset.UTC);
-        ZonedDateTime useDate = ZonedDateTime.of(2026, 2, 17, 0, 0, 0, 0, ZoneOffset.UTC);
-
-        FxRateXmlDto rate1 = mock(FxRateXmlDto.class);
-        FxRateXmlDto rate2 = mock(FxRateXmlDto.class);
-
-        FxRateEntity entity1 = mockEntity(
-            requestUid,
-            rqtm,
-            "SPOT",
-            "USD",
-            "840",
-            "RUB",
-            "643",
-            useDate,
-            new BigDecimal("1"),
-            new BigDecimal("91.1234")
+    void getAllCurrencies_thenLoadAllFromCache() {
+        // given
+        List<CurrencyDto> all = List.of(
+            mock(CurrencyDto.class),
+            mock(CurrencyDto.class)
         );
 
-        FxRateEntity entity2 = mockEntity(
-            requestUid,
-            rqtm,
-            "SPOT",
-            "EUR",
-            "978",
-            "RUB",
-            "643",
-            useDate,
-            new BigDecimal("1"),
-            new BigDecimal("99.9900")
-        );
+        when(currencyCacheOps.loadAllCurrencies()).thenReturn(all);
 
-        when(fxRateEntityMapper.toEntity(requestUid, requestTime, rate1)).thenReturn(entity1);
-        when(fxRateEntityMapper.toEntity(requestUid, requestTime, rate2)).thenReturn(entity2);
+        // when
+        List<CurrencyDto> result = currencyService2.getAllCurrencies();
 
-        PutEodPriceNFDto message = msg(requestUid, requestTime, List.of(rate1, rate2));
-
-        ExchangeRateUpsertParams expected1 = new ExchangeRateUpsertParams(
-            requestUid,
-            rqtm,
-            "SPOT",
-            "USD",
-            "840",
-            "RUB",
-            "643",
-            useDate,
-            new BigDecimal("1"),
-            new BigDecimal("91.1234")
-        );
-
-        ExchangeRateUpsertParams expected2 = new ExchangeRateUpsertParams(
-            requestUid,
-            rqtm,
-            "SPOT",
-            "EUR",
-            "978",
-            "RUB",
-            "643",
-            useDate,
-            new BigDecimal("1"),
-            new BigDecimal("99.9900")
-        );
-
-        return new Fixture(requestUid, requestTime, rate1, rate2, message, expected1, expected2);
+        // then
+        assertThat(result).isEqualTo(all);
+        verify(currencyCacheOps).loadAllCurrencies();
+        verifyNoInteractions(cacheGetOrLoadService, fxRateRepository);
     }
 
-    private static class Fixture {
-        final String requestUid;
-        final LocalDateTime requestTime;
-        final FxRateXmlDto rate1;
-        final FxRateXmlDto rate2;
-        final PutEodPriceNFDto message;
-        final ExchangeRateUpsertParams expected1;
-        final ExchangeRateUpsertParams expected2;
+    @Test
+    void getCurrenciesByCodes_whenEmpty_thenReturnEmptyAndDoNotCallDependencies() {
+        // given
+        List<String> codes = List.of();
 
-        private Fixture(String requestUid,
-                        LocalDateTime requestTime,
-                        FxRateXmlDto rate1,
-                        FxRateXmlDto rate2,
-                        PutEodPriceNFDto message,
-                        ExchangeRateUpsertParams expected1,
-                        ExchangeRateUpsertParams expected2) {
-            this.requestUid = requestUid;
-            this.requestTime = requestTime;
-            this.rate1 = rate1;
-            this.rate2 = rate2;
-            this.message = message;
-            this.expected1 = expected1;
-            this.expected2 = expected2;
-        }
+        // when
+        List<CurrencyDto> result = currencyService2.getCurrenciesByCodes(codes);
+
+        // then
+        assertThat(result).isEmpty();
+        verifyNoInteractions(currencyCacheOps, cacheGetOrLoadService, fxRateRepository);
     }
 
-    private static PutEodPriceNFDto msg(String uid, LocalDateTime time, List<FxRateXmlDto> rates) {
-        PutEodPriceNFDto dto = new PutEodPriceNFDto();
-        dto.rquid = uid;
-        dto.rqtm = time;
-        dto.fxRates = rates;
-        return dto;
+    @Test
+    void getCurrenciesByCodes_whenNotEmpty_thenUseCacheGetOrLoadService() {
+        // given
+        List<String> codes = List.of("USD", "EUR");
+        List<CurrencyDto> loaded = List.of(
+            mock(CurrencyDto.class),
+            mock(CurrencyDto.class)
+        );
+
+        when(cacheGetOrLoadService.fetchData(
+            CurrencyService.CURRENCY_BY_CODE,
+            codes
+        )).thenReturn(loaded);
+
+        // when
+        List<CurrencyDto> result = currencyService2.getCurrenciesByCodes(codes);
+
+        // then
+        assertThat(result).isEqualTo(loaded);
+        verify(cacheGetOrLoadService).fetchData(CurrencyService.CURRENCY_BY_CODE, codes);
+        verifyNoInteractions(currencyCacheOps, fxRateRepository);
     }
 
-    private static FxRateEntity mockEntity(
-        String requestUid,
-        ZonedDateTime requestTime,
-        String fxRateSubType,
-        String fromCode,
-        String fromIsoNum,
-        String toCode,
-        String toIsoNum,
-        ZonedDateTime useDate,
-        BigDecimal lotSize,
-        BigDecimal value
-    ) {
+    // ---------------- NEW TESTS for getCurrencyRate ----------------
+
+    @Test
+    void getCurrencyRate_whenRateExists_thenReturnSingleDto_andCallRepoWithExclusiveDate() {
+        // given
+        LocalDate date = LocalDate.of(2026, 2, 17);
+        String from = "USD";
+        String to = "RUB";
+        LocalDateTime expectedExclusive = LocalDateTime.of(2026, 2, 18, 0, 0);
+
         FxRateEntity entity = mock(FxRateEntity.class);
 
-        when(entity.getRequestUid()).thenReturn(requestUid);
-        when(entity.getRequestTime()).thenReturn(requestTime);
-        when(entity.getFxRateSubType()).thenReturn(fxRateSubType);
+        ZonedDateTime useDate = ZonedDateTime.of(2026, 2, 17, 0, 0, 0, 0, ZoneOffset.UTC);
+        BigDecimal value = new BigDecimal("1");
+        BigDecimal lotSize = new BigDecimal("6"); // 1/6 = 0.166666... -> 0.1667 (scale 4, HALF_UP)
 
-        when(entity.getFromCurrencyCode()).thenReturn(fromCode);
-        when(entity.getFromCurrencyIsoNum()).thenReturn(fromIsoNum);
-
-        when(entity.getToCurrencyCode()).thenReturn(toCode);
-        when(entity.getToCurrencyIsoNum()).thenReturn(toIsoNum);
-
+        when(entity.getFromCurrencyCode()).thenReturn(from);
+        when(entity.getFromCurrencyIsoNum()).thenReturn("840");
+        when(entity.getToCurrencyCode()).thenReturn(to);
+        when(entity.getToCurrencyIsoNum()).thenReturn("643");
         when(entity.getUseDate()).thenReturn(useDate);
-        when(entity.getLotSize()).thenReturn(lotSize);
         when(entity.getValue()).thenReturn(value);
+        when(entity.getLotSize()).thenReturn(lotSize);
 
-        return entity;
+        when(fxRateRepository.findLatestRate(from, to, expectedExclusive))
+            .thenReturn(Optional.of(entity));
+
+        // when
+        List<CurrencyRateDto> result = currencyService2.getCurrencyRate(date, from, to);
+
+        // then
+        assertThat(result).hasSize(1);
+
+        CurrencyRateDto dto = result.get(0);
+        assertThat(dto.getCode1()).isEqualTo(from);
+        assertThat(dto.getIsoNum1()).isEqualTo("840");
+        assertThat(dto.getCode2()).isEqualTo(to);
+        assertThat(dto.getIsoNum2()).isEqualTo("643");
+        assertThat(dto.getDate()).isEqualTo(date);
+        assertThat(dto.getValue()).isEqualByComparingTo("1");
+        assertThat(dto.getLotSize()).isEqualByComparingTo("6");
+        assertThat(dto.getCurrencyRate()).isEqualByComparingTo("0.1667");
+
+        verify(fxRateRepository).findLatestRate(from, to, expectedExclusive);
+        verifyNoInteractions(currencyCacheOps, cacheGetOrLoadService);
+    }
+
+    @Test
+    void getCurrencyRate_whenNoRate_thenReturnEmptyList() {
+        // given
+        LocalDate date = LocalDate.of(2026, 2, 17);
+        String from = "USD";
+        String to = "RUB";
+        LocalDateTime expectedExclusive = LocalDateTime.of(2026, 2, 18, 0, 0);
+
+        when(fxRateRepository.findLatestRate(from, to, expectedExclusive))
+            .thenReturn(Optional.empty());
+
+        // when
+        List<CurrencyRateDto> result = currencyService2.getCurrencyRate(date, from, to);
+
+        // then
+        assertThat(result).isEmpty();
+        verify(fxRateRepository).findLatestRate(from, to, expectedExclusive);
+        verifyNoInteractions(currencyCacheOps, cacheGetOrLoadService);
+    }
+
+    @Test
+    void getCurrencyRate_whenLotSizeIsZero_thenThrowArithmeticException() {
+        // given
+        LocalDate date = LocalDate.of(2026, 2, 17);
+        String from = "USD";
+        String to = "RUB";
+        LocalDateTime expectedExclusive = LocalDateTime.of(2026, 2, 18, 0, 0);
+
+        FxRateEntity entity = mock(FxRateEntity.class);
+
+        when(entity.getFromCurrencyCode()).thenReturn(from);
+        when(entity.getFromCurrencyIsoNum()).thenReturn("840");
+        when(entity.getToCurrencyCode()).thenReturn(to);
+        when(entity.getToCurrencyIsoNum()).thenReturn("643");
+        when(entity.getUseDate()).thenReturn(ZonedDateTime.of(2026, 2, 17, 0, 0, 0, 0, ZoneOffset.UTC));
+        when(entity.getValue()).thenReturn(new BigDecimal("10"));
+        when(entity.getLotSize()).thenReturn(BigDecimal.ZERO);
+
+        when(fxRateRepository.findLatestRate(from, to, expectedExclusive))
+            .thenReturn(Optional.of(entity));
+
+        // when / then
+        assertThatThrownBy(() -> currencyService2.getCurrencyRate(date, from, to))
+            .isInstanceOf(ArithmeticException.class);
+
+        verify(fxRateRepository).findLatestRate(from, to, expectedExclusive);
+        verifyNoInteractions(currencyCacheOps, cacheGetOrLoadService);
     }
 }
 ```
