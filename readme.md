@@ -1,19 +1,42 @@
 ```java/**
-class XmlConfigTest {
+@Service
+@RequiredArgsConstructor
+public class CurrencyRateProcessor {
 
-    @Test
-    void xmlMapperBean_shouldHaveExpectedSettings_andParseLocalDateTime() throws Exception {
-        XmlMapper mapper = new XmlConfig().xmlMapper();
+    private static final String EXPECTED_ROOT = "PutEODPriceNf";
 
-        assertThat(mapper.isEnabled(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)).isFalse();
+    private final XmlMapper xmlMapper;
+    private final FxRateXmlSupport fxRateXmlSupport;
+    private final FxRateIngestService ingestService;
 
-        TestDto dto = mapper.readValue("<TestDto dt=\"2026-02-16T10:11:12\" unknown=\"x\"/>", TestDto.class);
-        assertThat(dto.dt).isEqualTo(LocalDateTime.of(2026, 2, 16, 10, 11, 12));
+    public void process(ConsumerRecord<String, String> record) {
+        String root = fxRateXmlSupport.extractRoot(record.value());
+        if (!EXPECTED_ROOT.equals(root)) {
+            throw new IllegalArgumentException("Unexpected XML root tag: " + root);
+        }
+
+        String xml = fxRateXmlSupport.stripBom(record.value());
+
+        try {
+            PutEodPriceNfDto dto = xmlMapper.readValue(xml, PutEodPriceNfDto.class);
+            ingestService.ingest(dto);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Cannot parse PutEODPriceNf XML", e);
+        }
     }
+}
 
-    static class TestDto {
-        @com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlProperty(isAttribute = true, localName = "dt")
-        public LocalDateTime dt;
+@Component
+@RequiredArgsConstructor
+public class CurrencyRateKafkaListener {
+    private final CurrencyRateProcessor processor;
+
+    @KafkaListener(
+        topics = "${app.kafka.currency-rate.topic}",
+        containerFactory = "currencyRateContainerFactory"
+    )
+    public void handleMessage(ConsumerRecord<String, String> record) {
+        processor.process(record);
     }
 }
 
