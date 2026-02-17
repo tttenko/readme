@@ -1,16 +1,3 @@
 ```java
-@Override
-    public final boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null) return false;
-        if (Hibernate.getClass(this) != Hibernate.getClass(o)) return false;
-        FxRateEntity that = (FxRateEntity) o;
-        return id != null && Objects.equals(id, that.id);
-    }
-
-    @Override
-    public final int hashCode() {
-        // важно: стабильный hashCode для transient-объектов (id == null)
-        return Hibernate.getClass(this).hashCode();
-    }
+Нужно, чтобы быстро и одинаково для всех сообщений определить “тип” входящего XML (routeKey) — по имени корневого тега — и маршрутизировать запись на правильный обработчик в вашем RoutesRegistry, не парся весь XML. Плюс даёт единое место для нормализации (BOM/пробелы) и понятной ошибки с координатами Kafka (topic/partition/offset).
 ```
