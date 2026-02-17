@@ -1,64 +1,9 @@
 ```java/**
-@Service
-@RequiredArgsConstructor
-public class CurrencyRateProcessor {
-
-    private static final String EXPECTED_ROOT = "PutEODPriceNf";
-
-    private final XmlMapper xmlMapper;
-    private final FxRateXmlSupport fxRateXmlSupport;
-    private final FxRateIngestService ingestService;
-
-    public void process(ConsumerRecord<String, String> record) {
-        if (record == null || record.value() == null) {
-            throw new IllegalArgumentException("Kafka record/value is null");
-        }
-
-        String root;
-        try {
-            root = fxRateXmlSupport.extractRoot(record.value());
-        } catch (IllegalArgumentException e) {
-            throw new InvalidCurrencyRateXmlException(
-                "Cannot resolve routeKey from XML root tag. "
-                    + ", topic=" + record.topic()
-                    + ", partition=" + record.partition()
-                    + ", offset=" + record.offset(),
-                e
-            );
-        }
-
-        if (!EXPECTED_ROOT.equals(root)) {
-            throw new InvalidCurrencyRateXmlException(
-                "Unexpected XML root tag: " + root
-                    + ", expected=" + EXPECTED_ROOT
-                    + ", topic=" + record.topic()
-                    + ", partition=" + record.partition()
-                    + ", offset=" + record.offset()
-            );
-        }
-
-        String xml = fxRateXmlSupport.stripBom(record.value());
-
-        try {
-            PutEodPriceNfDto dto = xmlMapper.readValue(xml, PutEodPriceNfDto.class);
-            ingestService.ingest(dto);
-        } catch (Exception e) {
-            throw new InvalidCurrencyRateXmlException(
-                "Не удалось распарсить XML " + EXPECTED_ROOT
-                    + ", topic=" + record.topic()
-                    + ", partition=" + record.partition()
-                    + ", offset=" + record.offset()
-                    + ", key=" + record.key(),
-                e
-            );
-        }
-    }
-}
-
 @Component
 @RequiredArgsConstructor
 public class CurrencyRateKafkaListener {
-    private final CurrencyRateProcessor processor;
+
+    private final CurrencyRateMessageProcessor processor;
 
     @KafkaListener(
         topics = "${app.kafka.currency-rate.topic}",
@@ -69,4 +14,45 @@ public class CurrencyRateKafkaListener {
     }
 }
 
+@Service
+@RequiredArgsConstructor
+public class CurrencyRateMessageProcessor {
+
+    private final PutEodPriceNfXmlParser parser;
+    private final FxRateIngestService ingestService;
+
+    public void process(ConsumerRecord<String, String> record) {
+        if (record == null || record.value() == null || record.value().isBlank()) {
+            throw new IllegalArgumentException("Kafka record/value is null or blank");
+        }
+
+        PutEodPriceNfDto dto = parser.parse(record);
+        ingestService.ingest(dto);
+    }
+}
+
+@Component
+@RequiredArgsConstructor
+public class PutEodPriceNfXmlParser {
+
+    private final XmlMapper xmlMapper;
+    private final FxRateXmlSupport fxRateXmlSupport;
+
+    public PutEodPriceNfDto parse(ConsumerRecord<String, String> record) {
+        String xml = fxRateXmlSupport.stripBom(record.value());
+
+        try {
+            return xmlMapper.readValue(xml, PutEodPriceNfDto.class);
+        } catch (Exception e) {
+            throw new InvalidCurrencyRateXmlException(
+                "Не удалось распарсить PutEODPriceNf XML"
+                    + ", topic=" + record.topic()
+                    + ", partition=" + record.partition()
+                    + ", offset=" + record.offset()
+                    + ", key=" + record.key(),
+                e
+            );
+        }
+    }
+}
 ```
