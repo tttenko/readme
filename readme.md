@@ -1,72 +1,85 @@
 ```java/**
-@Test
-@DisplayName("тест GET /api/v1/info/currency/(currency)/rate -> 1 элемент")
-void getCurrencyRate_whenRateExists_thenReturnOneItem() throws Exception {
-    // given
-    // ВАЖНО: путь берём такой, какой получается из ваших аннотаций:
-    // /api/v1/info/currency + /currency/rate = /api/v1/info/currency/currency/rate
-    String url = "/api/v1/info/currency/currency/rate";
+class FxRateXmlSupportTest {
 
-    LocalDate date = LocalDate.of(2026, 2, 17);
-    String from = "USD";
-    String to = "RUB";
-    LocalDateTime expectedExclusive = date.plusDays(1).atStartOfDay();
+    private final FxRateXmlSupport support = new FxRateXmlSupport();
 
-    ZonedDateTime useDate = date.atStartOfDay(ZoneOffset.UTC);
+    // ---------------- stripBom ----------------
 
-    FxRateEntity entity = mockFxRateEntityForRate(
-            from, "840",
-            to, "643",
-            useDate,
-            new BigDecimal("1"),
-            new BigDecimal("6") // 1/6 = 0.1667
-    );
+    @Test
+    void stripBom_whenNull_thenReturnEmptyString() {
+        assertThat(support.stripBom(null)).isEqualTo("");
+    }
 
-    when(fxRateRepository.findLatestRate(from, to, expectedExclusive))
-            .thenReturn(Optional.of(entity));
+    @Test
+    void stripBom_whenOnlySpaces_thenReturnEmptyString() {
+        assertThat(support.stripBom("   \n\t  ")).isEqualTo("");
+    }
 
-    // when
-    MvcResult mvcResult = mockMvc.perform(get(url)
-                    .param("date", "17.02.2026")          // dd.MM.yyyy
-                    .param("fromCurrencyCode", from)
-                    .param("toCurrencyCode", to))
-            .andExpect(status().isOk())
-            .andReturn();
+    @Test
+    void stripBom_whenBomAtBeginning_thenRemoveBomAndTrim() {
+        String xml = "\uFEFF   <root/>   ";
+        assertThat(support.stripBom(xml)).isEqualTo("<root/>");
+    }
 
-    // then
-    verify(fxRateRepository).findLatestRate(from, to, expectedExclusive);
+    @Test
+    void stripBom_whenNoBom_thenJustTrim() {
+        String xml = "   <root/>   ";
+        assertThat(support.stripBom(xml)).isEqualTo("<root/>");
+    }
 
-    String body = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
-    assertThat(body).contains("USD");
-    assertThat(body).contains("RUB");
-    assertThat(body).contains("0.1667");
+    @Test
+    void stripBom_whenBomNotAtBeginning_thenDoNotRemoveIt() {
+        // BOM внутри строки не должен удаляться (replaceFirst только в начале)
+        String xml = " <r>\uFEFF</r> ";
+        assertThat(support.stripBom(xml)).isEqualTo("<r>\uFEFF</r>");
+    }
+
+    // ---------------- extractRoot ----------------
+
+    @Test
+    void extractRoot_whenBlankAfterStrip_thenThrowIllegalArgumentException() {
+        assertThatThrownBy(() -> support.extractRoot("   \n\t  "))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessage("XML is blank");
+    }
+
+    @Test
+    void extractRoot_whenValidXml_thenReturnRootLocalName() {
+        String xml = "<PutEODPriceNF><a/></PutEODPriceNF>";
+        assertThat(support.extractRoot(xml)).isEqualTo("PutEODPriceNF");
+    }
+
+    @Test
+    void extractRoot_whenValidXmlWithPrologAndWhitespace_thenReturnRootLocalName() {
+        String xml = "   <?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                     "   <root attr=\"1\"><child/></root>";
+        assertThat(support.extractRoot(xml)).isEqualTo("root");
+    }
+
+    @Test
+    void extractRoot_whenValidXmlWithBom_thenReturnRootLocalName() {
+        String xml = "\uFEFF  <root><child/></root> ";
+        assertThat(support.extractRoot(xml)).isEqualTo("root");
+    }
+
+    @Test
+    void extractRoot_whenNoRootElement_thenThrowIllegalArgumentExceptionNoRoot() {
+        // Пустой документ не blank (есть символы), но START_ELEMENT не встретится
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
+        assertThatThrownBy(() -> support.extractRoot(xml))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessage("No root element in XML");
+    }
+
+    @Test
+    void extractRoot_whenInvalidXml_thenThrowIllegalArgumentExceptionWrapped() {
+        String xml = "<root>"; // не закрыт
+
+        assertThatThrownBy(() -> support.extractRoot(xml))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessage("Cannot read XML root tag")
+            .hasCauseInstanceOf(Exception.class);
+    }
 }
-
-@Test
-@DisplayName("тест GET /api/v1/info/currency/(currency)/rate -> если курса нет, возвращается пустой список")
-void getCurrencyRate_whenNoRate_thenReturnEmptyList() throws Exception {
-    String url = "/api/v1/info/currency/currency/rate";
-
-    LocalDate date = LocalDate.of(2026, 2, 17);
-    String from = "USD";
-    String to = "RUB";
-    LocalDateTime expectedExclusive = date.plusDays(1).atStartOfDay();
-
-    when(fxRateRepository.findLatestRate(from, to, expectedExclusive))
-            .thenReturn(Optional.empty());
-
-    MvcResult mvcResult = mockMvc.perform(get(url)
-                    .param("date", "17.02.2026")
-                    .param("fromCurrencyCode", from)
-                    .param("toCurrencyCode", to))
-            .andExpect(status().isOk())
-            .andReturn();
-
-    verify(fxRateRepository).findLatestRate(from, to, expectedExclusive);
-
-    String body = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
-    assertThat(body).contains("[]");
-}
-
 
 ```
