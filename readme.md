@@ -1,34 +1,41 @@
 ```java
-public record ExchangeRateUpsertParams(
-        String rquid,
-        LocalDateTime rqtm,
-        String subType,
-        String code1,
-        String isoNum1,
-        String code2,
-        String isoNum2,
-        LocalDateTime useDate,
-        BigDecimal lotSize,
-        BigDecimal value
-) {}
+@GetMapping("/currencyRate")
+@Operation(operationId = "getCurrencyRate",
+        summary = "Получение курса по параметрам (fromCurrencyIsoNum, toCurrencyIsoNum, date)")
+ResultObj<List<CurrencyRateDto>> getCurrencyRate(
 
-@Modifying
-@Query(value = """
-    INSERT INTO master_data_adapter.exchange_rate (
-        rquid, rqtm, fxratesubtype, code1, isonum1, code2, isonum2, use_date, lot_size, value
-    )
-    VALUES (
-        :#{#p.rquid}, :#{#p.rqtm}, :#{#p.subType}, :#{#p.code1}, :#{#p.isoNum1},
-        :#{#p.code2}, :#{#p.isoNum2}, :#{#p.useDate}, :#{#p.lotSize}, :#{#p.value}
-    )
-    ON CONFLICT (fxratesubtype, isonum1, isonum2, use_date)
-    DO UPDATE SET
-        rquid = EXCLUDED.rquid,
-        rqtm = EXCLUDED.rqtm,
-        code1 = EXCLUDED.code1,
-        code2 = EXCLUDED.code2,
-        lot_size = EXCLUDED.lot_size,
-        value = EXCLUDED.value
-    """, nativeQuery = true)
-int upsert(@Param("p") ExchangeRateUpsertParams p);
+        @Schema(description = "Дата в формате dd.MM.yyyy", example = "11.02.2026")
+        @RequestParam("date")
+        @NotNull
+        @DateTimeFormat(pattern = "dd.MM.yyyy")
+        LocalDate date,
+
+        @Schema(description = "ISO numeric код исходной (base) валюты. Соответствует FXRates@ISOnum1", example = "036")
+        @RequestParam("fromCurrencyIsoNum")
+        @NotBlank
+        String fromCurrencyIsoNum,
+
+        @Schema(description = "ISO numeric код целевой (quote) валюты. Соответствует FXRates@ISOnum2", example = "643")
+        @RequestParam("toCurrencyIsoNum")
+        @NotBlank
+        String toCurrencyIsoNum
+);
+
+@Override
+public ResultObj<List<CurrencyRateDto>> getCurrencyRate(
+        @RequestParam("date") LocalDate date,
+        @RequestParam("fromCurrencyIsoNum") String fromCurrencyIsoNum,
+        @RequestParam("toCurrencyIsoNum") String toCurrencyIsoNum) {
+
+    List<CurrencyRateDto> items = currencyService.getCurrencyRate(date, fromCurrencyIsoNum, toCurrencyIsoNum);
+
+    String description = "Найдено записей: %d на дату %s для пересчета из %s в %s"
+            .formatted(items.size(), date, fromCurrencyIsoNum, toCurrencyIsoNum);
+
+    ResultObj<List<CurrencyRateDto>> result = new ResultObj<>();
+    result.addMessages(success(message: "Поиск выполнен", target: null, description));
+    result.setData(items);
+    result.setCount((long) items.size());
+    return result;
+}
 ```
