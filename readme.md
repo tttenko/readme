@@ -1,12 +1,40 @@
 ```java/**
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.*;
-import org.mockito.junit.jupiter.MockitoExtension;
+@ExtendWith(MockitoExtension.class)
+class CurrencyRateKafkaListenerTest {
 
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.Mockito.*;
+    @Mock
+    private CurrencyRateMessageProcessor processor;
+
+    private CurrencyRateKafkaListener listener;
+
+    @BeforeEach
+    void setUp() {
+        listener = new CurrencyRateKafkaListener(processor);
+    }
+
+    @Test
+    void handleMessage_shouldDelegateToProcessor() {
+        ConsumerRecord<String, String> record = new ConsumerRecord<>("t", 0, 1L, "k", "<PutEODPriceNf/>");
+
+        listener.handleMessage(record);
+
+        verify(processor).process(record);
+        verifyNoMoreInteractions(processor);
+    }
+
+    @Test
+    void handleMessage_shouldPropagateExceptionFromProcessor() {
+        ConsumerRecord<String, String> record = new ConsumerRecord<>("t", 0, 1L, "k", "<bad/>");
+        RuntimeException ex = new RuntimeException("boom");
+
+        doThrow(ex).when(processor).process(record);
+
+        Throwable thrown = catchThrowable(() -> listener.handleMessage(record));
+
+        assertThat(thrown).isSameAs(ex);
+        verify(processor).process(record);
+        verifyNoMoreInteractions(processor);
+    }
+}
 
 ```
