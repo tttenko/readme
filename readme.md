@@ -1,8 +1,12 @@
 ```java/**
 @Test
-@DisplayName("тест GET {host}/api/v1/info/currency/rate?date=2026-02-17&fromCurrencyCode=USD&toCurrencyCode=RUB -> 1 элемент")
+@DisplayName("тест GET /api/v1/info/currency/(currency)/rate -> 1 элемент")
 void getCurrencyRate_whenRateExists_thenReturnOneItem() throws Exception {
     // given
+    // ВАЖНО: путь берём такой, какой получается из ваших аннотаций:
+    // /api/v1/info/currency + /currency/rate = /api/v1/info/currency/currency/rate
+    String url = "/api/v1/info/currency/currency/rate";
+
     LocalDate date = LocalDate.of(2026, 2, 17);
     String from = "USD";
     String to = "RUB";
@@ -22,8 +26,8 @@ void getCurrencyRate_whenRateExists_thenReturnOneItem() throws Exception {
             .thenReturn(Optional.of(entity));
 
     // when
-    MvcResult mvcResult = mockMvc.perform(get("/api/v1/info/currency/rate")
-                    .param("date", "2026-02-17")
+    MvcResult mvcResult = mockMvc.perform(get(url)
+                    .param("date", "17.02.2026")          // dd.MM.yyyy
                     .param("fromCurrencyCode", from)
                     .param("toCurrencyCode", to))
             .andExpect(status().isOk())
@@ -33,10 +37,36 @@ void getCurrencyRate_whenRateExists_thenReturnOneItem() throws Exception {
     verify(fxRateRepository).findLatestRate(from, to, expectedExclusive);
 
     String body = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
-
-    // Проверяем ключевые значения в ответе (не завязываемся на структуру ResultObj)
     assertThat(body).contains("USD");
     assertThat(body).contains("RUB");
-    assertThat(body).contains("0.1667"); // currencyRate = 1/6 с scale=4, HALF_UP
+    assertThat(body).contains("0.1667");
 }
+
+@Test
+@DisplayName("тест GET /api/v1/info/currency/(currency)/rate -> если курса нет, возвращается пустой список")
+void getCurrencyRate_whenNoRate_thenReturnEmptyList() throws Exception {
+    String url = "/api/v1/info/currency/currency/rate";
+
+    LocalDate date = LocalDate.of(2026, 2, 17);
+    String from = "USD";
+    String to = "RUB";
+    LocalDateTime expectedExclusive = date.plusDays(1).atStartOfDay();
+
+    when(fxRateRepository.findLatestRate(from, to, expectedExclusive))
+            .thenReturn(Optional.empty());
+
+    MvcResult mvcResult = mockMvc.perform(get(url)
+                    .param("date", "17.02.2026")
+                    .param("fromCurrencyCode", from)
+                    .param("toCurrencyCode", to))
+            .andExpect(status().isOk())
+            .andReturn();
+
+    verify(fxRateRepository).findLatestRate(from, to, expectedExclusive);
+
+    String body = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+    assertThat(body).contains("[]");
+}
+
+
 ```
