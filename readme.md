@@ -10,9 +10,31 @@ public class CurrencyRateProcessor {
     private final FxRateIngestService ingestService;
 
     public void process(ConsumerRecord<String, String> record) {
-        String root = fxRateXmlSupport.extractRoot(record.value());
+        if (record == null || record.value() == null) {
+            throw new IllegalArgumentException("Kafka record/value is null");
+        }
+
+        String root;
+        try {
+            root = fxRateXmlSupport.extractRoot(record.value());
+        } catch (IllegalArgumentException e) {
+            throw new InvalidCurrencyRateXmlException(
+                "Cannot resolve routeKey from XML root tag. "
+                    + ", topic=" + record.topic()
+                    + ", partition=" + record.partition()
+                    + ", offset=" + record.offset(),
+                e
+            );
+        }
+
         if (!EXPECTED_ROOT.equals(root)) {
-            throw new IllegalArgumentException("Unexpected XML root tag: " + root);
+            throw new InvalidCurrencyRateXmlException(
+                "Unexpected XML root tag: " + root
+                    + ", expected=" + EXPECTED_ROOT
+                    + ", topic=" + record.topic()
+                    + ", partition=" + record.partition()
+                    + ", offset=" + record.offset()
+            );
         }
 
         String xml = fxRateXmlSupport.stripBom(record.value());
@@ -21,7 +43,14 @@ public class CurrencyRateProcessor {
             PutEodPriceNfDto dto = xmlMapper.readValue(xml, PutEodPriceNfDto.class);
             ingestService.ingest(dto);
         } catch (Exception e) {
-            throw new IllegalArgumentException("Cannot parse PutEODPriceNf XML", e);
+            throw new InvalidCurrencyRateXmlException(
+                "Не удалось распарсить XML " + EXPECTED_ROOT
+                    + ", topic=" + record.topic()
+                    + ", partition=" + record.partition()
+                    + ", offset=" + record.offset()
+                    + ", key=" + record.key(),
+                e
+            );
         }
     }
 }
