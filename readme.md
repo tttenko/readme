@@ -7,12 +7,13 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.List;
 
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -113,7 +114,6 @@ class FxRateIngestServiceTest {
 
     /**
      * (Опционально) фиксирует текущее поведение: если message.fxRates == null, будет NPE на for-each.
-     * Если вы позже добавите валидацию rates == null, этот тест нужно будет поменять.
      */
     @Test
     void ingest_whenRatesIsNull_shouldThrowNullPointerException_currentBehavior() {
@@ -131,26 +131,36 @@ class FxRateIngestServiceTest {
         String requestUid = "REQ-777";
         LocalDateTime requestTime = LocalDateTime.of(2026, 2, 17, 10, 11, 12);
 
+        // то, что реально уйдёт в upsert (берётся из entity)
+        ZonedDateTime rqtm = requestTime.atZone(ZoneOffset.UTC);
+        ZonedDateTime useDate = ZonedDateTime.of(2026, 2, 17, 0, 0, 0, 0, ZoneOffset.UTC);
+
         FxRateXmlDto rate1 = mock(FxRateXmlDto.class);
         FxRateXmlDto rate2 = mock(FxRateXmlDto.class);
 
         FxRateEntity entity1 = mockEntity(
-            requestUid, requestTime,
+            requestUid,
+            rqtm,
             "SPOT",
-            "USD", 840,
-            "RUB", 643,
-            LocalDate.of(2026, 2, 17),
-            1,
+            "USD",
+            "840",
+            "RUB",
+            "643",
+            useDate,
+            new BigDecimal("1"),
             new BigDecimal("91.1234")
         );
 
         FxRateEntity entity2 = mockEntity(
-            requestUid, requestTime,
+            requestUid,
+            rqtm,
             "SPOT",
-            "EUR", 978,
-            "RUB", 643,
-            LocalDate.of(2026, 2, 17),
-            1,
+            "EUR",
+            "978",
+            "RUB",
+            "643",
+            useDate,
+            new BigDecimal("1"),
             new BigDecimal("99.9900")
         );
 
@@ -160,20 +170,28 @@ class FxRateIngestServiceTest {
         PutEodPriceNFDto message = msg(requestUid, requestTime, List.of(rate1, rate2));
 
         ExchangeRateUpsertParams expected1 = new ExchangeRateUpsertParams(
-            requestUid, requestTime, "SPOT",
-            "USD", 840,
-            "RUB", 643,
-            LocalDate.of(2026, 2, 17),
-            1,
+            requestUid,
+            rqtm,
+            "SPOT",
+            "USD",
+            "840",
+            "RUB",
+            "643",
+            useDate,
+            new BigDecimal("1"),
             new BigDecimal("91.1234")
         );
 
         ExchangeRateUpsertParams expected2 = new ExchangeRateUpsertParams(
-            requestUid, requestTime, "SPOT",
-            "EUR", 978,
-            "RUB", 643,
-            LocalDate.of(2026, 2, 17),
-            1,
+            requestUid,
+            rqtm,
+            "SPOT",
+            "EUR",
+            "978",
+            "RUB",
+            "643",
+            useDate,
+            new BigDecimal("1"),
             new BigDecimal("99.9900")
         );
 
@@ -216,14 +234,14 @@ class FxRateIngestServiceTest {
 
     private static FxRateEntity mockEntity(
         String requestUid,
-        LocalDateTime requestTime,
+        ZonedDateTime requestTime,
         String fxRateSubType,
         String fromCode,
-        Integer fromIsoNum,
+        String fromIsoNum,
         String toCode,
-        Integer toIsoNum,
-        LocalDate useDate,
-        Integer lotSize,
+        String toIsoNum,
+        ZonedDateTime useDate,
+        BigDecimal lotSize,
         BigDecimal value
     ) {
         FxRateEntity entity = mock(FxRateEntity.class);
@@ -245,5 +263,4 @@ class FxRateIngestServiceTest {
         return entity;
     }
 }
-
 ```
