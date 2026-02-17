@@ -1,9 +1,22 @@
 ```java
-Этот upsert нужен, чтобы идемпотентно записывать курс по спецификации: в таблице должна существовать ровно одна запись для комбинации (fxratesubtype, isonum1, isonum2, use_date).
+@Mapper(componentModel = "spring")
+public interface FxRateEntityMapper {
 
-Логика такая:
+    @Mapping(target = "id", ignore = true) // если id генерится БД/hibernate
+    @Mapping(target = "requestUid", source = "requestUid")
+    @Mapping(target = "requestTime", source = "requestTime")
 
-если записи с таким ключом ещё нет — делаем INSERT;
+    @Mapping(target = "fxRateSubType", source = "fxRateXmlDto.fxRateSubType")
 
-если уже есть (пришла повторная выгрузка/дубликат/обновление за ту же дату) — по ON CONFLICT (...) DO UPDATE обновляем технические и значимые поля (rquid, rgtm, code1, code2, lot_size, value) вместо создания дубля.
+    @Mapping(target = "fromCurrencyCode", source = "fxRateXmlDto.code1")
+    @Mapping(target = "fromCurrencyIsoNum", source = "fxRateXmlDto.isoNum1")
+
+    @Mapping(target = "toCurrencyCode", source = "fxRateXmlDto.code2")
+    @Mapping(target = "toCurrencyIsoNum", source = "fxRateXmlDto.isoNum2")
+
+    @Mapping(target = "useDate", source = "fxRateXmlDto.useDate")
+    @Mapping(target = "lotSize", source = "fxRateXmlDto.lotSize")
+    @Mapping(target = "value", source = "fxRateXmlDto.value")
+    FxRateEntity toEntity(String requestUid, ZonedDateTime requestTime, FxRateXmlDto fxRateXmlDto);
+}
 ```
