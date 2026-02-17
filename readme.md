@@ -1,61 +1,71 @@
 ```java/**
-@SpringBootTest(classes = CurrencyRateKafkaPropsTest.TestConfig.class)
-@TestPropertySource(properties = {
-        "app.kafka.currency-rate.topic=topic-1",
-        "app.kafka.currency-rate.group-id=group-1",
-        "app.kafka.currency-rate.servers=localhost:9092",
-        "app.kafka.currency-rate.auto-offset-reset=earliest",
-        "app.kafka.currency-rate.concurrency=3",
-        "app.kafka.currency-rate.backoff-ms=1500",
-        "app.kafka.currency-rate.max-attempts=7",
-        "app.kafka.currency-rate.key-aliases=alias1,alias2"
-})
-class CurrencyRateKafkaPropsTest {
-
-    @Autowired
-    private CurrencyRateKafkaProps props;
+class FxRateEntityEqualsHashCodeTest {
 
     @Test
-    void shouldBindConfigurationProperties() {
-        assertThat(props.topic()).isEqualTo("topic-1");
-        assertThat(props.groupId()).isEqualTo("group-1");
-        assertThat(props.servers()).isEqualTo("localhost:9092");
-        assertThat(props.autoOffsetReset()).isEqualTo("earliest");
-        assertThat(props.concurrency()).isEqualTo(3);
-        assertThat(props.backoffMs()).isEqualTo(1500L);
-        assertThat(props.maxAttempts()).isEqualTo(7L);
-        assertThat(props.keyAliases()).isEqualTo("alias1,alias2");
+    void equals_whenSameInstance_thenTrue() {
+        FxRateEntity e = new FxRateEntity();
+        assertThat(e.equals(e)).isTrue();
     }
 
-    @Configuration
-    @EnableConfigurationProperties(CurrencyRateKafkaProps.class)
-    static class TestConfig {
+    @Test
+    void equals_whenOtherIsNull_thenFalse() {
+        FxRateEntity e = new FxRateEntity();
+        assertThat(e.equals(null)).isFalse();
     }
-}
 
-class FxRateEntityMapperTest {
+    @Test
+    void equals_whenOtherDifferentType_thenFalse() {
+        FxRateEntity e = new FxRateEntity();
+        assertThat(e.equals("x")).isFalse();
+    }
 
-    private final FxRateEntityMapper mapper = new FxRateEntityMapper() {
-        @Override
-        public FxRateEntity toEntity(String requestUid, LocalDateTime requestTime, FxRateXmlDto fxRateXmlDto) {
-            return null; // нам в этих тестах не нужен mapstruct mapping
+    @Test
+    void equals_whenIdNull_thenFalseEvenIfOtherAlsoIdNull() {
+        FxRateEntity a = new FxRateEntity();
+        FxRateEntity b = new FxRateEntity();
+
+        // оба id = null
+        assertThat(a.equals(b)).isFalse();
+        assertThat(b.equals(a)).isFalse();
+    }
+
+    @Test
+    void equals_whenSameNonNullId_thenTrue_andHashCodeConsistent() {
+        FxRateEntity a = new FxRateEntity();
+        FxRateEntity b = new FxRateEntity();
+
+        UUID id = UUID.randomUUID();
+        setId(a, id);
+        setId(b, id);
+
+        assertThat(a.equals(b)).isTrue();
+        assertThat(b.equals(a)).isTrue();
+        assertThat(a.hashCode()).isEqualTo(b.hashCode());
+    }
+
+    @Test
+    void equals_whenDifferentNonNullId_thenFalse() {
+        FxRateEntity a = new FxRateEntity();
+        FxRateEntity b = new FxRateEntity();
+
+        setId(a, UUID.randomUUID());
+        setId(b, UUID.randomUUID());
+
+        assertThat(a.equals(b)).isFalse();
+        assertThat(b.equals(a)).isFalse();
+    }
+
+    // --- helper: выставляем private UUID id ---
+
+    private static void setId(FxRateEntity e, UUID id) {
+        try {
+            // если у вас есть public setId(UUID) — можно заменить на e.setId(id);
+            Field f = FxRateEntity.class.getDeclaredField("id");
+            f.setAccessible(true);
+            f.set(e, id);
+        } catch (Exception ex) {
+            throw new RuntimeException("Cannot set FxRateEntity.id for test", ex);
         }
-    };
-
-    @Test
-    void toZoned_whenNull_thenReturnNull() {
-        assertThat(mapper.toZoned(null)).isNull();
-    }
-
-    @Test
-    void toZoned_whenNotNull_thenReturnZonedInEuropeMoscow() {
-        LocalDateTime dt = LocalDateTime.of(2026, 2, 17, 10, 11, 12);
-
-        ZonedDateTime zdt = mapper.toZoned(dt);
-
-        assertThat(zdt).isNotNull();
-        assertThat(zdt.toLocalDateTime()).isEqualTo(dt);
-        assertThat(zdt.getZone()).isEqualTo(ZoneId.of("Europe/Moscow"));
     }
 }
 
