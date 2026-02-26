@@ -1,30 +1,66 @@
 ```java/**
-public interface CalendarDateController {
+@ExtendWith(MockitoExtension.class)
+class CalendarDateServiceTest {
 
-    String DATE_REGEX = "\\d{4}-\\d{2}-\\d{2}$"; // если где-то всё же нужен regex
+    @Mock
+    private CacheGetOrLoadService cacheGetOrLoadService;
 
-    @GetMapping("/day-type")
-    ResultObj<List<CalendarDateDto>> searchProdCalendarDatesByDate(
-        @ArraySchema(
-            schema = @Schema(
-                description = "Дата в формате yyyy-MM-dd (ISO-8601)",
-                example = "2026-05-05"
-            )
-        )
-        @RequestParam("date")
-        @NotEmpty(message = "Параметр date должен содержать хотя бы одну дату")
-        @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE)
-        List<@jakarta.validation.constraints.NotNull(message = "date не должен быть null") LocalDate> date
-    );
-}
+    // ДОБАВЬ: зависимость, из-за которой сейчас NPE
+    @Mock
+    private CalendarHelper calendarHelper;
 
-@Override
-public ResultObj<List<CalendarDateDto>> searchProdCalendarDatesByDate(
-    @RequestParam("date")
-    @NotEmpty(message = "Параметр date должен содержать хотя бы одну дату")
-    @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
-    List<@NotNull LocalDate> date
-) {
-    return getSuccessResponse(prodCalendDateService.searchByDates(date));
+    @InjectMocks
+    private CalendarDateService calendarDateService;
+
+    @Test
+    void givenDates_whenSearchByDates_thenUseCacheGetOrLoadService() {
+        // given
+        List<LocalDate> dateList = List.of(
+            LocalDate.of(2026, 5, 25),
+            LocalDate.of(2026, 5, 26)
+        );
+
+        List<String> expectedKeys = dateList.stream()
+            .map(d -> d.format(DateTimeFormatter.ISO_DATE))
+            .toList();
+
+        List<CalendarDateDto> loaded = List.of(new CalendarDateDto(), new CalendarDateDto());
+
+        when(cacheGetOrLoadService.<CalendarDateDto>fetchData(
+            CalendarDateService.PROD_CALENDAR_DATE_BY_DATE,
+            expectedKeys
+        )).thenReturn(loaded);
+
+        // when
+        List<CalendarDateDto> result = calendarDateService.searchByDates(dateList);
+
+        // then
+        assertEquals(loaded, result);
+        verify(cacheGetOrLoadService)
+            .fetchData(CalendarDateService.PROD_CALENDAR_DATE_BY_DATE, expectedKeys);
+        verifyNoMoreInteractions(cacheGetOrLoadService);
+    }
+
+    @Test
+    void givenEmptyDates_whenSearchByDates_thenPassEmptyListToCache() {
+        // given
+        List<LocalDate> dateList = List.of();
+        List<String> expectedKeys = List.of();
+        List<CalendarDateDto> loaded = List.of(new CalendarDateDto());
+
+        when(cacheGetOrLoadService.<CalendarDateDto>fetchData(
+            CalendarDateService.PROD_CALENDAR_DATE_BY_DATE,
+            expectedKeys
+        )).thenReturn(loaded);
+
+        // when
+        List<CalendarDateDto> result = calendarDateService.searchByDates(dateList);
+
+        // then
+        assertEquals(loaded, result);
+        verify(cacheGetOrLoadService)
+            .fetchData(CalendarDateService.PROD_CALENDAR_DATE_BY_DATE, expectedKeys);
+        verifyNoMoreInteractions(cacheGetOrLoadService);
+    }
 }
 ```
