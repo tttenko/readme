@@ -1,66 +1,39 @@
 ```java/**
-@ExtendWith(MockitoExtension.class)
-class CalendarDateServiceTest {
+@Slf4j
+@Component
+@RequiredArgsConstructor
+@ConditionalOnProperty(prefix = "app.kafka", name = "enabled", havingValue = "true", matchIfMissing = true)
+public class CurrencyRateKafkaListener {
 
-    @Mock
-    private CacheGetOrLoadService cacheGetOrLoadService;
+    private final CurrencyRateMessageProcessor processor;
 
-    // ДОБАВЬ: зависимость, из-за которой сейчас NPE
-    @Mock
-    private CalendarHelper calendarHelper;
-
-    @InjectMocks
-    private CalendarDateService calendarDateService;
-
-    @Test
-    void givenDates_whenSearchByDates_thenUseCacheGetOrLoadService() {
-        // given
-        List<LocalDate> dateList = List.of(
-            LocalDate.of(2026, 5, 25),
-            LocalDate.of(2026, 5, 26)
+    @KafkaListener(
+        topics = "${app.kafka.currency-rate.topic}",
+        containerFactory = "currencyRateContainerFactory"
+    )
+    public void handleMessage(ConsumerRecord<String, String> r) {
+        // Факт получения сообщения
+        log.info("KAFKA IN  topic={} partition={} offset={} key={} ts={} headers={} valueSize={}",
+                r.topic(),
+                r.partition(),
+                r.offset(),
+                r.key(),
+                r.timestamp(),
+                r.headers(),
+                r.value() == null ? null : r.value().length()
         );
 
-        List<String> expectedKeys = dateList.stream()
-            .map(d -> d.format(DateTimeFormatter.ISO_DATE))
-            .toList();
-
-        List<CalendarDateDto> loaded = List.of(new CalendarDateDto(), new CalendarDateDto());
-
-        when(cacheGetOrLoadService.<CalendarDateDto>fetchData(
-            CalendarDateService.PROD_CALENDAR_DATE_BY_DATE,
-            expectedKeys
-        )).thenReturn(loaded);
-
-        // when
-        List<CalendarDateDto> result = calendarDateService.searchByDates(dateList);
-
-        // then
-        assertEquals(loaded, result);
-        verify(cacheGetOrLoadService)
-            .fetchData(CalendarDateService.PROD_CALENDAR_DATE_BY_DATE, expectedKeys);
-        verifyNoMoreInteractions(cacheGetOrLoadService);
-    }
-
-    @Test
-    void givenEmptyDates_whenSearchByDates_thenPassEmptyListToCache() {
-        // given
-        List<LocalDate> dateList = List.of();
-        List<String> expectedKeys = List.of();
-        List<CalendarDateDto> loaded = List.of(new CalendarDateDto());
-
-        when(cacheGetOrLoadService.<CalendarDateDto>fetchData(
-            CalendarDateService.PROD_CALENDAR_DATE_BY_DATE,
-            expectedKeys
-        )).thenReturn(loaded);
-
-        // when
-        List<CalendarDateDto> result = calendarDateService.searchByDates(dateList);
-
-        // then
-        assertEquals(loaded, result);
-        verify(cacheGetOrLoadService)
-            .fetchData(CalendarDateService.PROD_CALENDAR_DATE_BY_DATE, expectedKeys);
-        verifyNoMoreInteractions(cacheGetOrLoadService);
+        long t0 = System.currentTimeMillis();
+        try {
+            processor.process(r);
+            log.info("KAFKA OK  topic={} partition={} offset={} tookMs={}",
+                    r.topic(), r.partition(), r.offset(), (System.currentTimeMillis() - t0));
+        } catch (Exception e) {
+            // Важно: чтобы точно было видно падение обработки
+            log.error("KAFKA FAIL topic={} partition={} offset={} key={} err={}",
+                    r.topic(), r.partition(), r.offset(), r.key(), e.toString(), e);
+            throw e; // не глотаем, чтобы error handler отработал корректно
+        }
     }
 }
 ```
