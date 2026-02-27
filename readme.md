@@ -1,88 +1,34 @@
 ```java/**
 class DayTypeTest {
 
-    @Test
-    void givenNullRawValue_whenParseOrDefault_thenReturnsCommon() {
-        // given
-        String rawValue = null;
-
-        // when
+    @ParameterizedTest(name = "rawValue={0} -> {1}")
+    @MethodSource("parseOrDefaultCases")
+    void parseOrDefault_shouldReturnExpectedDayType(String rawValue, DayType expected) {
         DayType result = DayType.parseOrDefault(rawValue);
-
-        // then
-        assertThat(result).isEqualTo(DayType.COMMON);
+        assertThat(result).isEqualTo(expected);
     }
 
-    @Test
-    void givenBlankRawValue_whenParseOrDefault_thenReturnsCommon() {
-        // given
-        String rawValue = "   ";
+    static Stream<Arguments> parseOrDefaultCases() {
+        return Stream.of(
+            // default branch: !hasText(rawValue) => COMMON
+            Arguments.of(null, DayType.COMMON),
+            Arguments.of("", DayType.COMMON),
+            Arguments.of("   ", DayType.COMMON),
+            Arguments.of("\t", DayType.COMMON),
 
-        // when
-        DayType result = DayType.parseOrDefault(rawValue);
+            // happy-path: matches by internal "value"
+            Arguments.of("1", DayType.COMMON),
+            Arguments.of(" 1 ", DayType.COMMON),
+            Arguments.of("4", DayType.WORK),
+            Arguments.of(" 4 ", DayType.WORK),
+            Arguments.of("0", DayType.UNDEFINED),
+            Arguments.of(" 0 ", DayType.UNDEFINED),
 
-        // then
-        assertThat(result).isEqualTo(DayType.COMMON);
-    }
-
-    @Test
-    void givenValueWithSpaces_whenParseOrDefault_thenStripsAndParses() {
-        // given
-        String rawValue = " 4 ";
-
-        // when
-        DayType result = DayType.parseOrDefault(rawValue);
-
-        // then
-        assertThat(result).isEqualTo(DayType.WORK);
-    }
-
-    @Test
-    void givenCommonValue_whenParseOrDefault_thenReturnsCommon() {
-        // given
-        String rawValue = "1";
-
-        // when
-        DayType result = DayType.parseOrDefault(rawValue);
-
-        // then
-        assertThat(result).isEqualTo(DayType.COMMON);
-    }
-
-    @Test
-    void givenUndefinedValue_whenParseOrDefault_thenReturnsUndefined() {
-        // given
-        String rawValue = "0";
-
-        // when
-        DayType result = DayType.parseOrDefault(rawValue);
-
-        // then
-        assertThat(result).isEqualTo(DayType.UNDEFINED);
-    }
-
-    @Test
-    void givenUnknownValue_whenParseOrDefault_thenReturnsCommon() {
-        // given
-        String rawValue = "999";
-
-        // when
-        DayType result = DayType.parseOrDefault(rawValue);
-
-        // then
-        assertThat(result).isEqualTo(DayType.COMMON);
-    }
-
-    @Test
-    void givenNonNumericValue_whenParseOrDefault_thenReturnsCommon() {
-        // given
-        String rawValue = "WORK";
-
-        // when
-        DayType result = DayType.parseOrDefault(rawValue);
-
-        // then
-        assertThat(result).isEqualTo(DayType.COMMON);
+            // fallback: unknown => COMMON
+            Arguments.of("999", DayType.COMMON),
+            Arguments.of("WORK", DayType.COMMON),
+            Arguments.of("work", DayType.COMMON)
+        );
     }
 }
 ```
