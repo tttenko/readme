@@ -1,18 +1,20 @@
 ```java/**
-@Query(value = """
-    SELECT *
-    FROM exchange_rate
-    WHERE from_currency_code = :fromCurrencyCode
-      AND to_currency_code   = :toCurrencyCode
-      AND use_date < :useDateExclusive
-    ORDER BY use_date DESC
-    LIMIT 1
-    """, nativeQuery = true)
-Optional<FxRateEntity> findLatestRateNative(
-        @Param("fromCurrencyCode") String fromCurrencyCode,
-        @Param("toCurrencyCode") String toCurrencyCode,
-        @Param("useDateExclusive") ZonedDateTime useDateExclusive
-);
+@Query("""
+        select fx
+        from FxRateEntity fx
+        where fx.fromCurrencyCode = :fromCurrencyCode
+          and fx.toCurrencyCode   = :toCurrencyCode
+          and fx.useDate < :useDateExclusive
+        order by fx.useDate desc
+    """)
+    List<FxRateEntity> findLatestRate(
+            @Param("fromCurrencyCode") String fromCurrencyCode,
+            @Param("toCurrencyCode") String toCurrencyCode,
+            @Param("useDateExclusive") ZonedDateTime useDateExclusive,
+            Pageable pageable
+    );
+
+    
 
 
 ```
