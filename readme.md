@@ -1,6 +1,6 @@
 ```java/**
 @ExtendWith(MockitoExtension.class)
-class WorkDayCalculatorTest {
+class WorkDayCalculatorRangeLoadingTest {
 
     @Mock
     private CalendarHelper calendarHelper;
@@ -13,152 +13,111 @@ class WorkDayCalculatorTest {
     }
 
     @Test
-    void givenForwardAndCalendarContainsWorkAndNonWorkDays_whenCalculate_thenReturnsAllDaysUntilNumDaysPlusOneWorkDaysReached() {
+    void givenForwardAndNumDaysWithinPrefetchWindow_whenCalculate_thenLoadsOnceAndDoesNotReload() {
         // given
-        LocalDate start = LocalDate.of(2026, 1, 30);
-        int numDays = 2; // при текущем while(dayCount>-1) => доберет 3 рабочих дня
+        LocalDate start = LocalDate.of(2026, 1, 1);
+        int numDays = 10; // при всех WORK => итераций будет 11, это точно внутри окна (32 даты)
 
-        // Сценарий:
-        // 30 WORK  (work#1)
-        // 31 COMMON
-        // 01 COMMON
-        // 02 WORK  (work#2)
-        // 03 WORK  (work#3) -> после него dayCount станет -1 и цикл завершится
-        Map<String, CalendarDateDto> map = new LinkedHashMap<>();
-        map.put(start.toString(), dto(start, DayType.WORK));
-        map.put(start.plusDays(1).toString(), dto(start.plusDays(1), DayType.COMMON));
-        map.put(start.plusDays(2).toString(), dto(start.plusDays(2), DayType.COMMON));
-        map.put(start.plusDays(3).toString(), dto(start.plusDays(3), DayType.WORK));
-        map.put(start.plusDays(4).toString(), dto(start.plusDays(4), DayType.WORK));
-
-        when(calendarHelper.getDates(eq(start), any(Duration.class), eq(true))).thenReturn(map);
+        when(calendarHelper.getDates(any(LocalDate.class), eq(Duration.ofDays(31)), eq(true)))
+                .thenAnswer(inv -> buildPrefetchMap(inv.getArgument(0), true));
 
         // when
         List<CalendarDateDto> result = calculator.calculate(start, numDays, true);
 
         // then
-        assertThat(result).hasSize(5);
-        assertThat(result)
-                .extracting(CalendarDateDto::getIsoDate)
-                .containsExactly(
-                        "2026-01-30",
-                        "2026-01-31",
-                        "2026-02-01",
-                        "2026-02-02",
-                        "2026-02-03"
-                );
+        assertThat(result).hasSize(numDays + 1);
+        assertThat(result.get(0).getIsoDate()).isEqualTo("2026-01-01");
+        assertThat(result.get(result.size() - 1).getIsoDate()).isEqualTo(start.plusDays(numDays).toString());
 
-        // WORK дни внутри результата = 3 (numDays + 1)
-        long workCount = result.stream().filter(d -> d.getDayType().equals(DayType.WORK)).count();
-        assertThat(workCount).isEqualTo(3);
-
-        verify(calendarHelper, times(1)).getDates(eq(start), any(Duration.class), eq(true));
+        // самое важное: ровно 1 загрузка окна
+        verify(calendarHelper, times(1)).getDates(eq(start), eq(Duration.ofDays(31)), eq(true));
         verifyNoMoreInteractions(calendarHelper);
     }
 
     @Test
-    void givenBackwardAndCalendarContainsWorkAndNonWorkDays_whenCalculate_thenReturnsAllDaysUntilNumDaysPlusOneWorkDaysReached() {
+    void givenForwardAndNumDaysCrossesPrefetchWindow_whenCalculate_thenReloadsExactlyWhenLeavingWindow() {
         // given
-        LocalDate start = LocalDate.of(2026, 1, 30);
-        int numDays = 1; // при текущем while(dayCount>-1) => доберет 2 рабочих дня
+        LocalDate start = LocalDate.of(2026, 1, 1);
 
-        // Сценарий назад:
-        // 30 WORK (work#1)
-        // 29 COMMON
-        // 28 WORK (work#2) -> после него dayCount станет -1 и цикл завершится
-        Map<String, CalendarDateDto> map = new LinkedHashMap<>();
-        map.put(start.toString(), dto(start, DayType.WORK));
-        map.put(start.minusDays(1).toString(), dto(start.minusDays(1), DayType.COMMON));
-        map.put(start.minusDays(2).toString(), dto(start.minusDays(2), DayType.WORK));
+        // Окно содержит 32 даты: start .. start+31 (inclusive).
+        // Если все дни WORK, то цикл делает numDays+1 итераций.
+        // Чтобы гарантированно выйти за окно в 32 даты, нужно numDays+1 > 32 => numDays >= 32.
+        int numDays = 32; // итераций 33 => обязательно вторая загрузка
 
-        when(calendarHelper.getDates(eq(start), any(Duration.class), eq(false))).thenReturn(map);
+        when(calendarHelper.getDates(any(LocalDate.class), eq(Duration.ofDays(31)), eq(true)))
+                .thenAnswer(inv -> buildPrefetchMap(inv.getArgument(0), true));
+
+        // when
+        List<CalendarDateDto> result = calculator.calculate(start, numDays, true);
+
+        // then
+        assertThat(result).hasSize(numDays + 1);
+        assertThat(result)
+                .extracting(CalendarDateDto::getIsoDate)
+                .startsWith("2026-01-01")
+                .endsWith(start.plusDays(numDays).toString());
+
+        // Проверяем, что догрузка случилась ровно на границе:
+        // первая загрузка: start (покрывает start..start+31)
+        // вторая загрузка: start+32 (когда калькулятор дошел до даты, которой нет в мапе)
+        ArgumentCaptor<LocalDate> startCaptor = ArgumentCaptor.forClass(LocalDate.class);
+        verify(calendarHelper, times(2)).getDates(startCaptor.capture(), eq(Duration.ofDays(31)), eq(true));
+
+        assertThat(startCaptor.getAllValues()).containsExactly(
+                start,
+                start.plusDays(32)
+        );
+
+        verifyNoMoreInteractions(calendarHelper);
+    }
+
+    @Test
+    void givenBackwardAndNumDaysCrossesPrefetchWindow_whenCalculate_thenReloadsExactlyWhenLeavingWindow() {
+        // given
+        LocalDate start = LocalDate.of(2026, 1, 31);
+        int numDays = 32; // итераций 33 => нужна вторая загрузка
+
+        when(calendarHelper.getDates(any(LocalDate.class), eq(Duration.ofDays(31)), eq(false)))
+                .thenAnswer(inv -> buildPrefetchMap(inv.getArgument(0), false));
 
         // when
         List<CalendarDateDto> result = calculator.calculate(start, numDays, false);
 
         // then
-        assertThat(result).hasSize(3);
-        assertThat(result)
-                .extracting(CalendarDateDto::getIsoDate)
-                .containsExactly(
-                        "2026-01-30",
-                        "2026-01-29",
-                        "2026-01-28"
-                );
+        assertThat(result).hasSize(numDays + 1);
+        assertThat(result.get(0).getIsoDate()).isEqualTo(start.toString());
+        assertThat(result.get(result.size() - 1).getIsoDate()).isEqualTo(start.minusDays(numDays).toString());
 
-        long workCount = result.stream().filter(d -> d.getDayType().equals(DayType.WORK)).count();
-        assertThat(workCount).isEqualTo(2);
+        ArgumentCaptor<LocalDate> startCaptor = ArgumentCaptor.forClass(LocalDate.class);
+        verify(calendarHelper, times(2)).getDates(startCaptor.capture(), eq(Duration.ofDays(31)), eq(false));
 
-        verify(calendarHelper, times(1)).getDates(eq(start), any(Duration.class), eq(false));
+        // backward окно: start .. start-31 (inclusive). При выходе: start-32
+        assertThat(startCaptor.getAllValues()).containsExactly(
+                start,
+                start.minusDays(32)
+        );
+
         verifyNoMoreInteractions(calendarHelper);
     }
 
-    @Test
-    void givenForwardAndPrefetchMissingNextDay_whenCalculate_thenFetchesAgainForNextCurrentDate() {
-        // given
-        LocalDate start = LocalDate.of(2026, 1, 30);
-        int numDays = 1; // при текущем while(dayCount>-1) => доберет 2 рабочих дня
-
-        // 1-й вызов: есть только стартовая дата (WORK)
-        Map<String, CalendarDateDto> map1 = new LinkedHashMap<>();
-        map1.put(start.toString(), dto(start, DayType.WORK));
-
-        // 2-й вызов (на 31): добавим 31 COMMON и 01 WORK (чтобы добрать 2-й рабочий день)
-        Map<String, CalendarDateDto> map2 = new LinkedHashMap<>();
-        map2.put(start.plusDays(1).toString(), dto(start.plusDays(1), DayType.COMMON));
-        map2.put(start.plusDays(2).toString(), dto(start.plusDays(2), DayType.WORK));
-
-        when(calendarHelper.getDates(eq(start), any(Duration.class), eq(true))).thenReturn(map1);
-        when(calendarHelper.getDates(eq(start.plusDays(1)), any(Duration.class), eq(true))).thenReturn(map2);
-
-        // when
-        List<CalendarDateDto> result = calculator.calculate(start, numDays, true);
-
-        // then
-        assertThat(result)
-                .extracting(CalendarDateDto::getIsoDate)
-                .containsExactly(
-                        "2026-01-30", // WORK (work#1)
-                        "2026-01-31", // COMMON
-                        "2026-02-01"  // WORK (work#2) -> stop
-                );
-
-        verify(calendarHelper, times(1)).getDates(eq(start), any(Duration.class), eq(true));
-        verify(calendarHelper, times(1)).getDates(eq(start.plusDays(1)), any(Duration.class), eq(true));
-        verifyNoMoreInteractions(calendarHelper);
-    }
-
-    @Test
-    void givenNumDaysZeroAndStartIsWork_whenCalculate_thenStopsAfterOneWorkDayAndReturnsSingleDate() {
-        // given
-        LocalDate start = LocalDate.of(2026, 1, 30);
-        int numDays = 0; // while(dayCount>-1) => нужно 1 WORK день, чтобы dayCount стал -1
-
+    /**
+     * Возвращает "окно предзагрузки" на 31 день, которое в текущей реализации CalendarHelper
+     * обычно превращается в 32 даты (inclusive границы): start..start±31.
+     */
+    private static Map<String, CalendarDateDto> buildPrefetchMap(LocalDate windowStart, boolean isForward) {
         Map<String, CalendarDateDto> map = new LinkedHashMap<>();
-        map.put(start.toString(), dto(start, DayType.WORK));
-
-        when(calendarHelper.getDates(eq(start), any(Duration.class), eq(true))).thenReturn(map);
-
-        // when
-        List<CalendarDateDto> result = calculator.calculate(start, numDays, true);
-
-        // then
-        assertThat(result).hasSize(1);
-        assertThat(result.get(0).getIsoDate()).isEqualTo("2026-01-30");
-
-        verify(calendarHelper, times(1)).getDates(eq(start), any(Duration.class), eq(true));
-        verifyNoMoreInteractions(calendarHelper);
-    }
-
-    private static CalendarDateDto dto(LocalDate date, DayType dayType) {
-        String iso = date.toString(); // yyyy-MM-dd
-        return CalendarDateDto.builder()
-                .isoDate(iso)   // ключ в dateMap
-                .date(iso)
-                .dateShort(iso)
-                .dayType(dayType)
-                .description("OK")
-                .build();
+        for (int i = 0; i <= 31; i++) {
+            LocalDate d = isForward ? windowStart.plusDays(i) : windowStart.minusDays(i);
+            String iso = d.toString();
+            map.put(iso, CalendarDateDto.builder()
+                    .isoDate(iso)
+                    .date(iso)
+                    .dateShort(iso)
+                    .dayType(DayType.WORK) // делаем все WORK, чтобы детерминировать количество итераций
+                    .description("OK")
+                    .build());
+        }
+        return map;
     }
 }
 ```
