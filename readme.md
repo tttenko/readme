@@ -1,137 +1,88 @@
 ```java/**
-@ExtendWith(MockitoExtension.class)
-class CalculatorFactoryTest {
-
-    @Mock
-    private CalendarHelper calendarHelper;
+class DayTypeTest {
 
     @Test
-    void givenWorkDayType_whenGetInstance_thenReturnsWorkDayCalculator() {
+    void givenNullRawValue_whenParseOrDefault_thenReturnsCommon() {
         // given
-        CalculatorFactory factory = new CalculatorFactory(calendarHelper);
+        String rawValue = null;
 
         // when
-        DayRangeCalculator calculator = factory.getInstance(DayType.WORK);
+        DayType result = DayType.parseOrDefault(rawValue);
 
         // then
-        assertThat(calculator).isInstanceOf(WorkDayCalculator.class);
+        assertThat(result).isEqualTo(DayType.COMMON);
     }
 
     @Test
-    void givenCommonDayType_whenGetInstance_thenReturnsCommonDayCalculator() {
+    void givenBlankRawValue_whenParseOrDefault_thenReturnsCommon() {
         // given
-        CalculatorFactory factory = new CalculatorFactory(calendarHelper);
+        String rawValue = "   ";
 
         // when
-        DayRangeCalculator calculator = factory.getInstance(DayType.COMMON);
+        DayType result = DayType.parseOrDefault(rawValue);
 
         // then
-        assertThat(calculator).isInstanceOf(CommonDayCalculator.class);
+        assertThat(result).isEqualTo(DayType.COMMON);
     }
 
     @Test
-    void givenUndefinedDayType_whenGetInstance_thenReturnsCommonDayCalculator() {
+    void givenValueWithSpaces_whenParseOrDefault_thenStripsAndParses() {
         // given
-        CalculatorFactory factory = new CalculatorFactory(calendarHelper);
+        String rawValue = " 4 ";
 
         // when
-        DayRangeCalculator calculator = factory.getInstance(DayType.UNDEFINED);
+        DayType result = DayType.parseOrDefault(rawValue);
 
         // then
-        assertThat(calculator).isInstanceOf(CommonDayCalculator.class);
-    }
-}
-
-
-@ExtendWith(MockitoExtension.class)
-class CalendarDateServiceTest {
-
-    @Mock
-    private CalculatorFactory factory;
-
-    @Mock
-    private CalendarHelper calendarHelper;
-
-    @Mock
-    private DayRangeCalculator calculator;
-
-    private CalendarDateService service;
-
-    @BeforeEach
-    void setUp() {
-        service = new CalendarDateService(factory, calendarHelper);
+        assertThat(result).isEqualTo(DayType.WORK);
     }
 
     @Test
-    void givenParams_whenBuildRange_thenUsesFactoryCalculatorAndDelegatesCalculate() {
+    void givenCommonValue_whenParseOrDefault_thenReturnsCommon() {
         // given
-        LocalDate start = LocalDate.of(2026, 1, 30);
-        int numDays = 3;
-        boolean isForward = true;
-        DayType dayType = DayType.WORK;
-
-        List<CalendarDateDto> expected = List.of(
-                CalendarDateDto.builder().isoDate("2026-01-30").dayType(DayType.WORK).description("OK").build()
-        );
-
-        when(factory.getInstance(dayType)).thenReturn(calculator);
-        when(calculator.calculate(start, numDays, isForward)).thenReturn(expected);
+        String rawValue = "1";
 
         // when
-        List<CalendarDateDto> result = service.buildRange(start, numDays, isForward, dayType);
+        DayType result = DayType.parseOrDefault(rawValue);
 
         // then
-        assertThat(result).isSameAs(expected);
-
-        verify(factory, times(1)).getInstance(dayType);
-        verify(calculator, times(1)).calculate(start, numDays, isForward);
-        verifyNoInteractions(calendarHelper);
+        assertThat(result).isEqualTo(DayType.COMMON);
     }
 
     @Test
-    void givenDates_whenSearchByDates_thenDelegatesToCalendarHelper() {
+    void givenUndefinedValue_whenParseOrDefault_thenReturnsUndefined() {
         // given
-        List<LocalDate> dates = List.of(
-                LocalDate.of(2026, 1, 30),
-                LocalDate.of(2026, 2, 1)
-        );
-
-        List<CalendarDateDto> expected = List.of(
-                CalendarDateDto.builder().isoDate("2026-01-30").dayType(DayType.WORK).description("OK").build()
-        );
-
-        when(calendarHelper.searchByDates(dates)).thenReturn(expected);
+        String rawValue = "0";
 
         // when
-        List<CalendarDateDto> result = service.searchByDates(dates);
+        DayType result = DayType.parseOrDefault(rawValue);
 
         // then
-        assertThat(result).isSameAs(expected);
-
-        verify(calendarHelper, times(1)).searchByDates(dates);
-        verifyNoInteractions(factory);
+        assertThat(result).isEqualTo(DayType.UNDEFINED);
     }
 
     @Test
-    void givenDifferentDayTypes_whenBuildRange_thenPassesSameDayTypeToFactory() {
+    void givenUnknownValue_whenParseOrDefault_thenReturnsCommon() {
         // given
-        LocalDate start = LocalDate.of(2026, 1, 30);
-
-        when(factory.getInstance(any())).thenReturn(calculator);
-        when(calculator.calculate(any(), anyInt(), anyBoolean())).thenReturn(List.of());
+        String rawValue = "999";
 
         // when
-        service.buildRange(start, 1, true, DayType.WORK);
-        service.buildRange(start, 1, true, DayType.COMMON);
-        service.buildRange(start, 1, true, DayType.UNDEFINED);
+        DayType result = DayType.parseOrDefault(rawValue);
 
         // then
-        verify(factory, times(1)).getInstance(DayType.WORK);
-        verify(factory, times(1)).getInstance(DayType.COMMON);
-        verify(factory, times(1)).getInstance(DayType.UNDEFINED);
+        assertThat(result).isEqualTo(DayType.COMMON);
+    }
 
-        verify(calculator, times(3)).calculate(eq(start), eq(1), eq(true));
-        verifyNoInteractions(calendarHelper);
+    @Test
+    void givenNonNumericValue_whenParseOrDefault_thenReturnsCommon() {
+        // given
+        String rawValue = "WORK";
+
+        // when
+        DayType result = DayType.parseOrDefault(rawValue);
+
+        // then
+        assertThat(result).isEqualTo(DayType.COMMON);
     }
 }
 ```
