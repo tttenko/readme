@@ -1,33 +1,95 @@
 ```java/**
-class DayTypeTest {
+class CalendarDateMapperTest {
 
-    @ParameterizedTest(name = "rawValue={0} -> {1}")
-    @MethodSource("parseOrDefaultCases")
-    void parseOrDefault_shouldReturnExpectedDayType(String rawValue, DayType expected) {
-        DayType result = DayType.parseOrDefault(rawValue);
-        assertThat(result).isEqualTo(expected);
+    private CalendarDateMapper mapper;
+
+    @BeforeEach
+    void setUp() {
+        mapper = new CalendarDateMapper(new ObjectMapper());
     }
 
-    static Stream<Arguments> parseOrDefaultCases() {
-        return Stream.of(
-            // default branch: !hasText(rawValue) => COMMON
-            Arguments.of(null, DayType.COMMON),
-            Arguments.of("", DayType.COMMON),
-            Arguments.of("   ", DayType.COMMON),
-            Arguments.of("\t", DayType.COMMON),
+    @Test
+    void mapValuesToDto_whenDateTypeIsWork_thenSetsWorkAndDescription() {
+        // given
+        Map<String, Object> values = Map.of("slug", "2026-01-30");
+        Map<String, Map<String, Object>> attributes = Map.of(
+            "date", Map.of("value", "2026-01-30"),
+            "dateType", dateTypeNode("4", "OK")
+        );
 
-            // happy-path: matches by internal "value"
-            Arguments.of("1", DayType.COMMON),
-            Arguments.of(" 1 ", DayType.COMMON),
-            Arguments.of("4", DayType.WORK),
-            Arguments.of(" 4 ", DayType.WORK),
-            Arguments.of("0", DayType.UNDEFINED),
-            Arguments.of(" 0 ", DayType.UNDEFINED),
+        // when
+        CalendarDateDto dto = mapper.mapValuesToDto(values, attributes);
 
-            // fallback: unknown => COMMON
-            Arguments.of("999", DayType.COMMON),
-            Arguments.of("WORK", DayType.COMMON),
-            Arguments.of("work", DayType.COMMON)
+        // then
+        assertThat(dto.getDateShort()).isEqualTo("2026-01-30");
+        assertThat(dto.getDayType()).isEqualTo(DayType.WORK);
+        assertThat(dto.getDescription()).isEqualTo("OK");
+    }
+
+    @Test
+    void mapValuesToDto_whenDateTypeMissing_thenDefaultsToCommonAndNullDescription() {
+        // given
+        Map<String, Object> values = Map.of("slug", "2026-01-30");
+        Map<String, Map<String, Object>> attributes = Map.of(
+            "date", Map.of("value", "2026-01-30")
+            // dateType отсутствует
+        );
+
+        // when
+        CalendarDateDto dto = mapper.mapValuesToDto(values, attributes);
+
+        // then
+        assertThat(dto.getDayType()).isEqualTo(DayType.COMMON);
+        assertThat(dto.getDescription()).isNull();
+    }
+
+    @Test
+    void mapValuesToDto_whenUnknownSlug_thenDefaultsToCommonButKeepsDescription() {
+        // given
+        Map<String, Object> values = Map.of("slug", "2026-01-30");
+        Map<String, Map<String, Object>> attributes = Map.of(
+            "date", Map.of("value", "2026-01-30"),
+            "dateType", dateTypeNode("999", "Что-то")
+        );
+
+        // when
+        CalendarDateDto dto = mapper.mapValuesToDto(values, attributes);
+
+        // then
+        assertThat(dto.getDayType()).isEqualTo(DayType.COMMON);
+        assertThat(dto.getDescription()).isEqualTo("Что-то");
+    }
+
+    @Test
+    void mapValuesToDto_whenSlugIsNullInTree_thenDefaultsToCommon() {
+        // given
+        Map<String, Object> values = Map.of("slug", "2026-01-30");
+        Map<String, Map<String, Object>> attributes = Map.of(
+            "date", Map.of("value", "2026-01-30"),
+            "dateType", dateTypeNode(null, "Имя есть")
+        );
+
+        // when
+        CalendarDateDto dto = mapper.mapValuesToDto(values, attributes);
+
+        // then
+        assertThat(dto.getDayType()).isEqualTo(DayType.COMMON);
+        assertThat(dto.getDescription()).isEqualTo("Имя есть");
+    }
+
+    private static Map<String, Object> dateTypeNode(String slug, String name) {
+        // под jsonPointer'ы:
+        // "/valueRef/valueRefItem/item/slug"
+        // "/valueRef/valueRefItem/item/name"
+        return Map.of(
+            "valueRef", Map.of(
+                "valueRefItem", Map.of(
+                    "item", Map.of(
+                        "slug", slug,
+                        "name", name
+                    )
+                )
+            )
         );
     }
 }
