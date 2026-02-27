@@ -16,7 +16,7 @@ class CalendarHelperTest {
     void givenForwardRangeWithMissingDates_whenGetDates_thenAddsUndefinedForMissingDates() {
         // given
         LocalDate start = LocalDate.of(2026, 1, 30);
-        Duration duration = Duration.ofDays(2); // 30, 31, 01 (inclusive)
+        Duration duration = Duration.ofDays(2); // 2026-01-30, 2026-01-31, 2026-02-01 (inclusive)
 
         CalendarDateDto d30 = CalendarDateDto.builder()
                 .dateShort("2026-01-30")
@@ -25,10 +25,11 @@ class CalendarHelperTest {
                 .description("OK")
                 .build();
 
+        // В DayType нет NONWORK — используем COMMON как "не WORK" (обычный/нерабочий/любой не-рабочий тип)
         CalendarDateDto d01 = CalendarDateDto.builder()
                 .dateShort("2026-02-01")
                 .date("2026-02-01")
-                .dayType(DayType.NONWORK)
+                .dayType(DayType.COMMON)
                 .description("OK")
                 .build();
 
@@ -43,13 +44,13 @@ class CalendarHelperTest {
         assertThat(result).containsKeys("2026-01-30", "2026-01-31", "2026-02-01");
 
         assertThat(result.get("2026-01-30").getDayType()).isEqualTo(DayType.WORK);
-        assertThat(result.get("2026-02-01").getDayType()).isEqualTo(DayType.NONWORK);
+        assertThat(result.get("2026-02-01").getDayType()).isEqualTo(DayType.COMMON);
 
         CalendarDateDto missing = result.get("2026-01-31");
         assertThat(missing.getDayType()).isEqualTo(DayType.UNDEFINED);
         assertThat(missing.getDescription()).isEqualTo("Нет информации о дне");
 
-        // + проверка, что ушли правильные ключи в fetchData
+        // проверяем, какие ключи ушли в кэш
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<String>> keysCaptor = ArgumentCaptor.forClass(List.class);
         verify(cacheGetOrLoadService, times(1)).fetchData(any(), keysCaptor.capture());
@@ -67,7 +68,7 @@ class CalendarHelperTest {
     void givenBackwardRange_whenGetDates_thenRequestsIsoKeysInBackwardOrderAndFillsMissing() {
         // given
         LocalDate start = LocalDate.of(2026, 1, 30);
-        Duration duration = Duration.ofDays(2); // 30, 29, 28 (inclusive), при isForward=false
+        Duration duration = Duration.ofDays(2); // ожидаем: 30, 29, 28 (inclusive) при isForward=false
 
         CalendarDateDto d30 = CalendarDateDto.builder()
                 .dateShort("2026-01-30")
@@ -174,11 +175,8 @@ class CalendarHelperTest {
     }
 
     /**
-     * Если у вас есть доступ к константе PROD_CALENDAR_DATE_BY_DATE,
-     * замените в verify/when первый аргумент any() на eq(PROD_CALENDAR_DATE_BY_DATE).
-     *
-     * Например:
-     *   verify(cacheGetOrLoadService).fetchData(eq(PROD_CALENDAR_DATE_BY_DATE), keysCaptor.capture());
+     * Если у вас доступна константа PROD_CALENDAR_DATE_BY_DATE, то вместо any() можно сделать:
+     * verify(cacheGetOrLoadService).fetchData(eq(PROD_CALENDAR_DATE_BY_DATE), keysCaptor.capture());
      */
 }
 ```
