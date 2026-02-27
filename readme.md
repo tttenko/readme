@@ -1,4 +1,20 @@
 ```java/**
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.time.Duration;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
+
 @ExtendWith(MockitoExtension.class)
 class CalendarHelperTest {
 
@@ -16,25 +32,26 @@ class CalendarHelperTest {
     void givenForwardRangeWithMissingDates_whenGetDates_thenAddsUndefinedForMissingDates() {
         // given
         LocalDate start = LocalDate.of(2026, 1, 30);
-        Duration duration = Duration.ofDays(2); // 2026-01-30, 2026-01-31, 2026-02-01 (inclusive)
+        Duration duration = Duration.ofDays(2); // 30, 31, 01 (inclusive)
 
         CalendarDateDto d30 = CalendarDateDto.builder()
+                .isoDate("2026-01-30")              // <-- ВАЖНО
                 .dateShort("2026-01-30")
                 .date("2026-01-30")
                 .dayType(DayType.WORK)
                 .description("OK")
                 .build();
 
-        // В DayType нет NONWORK — используем COMMON как "не WORK" (обычный/нерабочий/любой не-рабочий тип)
         CalendarDateDto d01 = CalendarDateDto.builder()
+                .isoDate("2026-02-01")              // <-- ВАЖНО
                 .dateShort("2026-02-01")
                 .date("2026-02-01")
-                .dayType(DayType.COMMON)
+                .dayType(DayType.COMMON)            // не WORK
                 .description("OK")
                 .build();
 
         when(cacheGetOrLoadService.fetchData(any(), any()))
-                .thenReturn(List.of(d30, d01)); // 2026-01-31 отсутствует
+                .thenReturn(List.of(d30, d01)); // 31-го нет
 
         // when
         Map<String, CalendarDateDto> result = calendarHelper.getDates(start, duration, true);
@@ -50,7 +67,6 @@ class CalendarHelperTest {
         assertThat(missing.getDayType()).isEqualTo(DayType.UNDEFINED);
         assertThat(missing.getDescription()).isEqualTo("Нет информации о дне");
 
-        // проверяем, какие ключи ушли в кэш
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<String>> keysCaptor = ArgumentCaptor.forClass(List.class);
         verify(cacheGetOrLoadService, times(1)).fetchData(any(), keysCaptor.capture());
@@ -68,9 +84,10 @@ class CalendarHelperTest {
     void givenBackwardRange_whenGetDates_thenRequestsIsoKeysInBackwardOrderAndFillsMissing() {
         // given
         LocalDate start = LocalDate.of(2026, 1, 30);
-        Duration duration = Duration.ofDays(2); // ожидаем: 30, 29, 28 (inclusive) при isForward=false
+        Duration duration = Duration.ofDays(2); // ожидаем: 30, 29, 28 (inclusive)
 
         CalendarDateDto d30 = CalendarDateDto.builder()
+                .isoDate("2026-01-30")              // <-- ВАЖНО
                 .dateShort("2026-01-30")
                 .date("2026-01-30")
                 .dayType(DayType.WORK)
@@ -113,6 +130,7 @@ class CalendarHelperTest {
         );
 
         CalendarDateDto d30 = CalendarDateDto.builder()
+                .isoDate("2026-01-30")              // <-- не обязательно для searchByDates, но пусть будет консистентно
                 .dateShort("2026-01-30")
                 .date("2026-01-30")
                 .dayType(DayType.WORK)
@@ -173,10 +191,5 @@ class CalendarHelperTest {
                 LocalDate.of(2026, 1, 28)
         );
     }
-
-    /**
-     * Если у вас доступна константа PROD_CALENDAR_DATE_BY_DATE, то вместо any() можно сделать:
-     * verify(cacheGetOrLoadService).fetchData(eq(PROD_CALENDAR_DATE_BY_DATE), keysCaptor.capture());
-     */
 }
 ```
