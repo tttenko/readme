@@ -1,123 +1,184 @@
 ```java/**
-@Test
-void getCurrencyRate_whenRateExists_thenReturnSingleDto_andCallRepoWithExclusiveDate() {
+@ExtendWith(MockitoExtension.class)
+class CalendarHelperTest {
 
-    // given
-    LocalDate date = LocalDate.of(2026, 2, 17);
-    String from = "USD";
-    String to = "RUB";
+    @Mock
+    private CacheGetOrLoadService cacheGetOrLoadService;
 
-    ZonedDateTime expectedExclusive = LocalDateTime
-            .of(2026, 2, 18, 0, 0)
-            .atZone(ZoneId.systemDefault());
+    private CalendarHelper calendarHelper;
 
-    FxRateEntity entity = mock(FxRateEntity.class);
+    @BeforeEach
+    void setUp() {
+        calendarHelper = new CalendarHelper(cacheGetOrLoadService);
+    }
 
-    ZonedDateTime useDate = LocalDateTime
-            .of(2026, 2, 17, 0, 0, 0, 0)
-            .atZone(ZoneId.systemDefault());
+    @Test
+    void givenForwardRangeWithMissingDates_whenGetDates_thenAddsUndefinedForMissingDates() {
+        // given
+        LocalDate start = LocalDate.of(2026, 1, 30);
+        Duration duration = Duration.ofDays(2); // 30, 31, 01 (inclusive)
 
-    BigDecimal value = new BigDecimal("1");
-    BigDecimal lotSize = new BigDecimal("6");
+        CalendarDateDto d30 = CalendarDateDto.builder()
+                .dateShort("2026-01-30")
+                .date("2026-01-30")
+                .dayType(DayType.WORK)
+                .description("OK")
+                .build();
 
-    when(entity.getFromCurrencyCode()).thenReturn(from);
-    when(entity.getFromCurrencyIsoNum()).thenReturn("840");
-    when(entity.getToCurrencyCode()).thenReturn(to);
-    when(entity.getToCurrencyIsoNum()).thenReturn("643");
-    when(entity.getUseDate()).thenReturn(useDate);
-    when(entity.getValue()).thenReturn(value);
-    when(entity.getLotSize()).thenReturn(lotSize);
+        CalendarDateDto d01 = CalendarDateDto.builder()
+                .dateShort("2026-02-01")
+                .date("2026-02-01")
+                .dayType(DayType.NONWORK)
+                .description("OK")
+                .build();
 
-    when(fxRateRepository.findLatestRate(eq(from), eq(to), eq(expectedExclusive), any(Pageable.class)))
-            .thenReturn(Optional.of(entity));
+        when(cacheGetOrLoadService.fetchData(any(), any()))
+                .thenReturn(List.of(d30, d01)); // 2026-01-31 отсутствует
 
-    // when
-    List<CurrencyRateDto> result = currencyService.getCurrencyRate(date, from, to);
+        // when
+        Map<String, CalendarDateDto> result = calendarHelper.getDates(start, duration, true);
 
-    // then
-    assertThat(result).hasSize(1);
+        // then
+        assertThat(result).hasSize(3);
+        assertThat(result).containsKeys("2026-01-30", "2026-01-31", "2026-02-01");
 
-    CurrencyRateDto dto = result.get(0);
-    assertThat(dto.getCode1()).isEqualTo(from);
-    assertThat(dto.getIsoNum1()).isEqualTo("840");
-    assertThat(dto.getCode2()).isEqualTo(to);
-    assertThat(dto.getIsoNum2()).isEqualTo("643");
-    assertThat(dto.getDate()).isEqualTo(date);
-    assertThat(dto.getValue()).isEqualByComparingTo("1");
-    assertThat(dto.getLotSize()).isEqualByComparingTo("6");
-    assertThat(dto.getCurrencyRate()).isEqualByComparingTo("0.1667");
+        assertThat(result.get("2026-01-30").getDayType()).isEqualTo(DayType.WORK);
+        assertThat(result.get("2026-02-01").getDayType()).isEqualTo(DayType.NONWORK);
 
-    ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-    verify(fxRateRepository).findLatestRate(eq(from), eq(to), eq(expectedExclusive), pageableCaptor.capture());
+        CalendarDateDto missing = result.get("2026-01-31");
+        assertThat(missing.getDayType()).isEqualTo(DayType.UNDEFINED);
+        assertThat(missing.getDescription()).isEqualTo("Нет информации о дне");
 
-    Pageable passed = pageableCaptor.getValue();
-    assertThat(passed.getPageNumber()).isEqualTo(0);
-    assertThat(passed.getPageSize()).isEqualTo(1);
+        // + проверка, что ушли правильные ключи в fetchData
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> keysCaptor = ArgumentCaptor.forClass(List.class);
+        verify(cacheGetOrLoadService, times(1)).fetchData(any(), keysCaptor.capture());
 
-    verifyNoInteractions(currencyCacheOps, cacheGetOrLoadService);
-}
+        assertThat(keysCaptor.getValue()).containsExactly(
+                "2026-01-30",
+                "2026-01-31",
+                "2026-02-01"
+        );
 
-@Test
-void getCurrencyRate_whenNoRate_thenReturnEmptyList() {
+        verifyNoMoreInteractions(cacheGetOrLoadService);
+    }
 
-    // given
-    LocalDate date = LocalDate.of(2026, 2, 17);
-    String from = "USD";
-    String to = "RUB";
+    @Test
+    void givenBackwardRange_whenGetDates_thenRequestsIsoKeysInBackwardOrderAndFillsMissing() {
+        // given
+        LocalDate start = LocalDate.of(2026, 1, 30);
+        Duration duration = Duration.ofDays(2); // 30, 29, 28 (inclusive), при isForward=false
 
-    ZonedDateTime expectedExclusive = LocalDateTime
-            .of(2026, 2, 18, 0, 0)
-            .atZone(ZoneId.systemDefault());
+        CalendarDateDto d30 = CalendarDateDto.builder()
+                .dateShort("2026-01-30")
+                .date("2026-01-30")
+                .dayType(DayType.WORK)
+                .description("OK")
+                .build();
 
-    when(fxRateRepository.findLatestRate(eq(from), eq(to), eq(expectedExclusive), any(Pageable.class)))
-            .thenReturn(Optional.empty());
+        when(cacheGetOrLoadService.fetchData(any(), any()))
+                .thenReturn(List.of(d30)); // 29 и 28 будут UNDEFINED
 
-    // when
-    List<CurrencyRateDto> result = currencyService.getCurrencyRate(date, from, to);
+        // when
+        Map<String, CalendarDateDto> result = calendarHelper.getDates(start, duration, false);
 
-    // then
-    assertThat(result).isEmpty();
+        // then
+        assertThat(result).hasSize(3);
+        assertThat(result).containsKeys("2026-01-30", "2026-01-29", "2026-01-28");
 
-    ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-    verify(fxRateRepository).findLatestRate(eq(from), eq(to), eq(expectedExclusive), pageableCaptor.capture());
+        assertThat(result.get("2026-01-30").getDayType()).isEqualTo(DayType.WORK);
+        assertThat(result.get("2026-01-29").getDayType()).isEqualTo(DayType.UNDEFINED);
+        assertThat(result.get("2026-01-28").getDayType()).isEqualTo(DayType.UNDEFINED);
 
-    Pageable passed = pageableCaptor.getValue();
-    assertThat(passed.getPageNumber()).isEqualTo(0);
-    assertThat(passed.getPageSize()).isEqualTo(1);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> keysCaptor = ArgumentCaptor.forClass(List.class);
+        verify(cacheGetOrLoadService, times(1)).fetchData(any(), keysCaptor.capture());
 
-    verifyNoInteractions(currencyCacheOps, cacheGetOrLoadService);
-}
+        assertThat(keysCaptor.getValue()).containsExactly(
+                "2026-01-30",
+                "2026-01-29",
+                "2026-01-28"
+        );
 
-@Test
-void getCurrencyRate_whenLotSizeIsZero_thenThrowArithmeticException() {
+        verifyNoMoreInteractions(cacheGetOrLoadService);
+    }
 
-    // given
-    LocalDate date = LocalDate.of(2026, 2, 17);
-    String from = "USD";
-    String to = "RUB";
+    @Test
+    void givenDatesList_whenSearchByDates_thenPassesIsoDateKeysToCache() {
+        // given
+        List<LocalDate> dates = List.of(
+                LocalDate.of(2026, 1, 30),
+                LocalDate.of(2026, 2, 1)
+        );
 
-    ZonedDateTime expectedExclusive = date.plusDays(1)
-            .atStartOfDay(ZoneId.systemDefault());
+        CalendarDateDto d30 = CalendarDateDto.builder()
+                .dateShort("2026-01-30")
+                .date("2026-01-30")
+                .dayType(DayType.WORK)
+                .description("OK")
+                .build();
 
-    FxRateEntity entity = mock(FxRateEntity.class);
+        when(cacheGetOrLoadService.fetchData(any(), any()))
+                .thenReturn(List.of(d30));
 
-    when(entity.getValue()).thenReturn(new BigDecimal("10"));
-    when(entity.getLotSize()).thenReturn(BigDecimal.ZERO);
+        // when
+        List<CalendarDateDto> result = calendarHelper.searchByDates(dates);
 
-    when(fxRateRepository.findLatestRate(eq(from), eq(to), eq(expectedExclusive), any(Pageable.class)))
-            .thenReturn(Optional.of(entity));
+        // then
+        assertThat(result).containsExactly(d30);
 
-    // when / then
-    assertThatThrownBy(() -> currencyService.getCurrencyRate(date, from, to))
-            .isInstanceOf(ArithmeticException.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> keysCaptor = ArgumentCaptor.forClass(List.class);
+        verify(cacheGetOrLoadService, times(1)).fetchData(any(), keysCaptor.capture());
 
-    ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-    verify(fxRateRepository).findLatestRate(eq(from), eq(to), eq(expectedExclusive), pageableCaptor.capture());
+        assertThat(keysCaptor.getValue()).containsExactly(
+                "2026-01-30",
+                "2026-02-01"
+        );
 
-    Pageable passed = pageableCaptor.getValue();
-    assertThat(passed.getPageNumber()).isEqualTo(0);
-    assertThat(passed.getPageSize()).isEqualTo(1);
+        verifyNoMoreInteractions(cacheGetOrLoadService);
+    }
 
-    verifyNoInteractions(currencyCacheOps, cacheGetOrLoadService);
+    @Test
+    void givenStartAndDuration_whenGetDateRangeForward_thenReturnsInclusiveRange() {
+        // given
+        LocalDate start = LocalDate.of(2026, 1, 30);
+        Duration duration = Duration.ofDays(2);
+
+        // when
+        List<LocalDate> dates = CalendarHelper.getDateRangeForward(start, duration);
+
+        // then
+        assertThat(dates).containsExactly(
+                LocalDate.of(2026, 1, 30),
+                LocalDate.of(2026, 1, 31),
+                LocalDate.of(2026, 2, 1)
+        );
+    }
+
+    @Test
+    void givenStartAndDuration_whenGetDateRangeBackward_thenReturnsInclusiveRange() {
+        // given
+        LocalDate start = LocalDate.of(2026, 1, 30);
+        Duration duration = Duration.ofDays(2);
+
+        // when
+        List<LocalDate> dates = CalendarHelper.getDateRangeBackward(start, duration);
+
+        // then
+        assertThat(dates).containsExactly(
+                LocalDate.of(2026, 1, 30),
+                LocalDate.of(2026, 1, 29),
+                LocalDate.of(2026, 1, 28)
+        );
+    }
+
+    /**
+     * Если у вас есть доступ к константе PROD_CALENDAR_DATE_BY_DATE,
+     * замените в verify/when первый аргумент any() на eq(PROD_CALENDAR_DATE_BY_DATE).
+     *
+     * Например:
+     *   verify(cacheGetOrLoadService).fetchData(eq(PROD_CALENDAR_DATE_BY_DATE), keysCaptor.capture());
+     */
 }
 ```
