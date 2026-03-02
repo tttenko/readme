@@ -1,45 +1,17 @@
 ```java/**
-@Test
-@DisplayName("test GET {host}/api/v1/calendar/day-type/range (default params)")
-void calendarRange_defaultParamsTest() throws Exception {
-    // given
-    LocalDate date = LocalDate.of(2026, 1, 1);
-    int numDays = 2;
+Я использую Pageable именно как механизм ограничения результата (LIMIT 1), а не как полноценную пагинацию.
 
-    when(calendarDateService.buildRange(date, numDays, true, DayType.COMMON))
-            .thenReturn(Collections.emptyList());
+Для пары валют в БД могут существовать записи на разные даты, и под условие
+useDate < :useDateExclusive потенциально попадает 2 и более строк.
 
-    // when + then
-    MvcTestUtils.checkResult(
-            MvcTestUtils.performGetOk(
-                    mockMvc,
-                    "/api/v1/calendar/day-type/range?date=2026-01-01&numDays=2"
-            ),
-            0
-    );
+Ранее метод возвращал Optional, и Hibernate внутри использовал getSingleResult().
+Когда из запроса приходило больше одной строки, выбрасывалось Query did not return a unique result.
 
-    verify(calendarDateService).buildRange(date, numDays, true, DayType.COMMON);
-}
+Сейчас через PageRequest.of(0, 1) на уровне SQL добавляется LIMIT 1, поэтому база возвращает не более одной записи (после сортировки по useDate desc), и ошибка больше не возникает.
 
-@Test
-@DisplayName("test GET {host}/api/v1/calendar/day-type/range (all params)")
-void calendarRange_allParamsTest() throws Exception {
-    // given
-    LocalDate date = LocalDate.of(2026, 1, 1);
-    int numDays = 5;
+Дополнительно:
 
-    when(calendarDateService.buildRange(date, numDays, false, DayType.WORK))
-            .thenReturn(Collections.emptyList());
+Запрос является JPQL, а не native (from FxRateEntity), поэтому схема и таблица резолвятся Hibernate на основании маппинга entity (@Table и/или hibernate.default_schema). Проблемы с relation does not exist здесь быть не должно.
 
-    // when + then
-    MvcTestUtils.checkResult(
-            MvcTestUtils.performGetOk(
-                    mockMvc,
-                    "/api/v1/calendar/day-type/range?date=2026-01-01&numDays=5&isForward=false&dayType=WORK"
-            ),
-            0
-    );
-
-    verify(calendarDateService).buildRange(date, numDays, false, DayType.WORK);
-}
+count query в данном случае не требуется, так как метод возвращает List, а не Page. count нужен только при возврате Page<T>, когда необходимо посчитать общее количество записей. Здесь Pageable используется исключительно для ограничения результата (top-1).
 ```
