@@ -1,18 +1,45 @@
 ```java/**
-private static Map<String, Object> dateTypeNode(String slug, String name) {
-    Map<String, Object> item = new java.util.HashMap<>();
-    item.put("slug", slug);   // null OK
-    item.put("name", name);   // null OK
+@Test
+@DisplayName("test GET {host}/api/v1/calendar/day-type/range (default params)")
+void calendarRange_defaultParamsTest() throws Exception {
+    // given
+    LocalDate date = LocalDate.of(2026, 1, 1);
+    int numDays = 2;
 
-    Map<String, Object> valueRefItem = new java.util.HashMap<>();
-    valueRefItem.put("item", item);
+    when(calendarDateService.buildRange(date, numDays, true, DayType.COMMON))
+            .thenReturn(Collections.emptyList());
 
-    Map<String, Object> valueRef = new java.util.HashMap<>();
-    valueRef.put("valueRefItem", valueRefItem);
+    // when + then
+    MvcTestUtils.checkResult(
+            MvcTestUtils.performGetOk(
+                    mockMvc,
+                    "/api/v1/calendar/day-type/range?date=2026-01-01&numDays=2"
+            ),
+            0
+    );
 
-    Map<String, Object> root = new java.util.HashMap<>();
-    root.put("valueRef", valueRef);
+    verify(calendarDateService).buildRange(date, numDays, true, DayType.COMMON);
+}
 
-    return root;
+@Test
+@DisplayName("test GET {host}/api/v1/calendar/day-type/range (all params)")
+void calendarRange_allParamsTest() throws Exception {
+    // given
+    LocalDate date = LocalDate.of(2026, 1, 1);
+    int numDays = 5;
+
+    when(calendarDateService.buildRange(date, numDays, false, DayType.WORK))
+            .thenReturn(Collections.emptyList());
+
+    // when + then
+    MvcTestUtils.checkResult(
+            MvcTestUtils.performGetOk(
+                    mockMvc,
+                    "/api/v1/calendar/day-type/range?date=2026-01-01&numDays=5&isForward=false&dayType=WORK"
+            ),
+            0
+    );
+
+    verify(calendarDateService).buildRange(date, numDays, false, DayType.WORK);
 }
 ```
