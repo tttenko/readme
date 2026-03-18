@@ -1,99 +1,31 @@
 ```java
 
-@GetMapping("/contract/{contractUuid}/sts")
-    @Operation(
-            operationId = "getStsDataByContractUuid",
-            summary = "Получение страницы СТС по contractUuid"
-    )
-    @ApiResponse(responseCode = "200", description = "Страница СТС успешно получена")
-    @ApiResponse(responseCode = "400", description = "Некорректные параметры запроса")
-    @ApiResponse(responseCode = "500", description = "Внутренняя ошибка сервиса")
-    ResultObj<PageDto<StsDataDto>> getStsDataByContractUuid(
-            @PathVariable("contractUuid")
-            @NotNull(message = "Параметр contractUuid не должен быть null")
-            UUID contractUuid,
+@Getter
+@Setter
+@Schema(description = "Страница с данными")
+public class PageDto<T> {
 
-            @RequestParam(name = "$filter", required = false)
-            String filter,
+    @Schema(description = "Элементы страницы")
+    private List<T> items;
 
-            @RequestParam(name = "$orderby", required = false)
-            String orderBy,
+    @Schema(description = "Номер страницы")
+    private int page;
 
-            @RequestParam(name = "$top")
-            @Min(value = 1, message = "Параметр $top должен быть не меньше 1")
-            @Max(value = 200, message = "Параметр $top должен быть не больше 200")
-            Integer top,
+    @Schema(description = "Размер страницы")
+    private int size;
 
-            @RequestParam(name = "$skip")
-            @Min(value = 0, message = "Параметр $skip должен быть не меньше 0")
-            Integer skip
-    );
+    @Schema(description = "Общее количество элементов")
+    private long totalElements;
 
+    @Schema(description = "Общее количество страниц")
+    private int totalPages;
 
-     @Override
-    public ResultObj<PageDto<StsDataDto>> getStsDataByContractUuid(UUID contractUuid,
-                                                                    String filter,
-                                                                    String orderBy,
-                                                                    Integer top,
-                                                                    Integer skip) {
-        return getSuccessPageResponse(
-                stsDataService.getPageByContractUuid(contractUuid, filter, orderBy, top, skip)
-        );
-    }
+    @Schema(description = "Признак первой страницы")
+    private boolean first;
 
-    @Transactional(readOnly = true)
-    public PageDto<StsDataDto> getPageByContractUuid(UUID contractUuid,
-                                                     String filter,
-                                                     String orderBy,
-                                                     Integer top,
-                                                     Integer skip) {
-
-        Pageable pageable = PageRequest.of(
-                skip / top,
-                top,
-                Sort.by(Sort.Direction.DESC, "createdAt")
-        );
-
-        Page<StsDataEntity> page = stsDataRepository.findAllByContractUuidAndDeleted(contractUuid, false, pageable);
-
-        PageDto<StsDataDto> result = new PageDto<>();
-        result.setItems(page.getContent().stream().map(stsDataMapper::toDto).toList());
-        result.setPage(page.getNumber());
-        result.setSize(page.getSize());
-        result.setTotalElements(page.getTotalElements());
-        result.setTotalPages(page.getTotalPages());
-        result.setFirst(page.isFirst());
-        result.setLast(page.isLast());
-
-        return result;
-    }
-
-    @Transactional(readOnly = true)
-    public PageDto<StsDataDto> getPageByContractUuid(UUID contractUuid,
-                                                     String filter,
-                                                     String orderBy,
-                                                     Integer top,
-                                                     Integer skip) {
-
-        Pageable pageable = PageRequest.of(
-                skip / top,
-                top,
-                Sort.by(Sort.Direction.DESC, "createdAt")
-        );
-
-        Page<StsDataEntity> page = stsDataRepository.findAllByContractUuidAndDeleted(contractUuid, false, pageable);
-
-        PageDto<StsDataDto> result = new PageDto<>();
-        result.setItems(page.getContent().stream().map(stsDataMapper::toDto).toList());
-        result.setPage(page.getNumber());
-        result.setSize(page.getSize());
-        result.setTotalElements(page.getTotalElements());
-        result.setTotalPages(page.getTotalPages());
-        result.setFirst(page.isFirst());
-        result.setLast(page.isLast());
-
-        return result;
-    }
+    @Schema(description = "Признак последней страницы")
+    private boolean last;
+}
 
     public static <T> ResultObj<PageDto<T>> getSuccessPageResponse(PageDto<T> page) {
         ResultObj<PageDto<T>> result = new ResultObj<>();
