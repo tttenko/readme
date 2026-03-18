@@ -1,37 +1,81 @@
 ```java
 
-@Getter
-@Setter
-@Schema(description = "Страница с данными")
-public class PageDto<T> {
+@Service
+@RequiredArgsConstructor
+public class StsDataService {
 
-    @Schema(description = "Элементы страницы")
-    private List<T> items;
+    private final StsDataRepository stsDataRepository;
 
-    @Schema(description = "Номер страницы")
-    private int page;
+    /**
+     * Сохраняет запись СТС.
+     */
+    @Transactional
+    public StsDataEntity create(StsDataEntity entity) {
+        return stsDataRepository.save(entity);
+    }
 
-    @Schema(description = "Размер страницы")
-    private int size;
+    /**
+     * Возвращает страницу записей СТС, связанных с указанным договором и не помеченных как удалённые.
+     */
+    @Transactional(readOnly = true)
+    public Page<StsDataEntity> getPageByContractUuid(UUID contractUuid,
+                                                     Integer top,
+                                                     Integer skip) {
 
-    @Schema(description = "Общее количество элементов")
-    private long totalElements;
+        Pageable pageable = PageRequest.of(
+                skip / top,
+                top,
+                Sort.by(Sort.Direction.DESC, "createdAt")
+        );
 
-    @Schema(description = "Общее количество страниц")
-    private int totalPages;
+        return stsDataRepository.findAllByContractUuidAndDeleted(contractUuid, false, pageable);
+    }
 
-    @Schema(description = "Признак первой страницы")
-    private boolean first;
-
-    @Schema(description = "Признак последней страницы")
-    private boolean last;
+    /**
+     * Возвращает одну запись СТС по её уникальному идентификатору, если она существует и не удалена.
+     */
+    @Transactional(readOnly = true)
+    public StsDataEntity getByUuid(UUID uuid) {
+        return stsDataRepository.findByUuidAndDeleted(uuid, false)
+                .orElseThrow(() -> new EntityNotFoundException("Запись СТС не найдена по uuid: " + uuid));
+    }
 }
 
-    public static <T> ResultObj<PageDto<T>> getSuccessPageResponse(PageDto<T> page) {
-        ResultObj<PageDto<T>> result = new ResultObj<>();
-        result.addMessages(success("Поиск выполнен", null, "Найдено записей: " + page.getTotalElements()));
-        result.setData(page);
-        result.setCount(page.getTotalElements());
+@Component
+@RequiredArgsConstructor
+public class PageDtoMapper {
+
+    private final StsDataMapper stsDataMapper;
+
+    public PageDto<StsDataDto> toStsDataPageDto(Page<StsDataEntity> page) {
+        PageDto<StsDataDto> result = new PageDto<>();
+        result.setItems(page.getContent().stream().map(stsDataMapper::toDto).toList());
+        result.setPage(page.getNumber());
+        result.setSize(page.getSize());
+        result.setTotalElements(page.getTotalElements());
+        result.setTotalPages(page.getTotalPages());
+        result.setFirst(page.isFirst());
+        result.setLast(page.isLast());
         return result;
     }
+}
+
+@Component
+@RequiredArgsConstructor
+public class PageDtoMapper {
+
+    private final StsDataMapper stsDataMapper;
+
+    public PageDto<StsDataDto> toStsDataPageDto(Page<StsDataEntity> page) {
+        PageDto<StsDataDto> result = new PageDto<>();
+        result.setItems(page.getContent().stream().map(stsDataMapper::toDto).toList());
+        result.setPage(page.getNumber());
+        result.setSize(page.getSize());
+        result.setTotalElements(page.getTotalElements());
+        result.setTotalPages(page.getTotalPages());
+        result.setFirst(page.isFirst());
+        result.setLast(page.isLast());
+        return result;
+    }
+}
 ```
