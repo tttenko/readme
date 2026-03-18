@@ -63,4 +63,6 @@ public class GlobalExceptionHandler extends ResponseExceptionHandler {
                 .getMessage(code, args, Locale.getDefault());
     }
 }
+
+error.notFoundData=Запрашиваемые данные не найдены
 ```
