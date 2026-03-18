@@ -1,81 +1,54 @@
 ```java
 
-@Service
+@RestController
 @RequiredArgsConstructor
-public class StsDataService {
+public class StsDataControllerImpl implements StsDataController {
 
-    private final StsDataRepository stsDataRepository;
-
-    /**
-     * Сохраняет запись СТС.
-     */
-    @Transactional
-    public StsDataEntity create(StsDataEntity entity) {
-        return stsDataRepository.save(entity);
-    }
-
-    /**
-     * Возвращает страницу записей СТС, связанных с указанным договором и не помеченных как удалённые.
-     */
-    @Transactional(readOnly = true)
-    public Page<StsDataEntity> getPageByContractUuid(UUID contractUuid,
-                                                     Integer top,
-                                                     Integer skip) {
-
-        Pageable pageable = PageRequest.of(
-                skip / top,
-                top,
-                Sort.by(Sort.Direction.DESC, "createdAt")
-        );
-
-        return stsDataRepository.findAllByContractUuidAndDeleted(contractUuid, false, pageable);
-    }
-
-    /**
-     * Возвращает одну запись СТС по её уникальному идентификатору, если она существует и не удалена.
-     */
-    @Transactional(readOnly = true)
-    public StsDataEntity getByUuid(UUID uuid) {
-        return stsDataRepository.findByUuidAndDeleted(uuid, false)
-                .orElseThrow(() -> new EntityNotFoundException("Запись СТС не найдена по uuid: " + uuid));
-    }
-}
-
-@Component
-@RequiredArgsConstructor
-public class PageDtoMapper {
-
+    private final StsDataService stsDataService;
     private final StsDataMapper stsDataMapper;
+    private final StsDataPageMapper stsDataPageMapper;
 
-    public PageDto<StsDataDto> toStsDataPageDto(Page<StsDataEntity> page) {
-        PageDto<StsDataDto> result = new PageDto<>();
-        result.setItems(page.getContent().stream().map(stsDataMapper::toDto).toList());
-        result.setPage(page.getNumber());
-        result.setSize(page.getSize());
-        result.setTotalElements(page.getTotalElements());
-        result.setTotalPages(page.getTotalPages());
-        result.setFirst(page.isFirst());
-        result.setLast(page.isLast());
-        return result;
+    /**
+     * Создаёт новую запись СТС на основе переданных данных.
+     */
+    @Override
+    public ResultObj<StsDataDto> createStsData(CreateStsDataRequest request) {
+        ZonedDateTime now = ZonedDateTime.now();
+
+        StsDataEntity entity = stsDataMapper.toEntity(request);
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setUpdatedBy(request.getCreatedBy());
+        entity.setDeleted(false);
+
+        StsDataEntity savedEntity = stsDataService.create(entity);
+
+        return getSuccessItemResponse(stsDataMapper.toDto(savedEntity));
     }
-}
 
-@Component
-@RequiredArgsConstructor
-public class PageDtoMapper {
+    /**
+     * Возвращает страницу записей СТС, связанных с указанным договором.
+     * Параметры $filter и $orderby пока принимаются только контрактом API и пока не обрабатываются.
+     */
+    @Override
+    public ResultObj<PageDto<StsDataDto>> getStsDataByContractUuid(UUID contractUuid,
+                                                                   String filter,
+                                                                   String orderBy,
+                                                                   Integer top,
+                                                                   Integer skip) {
+        Page<StsDataEntity> page = stsDataService.getPageByContractUuid(contractUuid, top, skip);
 
-    private final StsDataMapper stsDataMapper;
+        return getSuccessPageResponse(stsDataPageMapper.toDto(page));
+    }
 
-    public PageDto<StsDataDto> toStsDataPageDto(Page<StsDataEntity> page) {
-        PageDto<StsDataDto> result = new PageDto<>();
-        result.setItems(page.getContent().stream().map(stsDataMapper::toDto).toList());
-        result.setPage(page.getNumber());
-        result.setSize(page.getSize());
-        result.setTotalElements(page.getTotalElements());
-        result.setTotalPages(page.getTotalPages());
-        result.setFirst(page.isFirst());
-        result.setLast(page.isLast());
-        return result;
+    /**
+     * Возвращает одну запись СТС по её уникальному идентификатору.
+     */
+    @Override
+    public ResultObj<StsDataDto> getStsDataByUuid(UUID uuid) {
+        StsDataEntity entity = stsDataService.getByUuid(uuid);
+
+        return getSuccessItemResponse(stsDataMapper.toDto(entity));
     }
 }
 ```
