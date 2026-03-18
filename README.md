@@ -1,32 +1,5 @@
 ```java
 
-import com.example.sts.dto.CreateStsDataRequest;
-import com.example.sts.dto.StsDataDto;
-import com.example.sts.service.StsDataService;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.http.MediaType;
-import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
-
-import java.time.ZonedDateTime;
-import java.util.List;
-import java.util.UUID;
-
-import static org.hamcrest.Matchers.hasSize;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
-
 @ExtendWith(MockitoExtension.class)
 class StsDataControllerImplTest {
 
@@ -57,59 +30,32 @@ class StsDataControllerImplTest {
         // given
         UUID uuid = UUID.randomUUID();
         UUID contractUuid = UUID.randomUUID();
-        ZonedDateTime now = ZonedDateTime.now();
 
-        CreateStsDataRequest request = new CreateStsDataRequest();
-        request.setContractUuid(contractUuid);
-        request.setTbId("1234");
-        request.setVehicleNumber("A123AA777");
-        request.setVehicleBrand("КамАЗ");
-        request.setComment("Тестовая запись");
-        request.setStatusId("01");
-        request.setCreatedBy("supplier_user");
+        CreateStsDataRequest request = buildCreateRequest(contractUuid);
 
-        StsDataDto responseDto = new StsDataDto();
-        responseDto.setUuid(uuid);
-        responseDto.setContractUuid(contractUuid);
-        responseDto.setTbId("1234");
-        responseDto.setVehicleNumber("A123AA777");
-        responseDto.setVehicleBrand("КамАЗ");
-        responseDto.setComment("Тестовая запись");
-        responseDto.setStatusId("01");
-        responseDto.setCreatedBy("supplier_user");
-        responseDto.setUpdatedBy("supplier_user");
-        responseDto.setCreatedAt(now);
-        responseDto.setUpdatedAt(now);
-        responseDto.setDeleted(false);
+        StsDataDto responseDto = buildStsDataDto(
+                uuid,
+                contractUuid,
+                "1234",
+                "A123AA777",
+                "КамАЗ",
+                "Тестовая запись",
+                "01",
+                "supplier_user"
+        );
 
         when(stsDataService.create(any(CreateStsDataRequest.class))).thenReturn(responseDto);
 
-        // when / then
-        mockMvc.perform(post("/api/v1/sts")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isOk())
-                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+        // when
+        ResultActions result = mockMvc.perform(post("/api/v1/sts")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request)));
 
-                .andExpect(jsonPath("$.count").value(1))
-                .andExpect(jsonPath("$.data", hasSize(1)))
-
-                .andExpect(jsonPath("$.data[0].uuid").value(uuid.toString()))
-                .andExpect(jsonPath("$.data[0].contractUuid").value(contractUuid.toString()))
-                .andExpect(jsonPath("$.data[0].tbId").value("1234"))
-                .andExpect(jsonPath("$.data[0].vehicleNumber").value("A123AA777"))
-                .andExpect(jsonPath("$.data[0].vehicleBrand").value("КамАЗ"))
-                .andExpect(jsonPath("$.data[0].comment").value("Тестовая запись"))
-                .andExpect(jsonPath("$.data[0].statusId").value("01"))
-                .andExpect(jsonPath("$.data[0].createdBy").value("supplier_user"))
-                .andExpect(jsonPath("$.data[0].updatedBy").value("supplier_user"))
-                .andExpect(jsonPath("$.data[0].deleted").value(false))
-                .andExpect(jsonPath("$.data[0].createdAt").exists())
-                .andExpect(jsonPath("$.data[0].updatedAt").exists())
-
-                .andExpect(jsonPath("$.messages", hasSize(1)))
-                .andExpect(jsonPath("$.messages[0].message").value("Поиск выполнен"))
-                .andExpect(jsonPath("$.messages[0].description").value("Найдено записей: 1"));
+        // then
+        assertOkJsonResponse(result);
+        assertListResponseMeta(result, 1);
+        assertStsDataItem(result, "$.data[0]", responseDto);
+        assertSuccessMessage(result, "Найдено записей: 1");
 
         verify(stsDataService).create(any(CreateStsDataRequest.class));
         verifyNoMoreInteractions(stsDataService);
@@ -120,7 +66,7 @@ class StsDataControllerImplTest {
         // given
         String invalidRequestBody = """
                 {
-                  "tbId": "",
+                  "tbCode": "",
                   "vehicleNumber": "A123AA777",
                   "vehicleBrand": "КамАЗ",
                   "statusId": "01",
@@ -141,72 +87,41 @@ class StsDataControllerImplTest {
     void givenContractUuid_whenGetStsDataByContractUuid_thenReturnOkAndWrappedItemList() throws Exception {
         // given
         UUID contractUuid = UUID.randomUUID();
-        ZonedDateTime now = ZonedDateTime.now();
 
-        StsDataDto firstDto = new StsDataDto();
-        firstDto.setUuid(UUID.randomUUID());
-        firstDto.setContractUuid(contractUuid);
-        firstDto.setTbId("1234");
-        firstDto.setVehicleNumber("A123AA777");
-        firstDto.setVehicleBrand("КамАЗ");
-        firstDto.setComment("Первая запись");
-        firstDto.setStatusId("01");
-        firstDto.setCreatedBy("user_1");
-        firstDto.setUpdatedBy("user_1");
-        firstDto.setCreatedAt(now);
-        firstDto.setUpdatedAt(now);
-        firstDto.setDeleted(false);
+        StsDataDto firstDto = buildStsDataDto(
+                UUID.randomUUID(),
+                contractUuid,
+                "1234",
+                "A123AA777",
+                "КамАЗ",
+                "Первая запись",
+                "01",
+                "user_1"
+        );
 
-        StsDataDto secondDto = new StsDataDto();
-        secondDto.setUuid(UUID.randomUUID());
-        secondDto.setContractUuid(contractUuid);
-        secondDto.setTbId("5678");
-        secondDto.setVehicleNumber("B456BB777");
-        secondDto.setVehicleBrand("МАЗ");
-        secondDto.setComment("Вторая запись");
-        secondDto.setStatusId("02");
-        secondDto.setCreatedBy("user_2");
-        secondDto.setUpdatedBy("user_2");
-        secondDto.setCreatedAt(now);
-        secondDto.setUpdatedAt(now);
-        secondDto.setDeleted(false);
+        StsDataDto secondDto = buildStsDataDto(
+                UUID.randomUUID(),
+                contractUuid,
+                "5678",
+                "B456BB777",
+                "МАЗ",
+                "Вторая запись",
+                "02",
+                "user_2"
+        );
 
         when(stsDataService.getByContractUuid(contractUuid)).thenReturn(List.of(firstDto, secondDto));
 
-        // when / then
-        mockMvc.perform(get("/api/v1/sts")
-                        .param("contractUuid", contractUuid.toString()))
-                .andExpect(status().isOk())
-                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+        // when
+        ResultActions result = mockMvc.perform(get("/api/v1/sts")
+                .param("contractUuid", contractUuid.toString()));
 
-                .andExpect(jsonPath("$.count").value(2))
-                .andExpect(jsonPath("$.data", hasSize(2)))
-
-                .andExpect(jsonPath("$.data[0].uuid").value(firstDto.getUuid().toString()))
-                .andExpect(jsonPath("$.data[0].contractUuid").value(contractUuid.toString()))
-                .andExpect(jsonPath("$.data[0].tbId").value("1234"))
-                .andExpect(jsonPath("$.data[0].vehicleNumber").value("A123AA777"))
-                .andExpect(jsonPath("$.data[0].vehicleBrand").value("КамАЗ"))
-                .andExpect(jsonPath("$.data[0].comment").value("Первая запись"))
-                .andExpect(jsonPath("$.data[0].statusId").value("01"))
-                .andExpect(jsonPath("$.data[0].createdBy").value("user_1"))
-                .andExpect(jsonPath("$.data[0].updatedBy").value("user_1"))
-                .andExpect(jsonPath("$.data[0].deleted").value(false))
-
-                .andExpect(jsonPath("$.data[1].uuid").value(secondDto.getUuid().toString()))
-                .andExpect(jsonPath("$.data[1].contractUuid").value(contractUuid.toString()))
-                .andExpect(jsonPath("$.data[1].tbId").value("5678"))
-                .andExpect(jsonPath("$.data[1].vehicleNumber").value("B456BB777"))
-                .andExpect(jsonPath("$.data[1].vehicleBrand").value("МАЗ"))
-                .andExpect(jsonPath("$.data[1].comment").value("Вторая запись"))
-                .andExpect(jsonPath("$.data[1].statusId").value("02"))
-                .andExpect(jsonPath("$.data[1].createdBy").value("user_2"))
-                .andExpect(jsonPath("$.data[1].updatedBy").value("user_2"))
-                .andExpect(jsonPath("$.data[1].deleted").value(false))
-
-                .andExpect(jsonPath("$.messages", hasSize(1)))
-                .andExpect(jsonPath("$.messages[0].message").value("Поиск выполнен"))
-                .andExpect(jsonPath("$.messages[0].description").value("Найдено записей: 2"));
+        // then
+        assertOkJsonResponse(result);
+        assertListResponseMeta(result, 2);
+        assertStsDataItem(result, "$.data[0]", firstDto);
+        assertStsDataItem(result, "$.data[1]", secondDto);
+        assertSuccessMessage(result, "Найдено записей: 2");
 
         verify(stsDataService).getByContractUuid(contractUuid);
         verifyNoMoreInteractions(stsDataService);
@@ -226,47 +141,28 @@ class StsDataControllerImplTest {
         // given
         UUID uuid = UUID.randomUUID();
         UUID contractUuid = UUID.randomUUID();
-        ZonedDateTime now = ZonedDateTime.now();
 
-        StsDataDto dto = new StsDataDto();
-        dto.setUuid(uuid);
-        dto.setContractUuid(contractUuid);
-        dto.setTbId("1234");
-        dto.setVehicleNumber("A123AA777");
-        dto.setVehicleBrand("КамАЗ");
-        dto.setComment("Карточка записи");
-        dto.setStatusId("01");
-        dto.setCreatedBy("user_1");
-        dto.setUpdatedBy("user_1");
-        dto.setCreatedAt(now);
-        dto.setUpdatedAt(now);
-        dto.setDeleted(false);
+        StsDataDto dto = buildStsDataDto(
+                uuid,
+                contractUuid,
+                "1234",
+                "A123AA777",
+                "КамАЗ",
+                "Карточка записи",
+                "01",
+                "user_1"
+        );
 
         when(stsDataService.getByUuid(uuid)).thenReturn(dto);
 
-        // when / then
-        mockMvc.perform(get("/api/v1/sts/{uuid}", uuid))
-                .andExpect(status().isOk())
-                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+        // when
+        ResultActions result = mockMvc.perform(get("/api/v1/sts/{uuid}", uuid));
 
-                .andExpect(jsonPath("$.count").value(1))
-
-                .andExpect(jsonPath("$.data.uuid").value(uuid.toString()))
-                .andExpect(jsonPath("$.data.contractUuid").value(contractUuid.toString()))
-                .andExpect(jsonPath("$.data.tbId").value("1234"))
-                .andExpect(jsonPath("$.data.vehicleNumber").value("A123AA777"))
-                .andExpect(jsonPath("$.data.vehicleBrand").value("КамАЗ"))
-                .andExpect(jsonPath("$.data.comment").value("Карточка записи"))
-                .andExpect(jsonPath("$.data.statusId").value("01"))
-                .andExpect(jsonPath("$.data.createdBy").value("user_1"))
-                .andExpect(jsonPath("$.data.updatedBy").value("user_1"))
-                .andExpect(jsonPath("$.data.deleted").value(false))
-                .andExpect(jsonPath("$.data.createdAt").exists())
-                .andExpect(jsonPath("$.data.updatedAt").exists())
-
-                .andExpect(jsonPath("$.messages", hasSize(1)))
-                .andExpect(jsonPath("$.messages[0].message").value("Поиск выполнен"))
-                .andExpect(jsonPath("$.messages[0].description").value("Объект успешно получен"));
+        // then
+        assertOkJsonResponse(result);
+        assertItemResponseMeta(result);
+        assertStsDataItem(result, "$.data", dto);
+        assertItemSuccessMessage(result);
 
         verify(stsDataService).getByUuid(uuid);
         verifyNoMoreInteractions(stsDataService);
@@ -279,6 +175,85 @@ class StsDataControllerImplTest {
                 .andExpect(status().isBadRequest());
 
         verifyNoInteractions(stsDataService);
+    }
+
+    private CreateStsDataRequest buildCreateRequest(UUID contractUuid) {
+        CreateStsDataRequest request = new CreateStsDataRequest();
+        request.setContractUuid(contractUuid);
+        request.setTbCode("1234");
+        request.setVehicleNumber("A123AA777");
+        request.setVehicleBrand("КамАЗ");
+        request.setComment("Тестовая запись");
+        request.setStatusId("01");
+        request.setCreatedBy("supplier_user");
+        return request;
+    }
+
+    private StsDataDto buildStsDataDto(UUID uuid,
+                                       UUID contractUuid,
+                                       String tbCode,
+                                       String vehicleNumber,
+                                       String vehicleBrand,
+                                       String comment,
+                                       String statusId,
+                                       String createdBy) {
+        ZonedDateTime now = ZonedDateTime.now();
+
+        StsDataDto dto = new StsDataDto();
+        dto.setUuid(uuid);
+        dto.setContractUuid(contractUuid);
+        dto.setTbCode(tbCode);
+        dto.setVehicleNumber(vehicleNumber);
+        dto.setVehicleBrand(vehicleBrand);
+        dto.setComment(comment);
+        dto.setStatusId(statusId);
+        dto.setCreatedBy(createdBy);
+        dto.setUpdateBy(createdBy);
+        dto.setCreatedAt(now);
+        dto.setUpdateAt(now);
+        dto.setDeleted(false);
+        return dto;
+    }
+
+    private void assertOkJsonResponse(ResultActions result) throws Exception {
+        result.andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON));
+    }
+
+    private void assertListResponseMeta(ResultActions result, int expectedCount) throws Exception {
+        result.andExpect(jsonPath("$.count").value(expectedCount))
+                .andExpect(jsonPath("$.data", hasSize(expectedCount)))
+                .andExpect(jsonPath("$.messages", hasSize(1)))
+                .andExpect(jsonPath("$.messages[0].message").value("Поиск выполнен"));
+    }
+
+    private void assertItemResponseMeta(ResultActions result) throws Exception {
+        result.andExpect(jsonPath("$.count").value(1))
+                .andExpect(jsonPath("$.messages", hasSize(1)))
+                .andExpect(jsonPath("$.messages[0].message").value("Поиск выполнен"));
+    }
+
+    private void assertSuccessMessage(ResultActions result, String expectedDescription) throws Exception {
+        result.andExpect(jsonPath("$.messages[0].description").value(expectedDescription));
+    }
+
+    private void assertItemSuccessMessage(ResultActions result) throws Exception {
+        result.andExpect(jsonPath("$.messages[0].description").value("Объект успешно получен"));
+    }
+
+    private void assertStsDataItem(ResultActions result, String pathPrefix, StsDataDto dto) throws Exception {
+        result.andExpect(jsonPath(pathPrefix + ".uuid").value(dto.getUuid().toString()))
+                .andExpect(jsonPath(pathPrefix + ".contractUuid").value(dto.getContractUuid().toString()))
+                .andExpect(jsonPath(pathPrefix + ".tbCode").value(dto.getTbCode()))
+                .andExpect(jsonPath(pathPrefix + ".vehicleNumber").value(dto.getVehicleNumber()))
+                .andExpect(jsonPath(pathPrefix + ".vehicleBrand").value(dto.getVehicleBrand()))
+                .andExpect(jsonPath(pathPrefix + ".comment").value(dto.getComment()))
+                .andExpect(jsonPath(pathPrefix + ".statusId").value(dto.getStatusId()))
+                .andExpect(jsonPath(pathPrefix + ".createdBy").value(dto.getCreatedBy()))
+                .andExpect(jsonPath(pathPrefix + ".updateBy").value(dto.getUpdateBy()))
+                .andExpect(jsonPath(pathPrefix + ".deleted").value(dto.isDeleted()))
+                .andExpect(jsonPath(pathPrefix + ".createdAt").exists())
+                .andExpect(jsonPath(pathPrefix + ".updateAt").exists());
     }
 }
 ```
