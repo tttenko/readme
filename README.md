@@ -1,159 +1,332 @@
 ```java
 
-@ExtendWith(MockitoExtension.class)
-class StsDataServiceTest {
+@WebMvcTest(StsDataControllerImpl.class)
+class StsDataControllerWebMvcTest {
 
-    @Mock
-    private StsDataRepository stsDataRepository;
+    @Autowired
+    private MockMvc mockMvc;
 
-    @Mock
-    private StsDataMapper stsDataMapper;
+    @Autowired
+    private ObjectMapper objectMapper;
 
-    @InjectMocks
+    @MockBean
     private StsDataService stsDataService;
 
-    @Test
-    void givenValidEntity_whenCreate_thenReturnSavedEntity() {
-        // given
-        StsDataEntity entity = new StsDataEntity();
-        entity.setContractUuid(UUID.randomUUID());
-        entity.setTbId("1234");
-        entity.setVehicleNumber("А123АА777");
-        entity.setVehicleBrand("КамАЗ");
-        entity.setComment("Тестовая запись");
-        entity.setStatusId("01");
-        entity.setCreatedBy("supplier_user");
+    @MockBean
+    private StsDataMapper stsDataMapper;
 
-        UUID savedUuid = UUID.randomUUID();
-        StsDataEntity savedEntity = new StsDataEntity();
-        savedEntity.setUuid(savedUuid);
-        savedEntity.setContractUuid(entity.getContractUuid());
-        savedEntity.setTbId(entity.getTbId());
-        savedEntity.setVehicleNumber(entity.getVehicleNumber());
-        savedEntity.setVehicleBrand(entity.getVehicleBrand());
-        savedEntity.setComment(entity.getComment());
-        savedEntity.setStatusId(entity.getStatusId());
-        savedEntity.setCreatedBy(entity.getCreatedBy());
-
-        when(stsDataRepository.save(entity)).thenReturn(savedEntity);
-
-        // when
-        StsDataEntity actualEntity = stsDataService.create(entity);
-
-        // then
-        assertThat(actualEntity).isSameAs(savedEntity);
-
-        verify(stsDataRepository).save(entity);
-        verifyNoInteractions(stsDataMapper);
-        verifyNoMoreInteractions(stsDataRepository);
-    }
+    @MockBean
+    private StsDataPageMapper stsDataPageMapper;
 
     @Test
-    void givenExistingData_whenGetPageByContractUuid_thenReturnPage() {
-        // given
-        UUID contractUuid = UUID.randomUUID();
-        Integer top = 10;
-        Integer skip = 20;
-
-        StsDataEntity firstEntity = new StsDataEntity();
-        firstEntity.setUuid(UUID.randomUUID());
-
-        StsDataEntity secondEntity = new StsDataEntity();
-        secondEntity.setUuid(UUID.randomUUID());
-
-        Page<StsDataEntity> expectedPage = new PageImpl<>(
-                List.of(firstEntity, secondEntity),
-                PageRequest.of(2, 10, Sort.by(Sort.Direction.DESC, "createdAt")),
-                2
-        );
-
-        when(stsDataRepository.findAllByContractUuidAndDeleted(eq(contractUuid), eq(false), any(Pageable.class)))
-                .thenReturn(expectedPage);
-
-        // when
-        Page<StsDataEntity> actualPage = stsDataService.getPageByContractUuid(contractUuid, top, skip);
-
-        // then
-        assertThat(actualPage).isNotNull();
-        assertThat(actualPage.getContent())
-                .hasSize(2)
-                .containsExactly(firstEntity, secondEntity);
-
-        ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
-        verify(stsDataRepository).findAllByContractUuidAndDeleted(eq(contractUuid), eq(false), pageableCaptor.capture());
-
-        Pageable actualPageable = pageableCaptor.getValue();
-        assertThat(actualPageable.getPageNumber()).isEqualTo(2);
-        assertThat(actualPageable.getPageSize()).isEqualTo(10);
-        assertThat(actualPageable.getSort()).isEqualTo(Sort.by(Sort.Direction.DESC, "createdAt"));
-
-        verifyNoInteractions(stsDataMapper);
-        verifyNoMoreInteractions(stsDataRepository);
-    }
-
-    @Test
-    void givenNoData_whenGetPageByContractUuid_thenReturnEmptyPage() {
-        // given
-        UUID contractUuid = UUID.randomUUID();
-        Integer top = 10;
-        Integer skip = 0;
-
-        Page<StsDataEntity> emptyPage = Page.empty(
-                PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "createdAt"))
-        );
-
-        when(stsDataRepository.findAllByContractUuidAndDeleted(eq(contractUuid), eq(false), any(Pageable.class)))
-                .thenReturn(emptyPage);
-
-        // when
-        Page<StsDataEntity> actualPage = stsDataService.getPageByContractUuid(contractUuid, top, skip);
-
-        // then
-        assertThat(actualPage).isNotNull();
-        assertThat(actualPage.getContent()).isEmpty();
-        assertThat(actualPage.getTotalElements()).isZero();
-
-        verify(stsDataRepository).findAllByContractUuidAndDeleted(eq(contractUuid), eq(false), any(Pageable.class));
-        verifyNoInteractions(stsDataMapper);
-        verifyNoMoreInteractions(stsDataRepository);
-    }
-
-    @Test
-    void givenExistingUuid_whenGetByUuid_thenReturnEntity() {
+    void givenValidRequest_whenCreateStsData_thenReturnOk() throws Exception {
         // given
         UUID uuid = UUID.randomUUID();
+        UUID contractUuid = UUID.randomUUID();
+
+        CreateStsDataRequest request = new CreateStsDataRequest();
+        request.setContractUuid(contractUuid);
+        request.setTbCode("1234");
+        request.setVehicleNumber("А123АА777");
+        request.setVehicleBrand("КамАЗ");
+        request.setComment("Тестовая запись");
+        request.setStatusId("01");
+        request.setCreatedBy("supplier_user");
+
+        StsDataEntity mappedEntity = new StsDataEntity();
+        StsDataEntity savedEntity = new StsDataEntity();
+        savedEntity.setUuid(uuid);
+
+        StsDataDto dto = new StsDataDto();
+        dto.setUuid(uuid);
+        dto.setContractUuid(contractUuid);
+        dto.setTbCode("1234");
+        dto.setVehicleNumber("А123АА777");
+        dto.setVehicleBrand("КамАЗ");
+        dto.setComment("Тестовая запись");
+        dto.setStatusId("01");
+        dto.setCreatedBy("supplier_user");
+        dto.setUpdatedBy("supplier_user");
+        dto.setDeleted(false);
+
+        when(stsDataMapper.toEntity(any(CreateStsDataRequest.class))).thenReturn(mappedEntity);
+        when(stsDataService.create(mappedEntity)).thenReturn(savedEntity);
+        when(stsDataMapper.toDto(savedEntity)).thenReturn(dto);
+
+        // when / then
+        mockMvc.perform(post("/ui/v1/sts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.data.uuid").value(uuid.toString()))
+                .andExpect(jsonPath("$.data.contractUuid").value(contractUuid.toString()))
+                .andExpect(jsonPath("$.data.tbCode").value("1234"))
+                .andExpect(jsonPath("$.data.vehicleNumber").value("А123АА777"))
+                .andExpect(jsonPath("$.data.vehicleBrand").value("КамАЗ"))
+                .andExpect(jsonPath("$.data.comment").value("Тестовая запись"))
+                .andExpect(jsonPath("$.data.statusId").value("01"))
+                .andExpect(jsonPath("$.data.createdBy").value("supplier_user"));
+
+        verify(stsDataMapper).toEntity(any(CreateStsDataRequest.class));
+        verify(stsDataService).create(mappedEntity);
+        verify(stsDataMapper).toDto(savedEntity);
+        verifyNoMoreInteractions(stsDataService, stsDataMapper, stsDataPageMapper);
+    }
+
+    @Test
+    void givenInvalidRequest_whenCreateStsData_thenReturnBadRequest() throws Exception {
+        // given
+        String invalidRequestBody = """
+                {
+                  "tbCode": "",
+                  "vehicleNumber": "А123АА777",
+                  "vehicleBrand": "КамАЗ",
+                  "statusId": "01",
+                  "createdBy": "supplier_user"
+                }
+                """;
+
+        // when / then
+        mockMvc.perform(post("/ui/v1/sts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidRequestBody))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(stsDataService, stsDataMapper, stsDataPageMapper);
+    }
+
+    @Test
+    void givenValidUuid_whenGetStsDataByUuid_thenReturnOk() throws Exception {
+        // given
+        UUID uuid = UUID.randomUUID();
+        UUID contractUuid = UUID.randomUUID();
 
         StsDataEntity entity = new StsDataEntity();
         entity.setUuid(uuid);
 
-        when(stsDataRepository.findByUuidAndDeleted(uuid, false)).thenReturn(Optional.of(entity));
+        StsDataDto dto = new StsDataDto();
+        dto.setUuid(uuid);
+        dto.setContractUuid(contractUuid);
+        dto.setTbCode("1234");
+        dto.setVehicleNumber("А123АА777");
+        dto.setVehicleBrand("КамАЗ");
+        dto.setComment("Карточка");
+        dto.setStatusId("01");
+        dto.setCreatedBy("user_1");
+        dto.setUpdatedBy("user_1");
+        dto.setDeleted(false);
 
-        // when
-        StsDataEntity actualEntity = stsDataService.getByUuid(uuid);
+        when(stsDataService.getByUuid(uuid)).thenReturn(entity);
+        when(stsDataMapper.toDto(entity)).thenReturn(dto);
 
-        // then
-        assertThat(actualEntity).isSameAs(entity);
+        // when / then
+        mockMvc.perform(get("/ui/v1/sts/{uuid}", uuid))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.data.uuid").value(uuid.toString()))
+                .andExpect(jsonPath("$.data.contractUuid").value(contractUuid.toString()));
 
-        verify(stsDataRepository).findByUuidAndDeleted(uuid, false);
-        verifyNoInteractions(stsDataMapper);
-        verifyNoMoreInteractions(stsDataRepository);
+        verify(stsDataService).getByUuid(uuid);
+        verify(stsDataMapper).toDto(entity);
+        verifyNoMoreInteractions(stsDataService, stsDataMapper, stsDataPageMapper);
     }
 
     @Test
-    void givenMissingUuid_whenGetByUuid_thenThrowException() {
-        // given
-        UUID uuid = UUID.randomUUID();
+    void givenInvalidUuid_whenGetStsDataByUuid_thenReturnBadRequest() throws Exception {
+        mockMvc.perform(get("/ui/v1/sts/{uuid}", "not-a-uuid"))
+                .andExpect(status().isBadRequest());
 
-        when(stsDataRepository.findByUuidAndDeleted(uuid, false)).thenReturn(Optional.empty());
+        verifyNoInteractions(stsDataService, stsDataMapper, stsDataPageMapper);
+    }
+
+    @Test
+    void givenContractUuidTopSkip_whenGetPage_thenReturnOk() throws Exception {
+        // given
+        UUID contractUuid = UUID.randomUUID();
+
+        Page<StsDataEntity> page = new PageImpl<>(List.of(new StsDataEntity(), new StsDataEntity()));
+
+        @SuppressWarnings("unchecked")
+        PageDto<StsDataDto> pageDto = mock(PageDto.class);
+
+        when(stsDataService.getPageByContractUuid(contractUuid, 10, 0)).thenReturn(page);
+        when(stsDataPageMapper.toDto(page)).thenReturn(pageDto);
 
         // when / then
-        assertThatThrownBy(() -> stsDataService.getByUuid(uuid))
-                .isInstanceOf(EntityNotFoundException.class)
-                .hasMessage("Запись СТС не найдена по uuid: " + uuid);
+        mockMvc.perform(get("/ui/v1/contract/{contractUuid}/sts", contractUuid)
+                        .param("$top", "10")
+                        .param("$skip", "0"))
+                .andExpect(status().isOk());
 
-        verify(stsDataRepository).findByUuidAndDeleted(uuid, false);
-        verifyNoInteractions(stsDataMapper);
-        verifyNoMoreInteractions(stsDataRepository);
+        verify(stsDataService).getPageByContractUuid(contractUuid, 10, 0);
+        verify(stsDataPageMapper).toDto(page);
+        verifyNoMoreInteractions(stsDataService, stsDataMapper, stsDataPageMapper);
+    }
+}
+
+@WebMvcTest(StsDataControllerImpl.class)
+class StsDataControllerWebMvcTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @MockBean
+    private StsDataService stsDataService;
+
+    @MockBean
+    private StsDataMapper stsDataMapper;
+
+    @MockBean
+    private StsDataPageMapper stsDataPageMapper;
+
+    @Test
+    void givenValidRequest_whenCreateStsData_thenReturnOk() throws Exception {
+        // given
+        UUID uuid = UUID.randomUUID();
+        UUID contractUuid = UUID.randomUUID();
+
+        CreateStsDataRequest request = new CreateStsDataRequest();
+        request.setContractUuid(contractUuid);
+        request.setTbCode("1234");
+        request.setVehicleNumber("А123АА777");
+        request.setVehicleBrand("КамАЗ");
+        request.setComment("Тестовая запись");
+        request.setStatusId("01");
+        request.setCreatedBy("supplier_user");
+
+        StsDataEntity mappedEntity = new StsDataEntity();
+        StsDataEntity savedEntity = new StsDataEntity();
+        savedEntity.setUuid(uuid);
+
+        StsDataDto dto = new StsDataDto();
+        dto.setUuid(uuid);
+        dto.setContractUuid(contractUuid);
+        dto.setTbCode("1234");
+        dto.setVehicleNumber("А123АА777");
+        dto.setVehicleBrand("КамАЗ");
+        dto.setComment("Тестовая запись");
+        dto.setStatusId("01");
+        dto.setCreatedBy("supplier_user");
+        dto.setUpdatedBy("supplier_user");
+        dto.setDeleted(false);
+
+        when(stsDataMapper.toEntity(any(CreateStsDataRequest.class))).thenReturn(mappedEntity);
+        when(stsDataService.create(mappedEntity)).thenReturn(savedEntity);
+        when(stsDataMapper.toDto(savedEntity)).thenReturn(dto);
+
+        // when / then
+        mockMvc.perform(post("/ui/v1/sts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.data.uuid").value(uuid.toString()))
+                .andExpect(jsonPath("$.data.contractUuid").value(contractUuid.toString()))
+                .andExpect(jsonPath("$.data.tbCode").value("1234"))
+                .andExpect(jsonPath("$.data.vehicleNumber").value("А123АА777"))
+                .andExpect(jsonPath("$.data.vehicleBrand").value("КамАЗ"))
+                .andExpect(jsonPath("$.data.comment").value("Тестовая запись"))
+                .andExpect(jsonPath("$.data.statusId").value("01"))
+                .andExpect(jsonPath("$.data.createdBy").value("supplier_user"));
+
+        verify(stsDataMapper).toEntity(any(CreateStsDataRequest.class));
+        verify(stsDataService).create(mappedEntity);
+        verify(stsDataMapper).toDto(savedEntity);
+        verifyNoMoreInteractions(stsDataService, stsDataMapper, stsDataPageMapper);
+    }
+
+    @Test
+    void givenInvalidRequest_whenCreateStsData_thenReturnBadRequest() throws Exception {
+        // given
+        String invalidRequestBody = """
+                {
+                  "tbCode": "",
+                  "vehicleNumber": "А123АА777",
+                  "vehicleBrand": "КамАЗ",
+                  "statusId": "01",
+                  "createdBy": "supplier_user"
+                }
+                """;
+
+        // when / then
+        mockMvc.perform(post("/ui/v1/sts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidRequestBody))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(stsDataService, stsDataMapper, stsDataPageMapper);
+    }
+
+    @Test
+    void givenValidUuid_whenGetStsDataByUuid_thenReturnOk() throws Exception {
+        // given
+        UUID uuid = UUID.randomUUID();
+        UUID contractUuid = UUID.randomUUID();
+
+        StsDataEntity entity = new StsDataEntity();
+        entity.setUuid(uuid);
+
+        StsDataDto dto = new StsDataDto();
+        dto.setUuid(uuid);
+        dto.setContractUuid(contractUuid);
+        dto.setTbCode("1234");
+        dto.setVehicleNumber("А123АА777");
+        dto.setVehicleBrand("КамАЗ");
+        dto.setComment("Карточка");
+        dto.setStatusId("01");
+        dto.setCreatedBy("user_1");
+        dto.setUpdatedBy("user_1");
+        dto.setDeleted(false);
+
+        when(stsDataService.getByUuid(uuid)).thenReturn(entity);
+        when(stsDataMapper.toDto(entity)).thenReturn(dto);
+
+        // when / then
+        mockMvc.perform(get("/ui/v1/sts/{uuid}", uuid))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.data.uuid").value(uuid.toString()))
+                .andExpect(jsonPath("$.data.contractUuid").value(contractUuid.toString()));
+
+        verify(stsDataService).getByUuid(uuid);
+        verify(stsDataMapper).toDto(entity);
+        verifyNoMoreInteractions(stsDataService, stsDataMapper, stsDataPageMapper);
+    }
+
+    @Test
+    void givenInvalidUuid_whenGetStsDataByUuid_thenReturnBadRequest() throws Exception {
+        mockMvc.perform(get("/ui/v1/sts/{uuid}", "not-a-uuid"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(stsDataService, stsDataMapper, stsDataPageMapper);
+    }
+
+    @Test
+    void givenContractUuidTopSkip_whenGetPage_thenReturnOk() throws Exception {
+        // given
+        UUID contractUuid = UUID.randomUUID();
+
+        Page<StsDataEntity> page = new PageImpl<>(List.of(new StsDataEntity(), new StsDataEntity()));
+
+        @SuppressWarnings("unchecked")
+        PageDto<StsDataDto> pageDto = mock(PageDto.class);
+
+        when(stsDataService.getPageByContractUuid(contractUuid, 10, 0)).thenReturn(page);
+        when(stsDataPageMapper.toDto(page)).thenReturn(pageDto);
+
+        // when / then
+        mockMvc.perform(get("/ui/v1/contract/{contractUuid}/sts", contractUuid)
+                        .param("$top", "10")
+                        .param("$skip", "0"))
+                .andExpect(status().isOk());
+
+        verify(stsDataService).getPageByContractUuid(contractUuid, 10, 0);
+        verify(stsDataPageMapper).toDto(page);
+        verifyNoMoreInteractions(stsDataService, stsDataMapper, stsDataPageMapper);
     }
 }
 ```
