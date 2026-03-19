@@ -1,19 +1,23 @@
 ```java
 
-@SpringBootTest
+@SpringBootTest(classes = SecurityConfigTest.TestApp.class)
 class SecurityConfigTest {
 
     @Autowired
-    private ApplicationContext applicationContext;
+    private SecurityFilterChain securityFilterChain;
 
     @MockBean
     private UserExtractionFilter userExtractionFilter;
 
     @Test
     void shouldLoadSecurityConfig() {
-        SecurityFilterChain securityFilterChain = applicationContext.getBean(SecurityFilterChain.class);
-
         assertThat(securityFilterChain).isNotNull();
+    }
+
+    @SpringBootConfiguration
+    @EnableAutoConfiguration
+    @Import(SecurityConfig.class)
+    static class TestApp {
     }
 }
 ```
