@@ -1,28 +1,19 @@
 ```java
 
+@SpringBootTest
 class SecurityConfigTest {
 
-    private final WebApplicationContextRunner contextRunner = new WebApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(
-                    SecurityAutoConfiguration.class,
-                    SecurityFilterAutoConfiguration.class
-            ))
-            .withUserConfiguration(SecurityConfig.class, TestBeans.class);
+    @Autowired
+    private ApplicationContext applicationContext;
+
+    @MockBean
+    private UserExtractionFilter userExtractionFilter;
 
     @Test
-    void shouldCreateSecurityFilterChain() {
-        contextRunner.run(context ->
-                assertThat(context).hasSingleBean(SecurityFilterChain.class)
-        );
-    }
+    void shouldLoadSecurityConfig() {
+        SecurityFilterChain securityFilterChain = applicationContext.getBean(SecurityFilterChain.class);
 
-    @TestConfiguration
-    static class TestBeans {
-
-        @Bean
-        UserExtractionFilter userExtractionFilter() {
-            return Mockito.mock(UserExtractionFilter.class);
-        }
+        assertThat(securityFilterChain).isNotNull();
     }
 }
 ```
