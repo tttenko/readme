@@ -1,18 +1,3 @@
 ```java
-class JpaConfigTest {
-
-    private static final String USER_PROFILE_UUID = "USER_PROFILE_UUID";
-
-    private final JpaConfig jpaConfig = new JpaConfig();
-
-    @Test
-    void zonedDateTimeProvider_shouldReturnCurrentZonedDateTime() {
-        DateTimeProvider provider = jpaConfig.zonedDateTimeProvider();
-
-        Optional<TemporalAccessor> now = provider.getNow();
-
-        assertThat(now).isPresent();
-        assertThat(now.get()).isInstanceOf(ZonedDateTime.class);
-    }
-
+jdbc:h2:mem:masterdata;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;INIT=CREATE SCHEMA IF NOT EXISTS CONTROL_VEHICLE_APP
 ```
