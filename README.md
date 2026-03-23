@@ -1,132 +1,47 @@
 ```java
-serviceId: CI07150460_csportalControlVehcl
-version: "1.0"
-description: Управление СТС
+@Service
+@RequiredArgsConstructor
+public class StsEventsHistoryService {
 
-events:
-  - id: STS_CREATE
-    description: Создание СТС
-    successful: true
-    audit:
-      mode: reliability
-      code: AUD-30
-    ui:
-      type: create
-    parameters:
-      - id: sts_uuid
-        description: UUID СТС
-        hidden: true
-        sendToAudit: true
-      - id: contract_uuid
-        description: UUID договора
-        hidden: true
-        sendToAudit: true
-      - id: tb_id
-        description: Код ТБ
-        hidden: false
-        sendToAudit: true
-      - id: vehicle_num
-        description: Номер ТС
-        hidden: true
-        sendToAudit: true
-      - id: vehicle_name
-        description: Марка ТС
-        hidden: true
-        sendToAudit: true
-      - id: comment
-        description: Примечание
-        hidden: false
-        sendToAudit: false
-      - id: status
-        description: Статус СТС
-        hidden: false
-        sendToAudit: true
+    private final EventsHistoryClient eventsHistoryClient;
 
-  - id: STS_UPDATE
-    description: Изменение СТС
-    successful: true
-    audit:
-      mode: reliability
-      code: AUD-30
-    ui:
-      type: edit
-    parameters:
-      - id: sts_uuid
-        description: UUID СТС
-        hidden: true
-        sendToAudit: true
-      - id: contract_uuid
-        description: UUID договора
-        hidden: true
-        sendToAudit: true
-    changedFields:
-      - id: tb_id
-        description: Код ТБ
-        hidden: false
-        sendToAudit: false
-      - id: vehicle_num
-        description: Номер ТС
-        hidden: false
-        sendToAudit: false
-      - id: vehicle_name
-        description: Марка ТС
-        hidden: false
-        sendToAudit: false
-      - id: comment
-        description: Примечание
-        hidden: false
-        sendToAudit: false
+    public void sendCreateEvent(StsDataEntity entity) {
+        EventCreateDto event = EventCreateDto.builder()
+                .serviceId(StsHistoryEventIds.SERVICE_ID)
+                .id(StsHistoryEventIds.STS_CREATE)
+                .entityUuid(entity.getUuid())
+                .submittedAt(entity.getCreatedAt())
+                .submittedBy(defaultValue(entity.getCreatedBy()))
+                .session("NO-SESSION")
+                .userName(defaultValue(entity.getCreatedBy()))
+                .userNode("NO-USERNODE")
+                .parameters(List.of(
+                        parameter("sts_uuid", entity.getUuid().toString()),
+                        parameter("contract_uuid", entity.getContractUuid().toString()),
+                        parameter("tb_id", entity.getTbCode()),
+                        parameter("vehicle_num", entity.getVehicleNumber()),
+                        parameter("vehicle_name", entity.getVehicleBrand()),
+                        parameter("comment", defaultValue(entity.getComment())),
+                        parameter("status", StsStatus.titleById(entity.getStatusId()))
+                ))
+                .build();
 
-  - id: STS_STATUS_CHANGE
-    description: Изменение статуса СТС
-    successful: true
-    audit:
-      mode: reliability
-      code: AUD-30
-    ui:
-      type: edit
-    parameters:
-      - id: sts_uuid
-        description: UUID СТС
-        hidden: true
-        sendToAudit: true
-      - id: contract_uuid
-        description: UUID договора
-        hidden: true
-        sendToAudit: true
-    changedFields:
-      - id: status
-        description: Статус СТС
-        hidden: false
-        sendToAudit: true
+        try {
+            eventsHistoryClient.createEvent(event);
+        } catch (Exception ex) {
+            throw new HistoryIntegrationException("Не удалось записать событие в историю операций", ex);
+        }
+    }
 
-  - id: STS_DELETE
-    description: Удаление СТС
-    successful: true
-    audit:
-      mode: reliability
-      code: AUD-30
-    ui:
-      type: delete
-    parameters:
-      - id: sts_uuid
-        description: UUID СТС
-        hidden: true
-        sendToAudit: true
-      - id: contract_uuid
-        description: UUID договора
-        hidden: true
-        sendToAudit: true
-      - id: vehicle_num
-        description: Номер ТС
-        hidden: true
-        sendToAudit: true
-      - id: vehicle_name
-        description: Марка ТС
-        hidden: true
-        sendToAudit: true
-      - id: status
-        description: Статус СТС
-        hidden: false
-        sendToAudit: true
+    private EventParameterDto parameter(String id, String value) {
+        return EventParameterDto.builder()
+                .id(id)
+                .value(defaultValue(value))
+                .build();
+    }
+
+    private String defaultValue(String value) {
+        return value == null ? "" : value;
+    }
+}
 ```
