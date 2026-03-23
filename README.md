@@ -1,51 +1,132 @@
 ```java
-@SpringBootTest(classes = OpenApiConfigTest.TestApp.class)
-class OpenApiConfigTest {
+serviceId: CI07150460_csportalControlVehcl
+version: "1.0"
+description: Управление СТС
 
-    @Autowired
-    private OpenApiConfig openApiConfig;
+events:
+  - id: STS_CREATE
+    description: Создание СТС
+    successful: true
+    audit:
+      mode: reliability
+      code: AUD-30
+    ui:
+      type: create
+    parameters:
+      - id: sts_uuid
+        description: UUID СТС
+        hidden: true
+        sendToAudit: true
+      - id: contract_uuid
+        description: UUID договора
+        hidden: true
+        sendToAudit: true
+      - id: tb_id
+        description: Код ТБ
+        hidden: false
+        sendToAudit: true
+      - id: vehicle_num
+        description: Номер ТС
+        hidden: true
+        sendToAudit: true
+      - id: vehicle_name
+        description: Марка ТС
+        hidden: true
+        sendToAudit: true
+      - id: comment
+        description: Примечание
+        hidden: false
+        sendToAudit: false
+      - id: status
+        description: Статус СТС
+        hidden: false
+        sendToAudit: true
 
-    @Test
-    void shouldLoadOpenApiConfig() {
-        assertThat(openApiConfig).isNotNull();
-    }
+  - id: STS_UPDATE
+    description: Изменение СТС
+    successful: true
+    audit:
+      mode: reliability
+      code: AUD-30
+    ui:
+      type: edit
+    parameters:
+      - id: sts_uuid
+        description: UUID СТС
+        hidden: true
+        sendToAudit: true
+      - id: contract_uuid
+        description: UUID договора
+        hidden: true
+        sendToAudit: true
+    changedFields:
+      - id: tb_id
+        description: Код ТБ
+        hidden: false
+        sendToAudit: false
+      - id: vehicle_num
+        description: Номер ТС
+        hidden: false
+        sendToAudit: false
+      - id: vehicle_name
+        description: Марка ТС
+        hidden: false
+        sendToAudit: false
+      - id: comment
+        description: Примечание
+        hidden: false
+        sendToAudit: false
 
-    @Test
-    void shouldHaveOpenApiDefinitionAnnotation() {
-        OpenAPIDefinition annotation = OpenApiConfig.class.getAnnotation(OpenAPIDefinition.class);
+  - id: STS_STATUS_CHANGE
+    description: Изменение статуса СТС
+    successful: true
+    audit:
+      mode: reliability
+      code: AUD-30
+    ui:
+      type: edit
+    parameters:
+      - id: sts_uuid
+        description: UUID СТС
+        hidden: true
+        sendToAudit: true
+      - id: contract_uuid
+        description: UUID договора
+        hidden: true
+        sendToAudit: true
+    changedFields:
+      - id: status
+        description: Статус СТС
+        hidden: false
+        sendToAudit: true
 
-        assertThat(annotation).isNotNull();
-
-        Info info = annotation.info();
-        assertThat(info).isNotNull();
-        assertThat(info.title()).isEqualTo("Управление спец. автотранспортом");
-        assertThat(info.description()).contains("Сервис предназначен для управления данными по спецавтотранспорту");
-        assertThat(info.description()).contains("получения и изменения списка СТС по договору");
-        assertThat(info.description()).contains("добавления, редактирования и удаления записей СТС");
-        assertThat(info.description()).contains("отправки изменений на согласование");
-        assertThat(info.description()).contains("ручного согласования или отклонения изменений сотрудником банка");
-        assertThat(info.description()).contains("просмотра истории изменений");
-        assertThat(info.description()).contains("интеграции с внешними сервисами статусов и истории изменений");
-        assertThat(info.version()).isEqualTo("${spring.application.version}");
-    }
-
-    @Test
-    void shouldHaveSecuritySchemeAnnotation() {
-        SecurityScheme annotation = OpenApiConfig.class.getAnnotation(SecurityScheme.class);
-
-        assertThat(annotation).isNotNull();
-        assertThat(annotation.name()).isEqualTo(Headers.AUTH_HEADER);
-        assertThat(annotation.type().name()).isEqualTo("APIKEY");
-        assertThat(annotation.in().name()).isEqualTo("HEADER");
-    }
-
-    @SpringBootConfiguration
-    @EnableAutoConfiguration(exclude = {
-            DataSourceAutoConfiguration.class,
-            HibernateJpaAutoConfiguration.class
-    })
-    @Import(OpenApiConfig.class)
-    static class TestApp {
-    }
-}
+  - id: STS_DELETE
+    description: Удаление СТС
+    successful: true
+    audit:
+      mode: reliability
+      code: AUD-30
+    ui:
+      type: delete
+    parameters:
+      - id: sts_uuid
+        description: UUID СТС
+        hidden: true
+        sendToAudit: true
+      - id: contract_uuid
+        description: UUID договора
+        hidden: true
+        sendToAudit: true
+      - id: vehicle_num
+        description: Номер ТС
+        hidden: true
+        sendToAudit: true
+      - id: vehicle_name
+        description: Марка ТС
+        hidden: true
+        sendToAudit: true
+      - id: status
+        description: Статус СТС
+        hidden: false
+        sendToAudit: true
 ```
