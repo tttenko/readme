@@ -1,44 +1,45 @@
 ```java
-@Component
-@RequiredArgsConstructor
-@ConditionalOnProperty(prefix = "app.kafka", name = "enabled", havingValue = "true")
-public class TrackerKafkaProducer {
+code: status_sts
 
-    @Value("${app.tracker.kafka.topic.scheme:tracker_scheme}")
-    private String schemeTopic;
+nodes:
+  - id: DRAFT
+    start: true
+    text: Черновик
+    edges:
+      - target: TO_APPROVE_IN
+        id: IN-APPROVE
+        validator: toapprovein
+        base: true
+      - target: TO_APPROVE_OUT
+        id: TO-DELETE
+        validator: toapproveout
 
-    @Value("${app.tracker.kafka.topic.history:tracker_history}")
-    private String historyTopic;
+  - id: TO_APPROVE_IN
+    text: На согласовании включения
+    edges:
+      - target: APPROVE
+        id: APPROVE
+        validator: approvein
+        base: true
+      - target: DRAFT
+        validator: rejectin
 
-    @Value("${app.tracker.kafka.topic.additional:tracker_additional}")
-    private String additionalTopic;
+  - id: TO_APPROVE_OUT
+    text: На согласовании удаления
+    edges:
+      - target: DELETE
+        validator: approveout
+        base: true
+      - target: APPROVE
+        validator: rejectout
 
-    private final KafkaTemplate<String, SchemeCreateDto> schemeCreateTemplate;
-    private final KafkaTemplate<String, HistoryNewDto> historyNewTemplate;
-    private final KafkaTemplate<String, PlannedDateDto> plannedDateTemplate;
+  - id: APPROVE
+    text: Включен в договор
+    edges:
+      - target: TO_APPROVE_OUT
+        validator: toapproveout
 
-    public void sendScheme(SchemeCreateDto dto) {
-        schemeCreateTemplate.send(schemeTopic, StsTrackerSchemeCodes.STATUS_STS, dto);
-
-        log.info("Схема статусов отправлена в Kafka. topic={}", schemeTopic);
-    }
-
-    public void sendHistory(HistoryNewDto dto) {
-        String key = dto.getEntityUuid().toString();
-
-        historyNewTemplate.send(historyTopic, key, dto);
-
-        log.info("История статуса отправлена в Kafka. topic={}, entityUuid={}, status={}",
-                historyTopic, dto.getEntityUuid(), dto.getStatus());
-    }
-
-    public void sendAdditional(PlannedDateDto dto) {
-        String key = dto.getEntityUuid().toString();
-
-        plannedDateTemplate.send(additionalTopic, key, dto);
-
-        log.info("Planned date отправлена в Kafka. topic={}, entityUuid={}",
-                additionalTopic, dto.getEntityUuid());
-    }
-}
+  - id: DELETE
+    text: Удален
+    end: true
 ```
