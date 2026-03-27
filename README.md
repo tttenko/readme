@@ -1,22 +1,51 @@
 ```java
 @ExtendWith(MockitoExtension.class)
-class StsTrackerHistoryListenerTest {
+class TrackerKafkaProducerTest {
 
     @Mock
-    private StsTrackerHistoryService stsTrackerHistoryService;
+    private KafkaTemplate<String, HistoryNewDto> historyNewTemplate;
 
     @Mock
-    private StsCreatedTrackerHistoryEvent event;
+    private KafkaTemplate<String, PlannedDateDto> plannedDateTemplate;
 
-    @InjectMocks
-    private StsTrackerHistoryListener stsTrackerHistoryListener;
+    private TrackerKafkaProducer trackerKafkaProducer;
+
+    @BeforeEach
+    void setUp() {
+        trackerKafkaProducer = new TrackerKafkaProducer(
+                historyNewTemplate,
+                plannedDateTemplate
+        );
+
+        setField(trackerKafkaProducer, "historyTopic", "tracker_history_test");
+        setField(trackerKafkaProducer, "additionalTopic", "tracker_additional_test");
+    }
 
     @Test
-    void handle_shouldDelegateEventToHistoryService() {
-        stsTrackerHistoryListener.handle(event);
+    void sendHistory_shouldCallKafkaTemplateSend() {
+        UUID entityUuid = UUID.randomUUID();
 
-        verify(stsTrackerHistoryService).sendCreatedStatus(event);
-        verifyNoMoreInteractions(stsTrackerHistoryService);
+        HistoryNewDto dto = mock(HistoryNewDto.class);
+        when(dto.getEntityUuid()).thenReturn(entityUuid);
+        when(dto.getStatus()).thenReturn("DRAFT");
+
+        trackerKafkaProducer.sendHistory(dto);
+
+        verify(historyNewTemplate).send("tracker_history_test", entityUuid.toString(), dto);
+        verifyNoInteractions(plannedDateTemplate);
+    }
+
+    @Test
+    void sendAdditional_shouldCallKafkaTemplateSend() {
+        UUID entityUuid = UUID.randomUUID();
+
+        PlannedDateDto dto = mock(PlannedDateDto.class);
+        when(dto.getEntityUuid()).thenReturn(entityUuid);
+
+        trackerKafkaProducer.sendAdditional(dto);
+
+        verify(plannedDateTemplate).send("tracker_additional_test", entityUuid.toString(), dto);
+        verifyNoInteractions(historyNewTemplate);
     }
 }
 ```
