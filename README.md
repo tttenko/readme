@@ -12,17 +12,28 @@ class TrackerKafkaProducerTest {
     private TrackerKafkaProducer trackerKafkaProducer;
 
     @Captor
-    private ArgumentCaptor<ProducerRecord<String, HistoryNewDto>> historyRecordCaptor;
+    private ArgumentCaptor<String> historyTopicCaptor;
 
     @Captor
-    private ArgumentCaptor<ProducerRecord<String, PlannedDateDto>> plannedDateRecordCaptor;
+    private ArgumentCaptor<String> historyKeyCaptor;
+
+    @Captor
+    private ArgumentCaptor<HistoryNewDto> historyDtoCaptor;
+
+    @Captor
+    private ArgumentCaptor<String> additionalTopicCaptor;
+
+    @Captor
+    private ArgumentCaptor<String> additionalKeyCaptor;
+
+    @Captor
+    private ArgumentCaptor<PlannedDateDto> additionalDtoCaptor;
 
     private static final String HISTORY_TOPIC = "tracker_history";
     private static final String ADDITIONAL_TOPIC = "tracker_additional";
 
     @BeforeEach
     void setUp() {
-        // Устанавливаем значения топиков через reflection, так как они из @Value
         ReflectionTestUtils.setField(trackerKafkaProducer, "historyTopic", HISTORY_TOPIC);
         ReflectionTestUtils.setField(trackerKafkaProducer, "additionalTopic", ADDITIONAL_TOPIC);
     }
@@ -41,13 +52,15 @@ class TrackerKafkaProducerTest {
         trackerKafkaProducer.sendHistory(dto);
 
         // then
-        verify(historyNewTemplate).send(historyRecordCaptor.capture());
+        verify(historyNewTemplate).send(
+                historyTopicCaptor.capture(),
+                historyKeyCaptor.capture(),
+                historyDtoCaptor.capture()
+        );
         
-        ProducerRecord<String, HistoryNewDto> record = historyRecordCaptor.getValue();
-        
-        assertThat(record.topic()).isEqualTo(HISTORY_TOPIC);
-        assertThat(record.key()).isEqualTo(entityUuid.toString());
-        assertThat(record.value()).isSameAs(dto);
+        assertThat(historyTopicCaptor.getValue()).isEqualTo(HISTORY_TOPIC);
+        assertThat(historyKeyCaptor.getValue()).isEqualTo(entityUuid.toString());
+        assertThat(historyDtoCaptor.getValue()).isSameAs(dto);
     }
 
     @Test
@@ -63,50 +76,61 @@ class TrackerKafkaProducerTest {
         trackerKafkaProducer.sendHistory(dto);
 
         // then
-        verify(historyNewTemplate).send(historyRecordCaptor.capture());
+        verify(historyNewTemplate).send(
+                historyTopicCaptor.capture(),
+                historyKeyCaptor.capture(),
+                historyDtoCaptor.capture()
+        );
         
-        ProducerRecord<String, HistoryNewDto> record = historyRecordCaptor.getValue();
-        assertThat(record.key()).isEqualTo(expectedUuid.toString());
+        assertThat(historyKeyCaptor.getValue()).isEqualTo(expectedUuid.toString());
     }
 
     @Test
     void sendAdditional_ShouldSendPlannedDateToKafka() {
         // given
         UUID entityUuid = UUID.randomUUID();
+        ZonedDateTime plannedDate = ZonedDateTime.now();
         PlannedDateDto dto = PlannedDateDto.builder()
                 .entityUuid(entityUuid)
-                .plannedDate("2024-12-31")
+                .plannedDate(plannedDate)
                 .build();
 
         // when
         trackerKafkaProducer.sendAdditional(dto);
 
         // then
-        verify(plannedDateTemplate).send(plannedDateRecordCaptor.capture());
+        verify(plannedDateTemplate).send(
+                additionalTopicCaptor.capture(),
+                additionalKeyCaptor.capture(),
+                additionalDtoCaptor.capture()
+        );
         
-        ProducerRecord<String, PlannedDateDto> record = plannedDateRecordCaptor.getValue();
-        
-        assertThat(record.topic()).isEqualTo(ADDITIONAL_TOPIC);
-        assertThat(record.key()).isEqualTo(entityUuid.toString());
-        assertThat(record.value()).isSameAs(dto);
+        assertThat(additionalTopicCaptor.getValue()).isEqualTo(ADDITIONAL_TOPIC);
+        assertThat(additionalKeyCaptor.getValue()).isEqualTo(entityUuid.toString());
+        assertThat(additionalDtoCaptor.getValue()).isSameAs(dto);
     }
 
     @Test
     void sendAdditional_WhenDtoHasEntityUuid_ShouldUseUuidAsKey() {
         // given
         UUID expectedUuid = UUID.randomUUID();
+        ZonedDateTime plannedDate = ZonedDateTime.now();
         PlannedDateDto dto = PlannedDateDto.builder()
                 .entityUuid(expectedUuid)
+                .plannedDate(plannedDate)
                 .build();
 
         // when
         trackerKafkaProducer.sendAdditional(dto);
 
         // then
-        verify(plannedDateTemplate).send(plannedDateRecordCaptor.capture());
+        verify(plannedDateTemplate).send(
+                additionalTopicCaptor.capture(),
+                additionalKeyCaptor.capture(),
+                additionalDtoCaptor.capture()
+        );
         
-        ProducerRecord<String, PlannedDateDto> record = plannedDateRecordCaptor.getValue();
-        assertThat(record.key()).isEqualTo(expectedUuid.toString());
+        assertThat(additionalKeyCaptor.getValue()).isEqualTo(expectedUuid.toString());
     }
 }
 ```
