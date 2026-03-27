@@ -1,47 +1,48 @@
 ```java
 @ExtendWith(MockitoExtension.class)
-class TrackerKafkaProducerTest {
+class StsTrackerHistoryServiceTest {
 
     @Mock
-    private KafkaTemplate<String, HistoryNewDto> historyNewTemplate;
-
-    @Mock
-    private KafkaTemplate<String, PlannedDateDto> plannedDateTemplate;
-
-    @InjectMocks
     private TrackerKafkaProducer trackerKafkaProducer;
 
-    @BeforeEach
-    void setUp() {
-        ReflectionTestUtils.setField(trackerKafkaProducer, "historyTopic", "tracker_history_test");
-        ReflectionTestUtils.setField(trackerKafkaProducer, "additionalTopic", "tracker_additional_test");
-    }
+    @InjectMocks
+    private StsTrackerHistoryService stsTrackerHistoryService;
+
+    @Captor
+    private ArgumentCaptor<HistoryNewDto> historyCaptor;
 
     @Test
-    void sendHistory_shouldCallKafkaTemplateSend() {
+    void sendCreatedStatus_shouldBuildDtoAndSendHistory() {
         UUID entityUuid = UUID.randomUUID();
+        UUID createdBy = UUID.randomUUID();
 
-        HistoryNewDto dto = mock(HistoryNewDto.class);
-        when(dto.getEntityUuid()).thenReturn(entityUuid);
-        when(dto.getStatus()).thenReturn("DRAFT");
+        StsCreatedTrackerHistoryEvent event = org.mockito.Mockito.mock(StsCreatedTrackerHistoryEvent.class);
 
-        trackerKafkaProducer.sendHistory(dto);
+        // Подставь здесь свой реальный enum статуса и существующее значение
+        StsStatus status = StsStatus.DRAFT;
 
-        verify(historyNewTemplate).send("tracker_history_test", entityUuid.toString(), dto);
-        verifyNoInteractions(plannedDateTemplate);
-    }
+        when(event.entityUuid()).thenReturn(entityUuid);
+        when(event.statusId()).thenReturn(status);
+        when(event.createdBy()).thenReturn(createdBy);
 
-    @Test
-    void sendAdditional_shouldCallKafkaTemplateSend() {
-        UUID entityUuid = UUID.randomUUID();
+        stsTrackerHistoryService.sendCreatedStatus(event);
 
-        PlannedDateDto dto = mock(PlannedDateDto.class);
-        when(dto.getEntityUuid()).thenReturn(entityUuid);
+        verify(trackerKafkaProducer).sendHistory(historyCaptor.capture());
+        verifyNoMoreInteractions(trackerKafkaProducer);
 
-        trackerKafkaProducer.sendAdditional(dto);
+        HistoryNewDto dto = historyCaptor.getValue();
 
-        verify(plannedDateTemplate).send("tracker_additional_test", entityUuid.toString(), dto);
-        verifyNoInteractions(historyNewTemplate);
+        assertAll(
+                () -> assertEquals(StsTrackerSchemeCodes.STATUS_STS, dto.getCode()),
+                () -> assertEquals(entityUuid, dto.getEntityUuid()),
+                () -> assertEquals(StsAction.CREATE_STS.getId(), dto.getOperation()),
+                () -> assertEquals(status.name(), dto.getStatus()),
+                () -> assertNull(dto.getComment()),
+                () -> assertEquals(createdBy, dto.getCreatedBy()),
+                () -> assertEquals(createdBy.toString(), dto.getExtCreatedBy()),
+                () -> assertEquals(createdBy.toString(), dto.getUserName()),
+                () -> assertNull(dto.getUserPosition())
+        );
     }
 }
 ```
