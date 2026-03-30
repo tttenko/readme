@@ -65,51 +65,101 @@ public abstract class BaseEntity implements Serializable {
     }
 }
 
+@Slf4j
+@Entity
 @Getter
-@NoArgsConstructor(access = AccessLevel.PROTECTED)
-@AllArgsConstructor(access = AccessLevel.PROTECTED)
-@MappedSuperclass
-public abstract class BaseEntity implements Serializable {
+@NoArgsConstructor
+@AllArgsConstructor
+@Table(name = "OUTBOX_MESSAGE")
+public class OutboxMessage extends BaseEntity {
 
-    @Serial
-    private static final long serialVersionUID = 2765238233714717629L;
+    private static final String STATUS_CHANGE_ERROR =
+            "Unable to change outbox message status to '{}', message is already processed, uuid: '{}', event type: '{}', aggregate id: '{}', status: '{}'";
 
-    @Id
-    @Column(name = "uuid", unique = true, nullable = false)
-    @GeneratedValue(strategy = GenerationType.UUID)
-    protected UUID uuid;
+    @Column(name = "STATUS", nullable = false)
+    @Enumerated(EnumType.STRING)
+    private OutboxMessageStatus status = PENDING;
 
-    @Override
-    @SuppressWarnings("squid:S2097")
-    public final boolean equals(Object object) {
-        if (this == object) {
-            return true;
-        }
-        if (object == null) {
-            return false;
-        }
+    @Column(name = "EVENT_TYPE", nullable = false)
+    @Enumerated(EnumType.STRING)
+    private OutboxMessageEventType eventType;
 
-        Class<?> objectEffectiveClass = object instanceof HibernateProxy proxy
-                ? proxy.getHibernateLazyInitializer().getPersistentClass()
-                : object.getClass();
+    @Column(name = "AGGREGATE_ID", nullable = false)
+    private String aggregateId;
 
-        Class<?> thisEffectiveClass = this instanceof HibernateProxy proxy
-                ? proxy.getHibernateLazyInitializer().getPersistentClass()
-                : this.getClass();
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "PAYLOAD", columnDefinition = "jsonb")
+    private String payload;
 
-        if (thisEffectiveClass != objectEffectiveClass) {
-            return false;
-        }
+    @Column(name = "CREATED_AT", nullable = false)
+    private ZonedDateTime createdAt;
 
-        BaseEntity basicEntity = (BaseEntity) object;
-        return getUuid() != null && Objects.equals(getUuid(), basicEntity.getUuid());
+    @Column(name = "CREATED_BY", nullable = false)
+    private UUID createdBy;
+
+    @Column(name = "PUBLISHED_AT")
+    private ZonedDateTime publishedAt;
+
+    @Column(name = "PICKED_AT")
+    private ZonedDateTime pickedAt;
+
+    @Column(name = "NEXT_ATTEMPT_AT")
+    private ZonedDateTime nextAttemptAt = ZonedDateTime.now();
+
+    @OneToMany(mappedBy = "outboxMessage", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<OutboxMessageError> errors = new ArrayList<>();
+
+    public OutboxMessage(
+            @NotNull OutboxMessageEventType eventType,
+            @NotNull UUID createdBy,
+            @NotBlank String aggregateId,
+            @NotBlank String payload
+    ) {
+        this.eventType = eventType;
+        this.aggregateId = aggregateId;
+        this.payload = payload;
+        this.createdAt = ZonedDateTime.now();
+        this.createdBy = createdBy;
     }
 
-    @Override
-    public final int hashCode() {
-        return this instanceof HibernateProxy proxy
-                ? proxy.getHibernateLazyInitializer().getPersistentClass().hashCode()
-                : getClass().hashCode();
+    public void setDone() {
+        if (status != IN_PROGRESS) {
+            log.warn(STATUS_CHANGE_ERROR, DONE, getUuid(), eventType, aggregateId, status);
+            return;
+        }
+
+        publishedAt = ZonedDateTime.now();
+        status = DONE;
+    }
+
+    public void setCanceled() {
+        if (status != PENDING && status != IN_PROGRESS) {
+            log.warn(STATUS_CHANGE_ERROR, CANCELED, getUuid(), eventType, aggregateId, status);
+            return;
+        }
+
+        status = CANCELED;
+    }
+
+    public void retryExecution(@NotBlank String error, long delay) {
+        if (status != IN_PROGRESS) {
+            log.warn(STATUS_CHANGE_ERROR, PENDING, getUuid(), eventType, aggregateId, status);
+            return;
+        }
+
+        status = PENDING;
+        errors.add(new OutboxMessageError(error, this));
+        nextAttemptAt = ZonedDateTime.now().plus(Duration.ofSeconds(delay));
+    }
+
+    public void setFailed(@NotBlank String error) {
+        if (status != IN_PROGRESS) {
+            log.warn(STATUS_CHANGE_ERROR, FAILED, getUuid(), eventType, aggregateId, status);
+            return;
+        }
+
+        errors.add(new OutboxMessageError(error, this));
+        status = FAILED;
     }
 }
 
