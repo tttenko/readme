@@ -220,35 +220,13 @@ public interface OutboxMessageRepository extends JpaRepository<OutboxMessage, UU
     OutboxMessage findUnpublishedMessageByIdWithErrors(@Param("uuid") UUID uuid);
 }
 
-public interface OutboxMessageRepository extends JpaRepository<OutboxMessage, UUID>,
-        OutboxMessageRepositoryCustom {
+public interface OutboxMessageRepositoryCustom {
 
-    @Query("""
-        SELECT COUNT(m) > 0 FROM OutboxMessage m
-        WHERE m.eventType = :eventType
-        AND m.aggregateId = :aggregateId
-        AND m.createdAt > :createdAt
-    """)
-    boolean existsNewerMessage(
-            @Param("eventType") OutboxMessageEventType eventType,
-            @Param("aggregateId") String aggregateId,
-            @Param("createdAt") ZonedDateTime createdAt
-    );
+    List<OutboxMessage> findAndLockPendingMessagesToPublish(int limit, int visibilityTimeout);
 
-    @Query("""
-        SELECT DISTINCT om FROM OutboxMessage om
-        LEFT JOIN FETCH om.errors
-        WHERE om.publishedAt IS NULL
-        ORDER BY om.createdAt
-    """)
-    List<OutboxMessage> findUnpublishedMessagesWithErrors(Pageable pageable);
+    OutboxMessage findAndLockPendingMessageById(UUID uuid);
 
-    @Query("""
-        SELECT om FROM OutboxMessage om
-        LEFT JOIN FETCH om.errors
-        WHERE om.uuid = :uuid
-    """)
-    OutboxMessage findUnpublishedMessageByIdWithErrors(@Param("uuid") UUID uuid);
+    int deleteOldProcessedMessages(int daysToLive, int batchSize);
 }
 
 public interface OutboxMessageRepositoryCustom {
@@ -258,6 +236,96 @@ public interface OutboxMessageRepositoryCustom {
     OutboxMessage findAndLockPendingMessageById(UUID uuid);
 
     int deleteOldProcessedMessages(int daysToLive, int batchSize);
+}
+
+public class OutboxMessageRepositoryCustomImpl implements OutboxMessageRepositoryCustom {
+
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public List<OutboxMessage> findAndLockPendingMessagesToPublish(int limit, int visibilityTimeout) {
+        String sql = """
+            WITH cte AS (
+                SELECT uuid FROM {h-schema}outbox_message
+                WHERE (status = :pending
+                    OR (status = :inProgress AND picked_at < now() - (:vis * interval '1 second')))
+                AND next_attempt_at <= now()
+                ORDER BY created_at
+                FOR UPDATE SKIP LOCKED
+                LIMIT :limit
+            ),
+            upd AS (
+                UPDATE {h-schema}outbox_message om
+                SET status = :inProgress,
+                    picked_at = now()
+                FROM cte
+                WHERE om.uuid = cte.uuid
+                RETURNING om.*
+            )
+            SELECT * FROM upd
+        """;
+
+        return entityManager.createNativeQuery(sql, OutboxMessage.class)
+                .setParameter("pending", PENDING.name())
+                .setParameter("inProgress", IN_PROGRESS.name())
+                .setParameter("vis", visibilityTimeout)
+                .setParameter("limit", limit)
+                .getResultList();
+    }
+
+    @Override
+    public OutboxMessage findAndLockPendingMessageById(UUID uuid) {
+        String sql = """
+            WITH cte AS (
+                SELECT uuid FROM {h-schema}outbox_message
+                WHERE status = :pending AND uuid = :uuid
+                FOR UPDATE SKIP LOCKED
+            ),
+            upd AS (
+                UPDATE {h-schema}outbox_message om
+                SET status = :inProgress,
+                    picked_at = now()
+                FROM cte
+                WHERE om.uuid = cte.uuid
+                RETURNING om.*
+            )
+            SELECT * FROM upd
+        """;
+
+        List<?> result = entityManager.createNativeQuery(sql, OutboxMessage.class)
+                .setParameter("pending", PENDING.name())
+                .setParameter("inProgress", IN_PROGRESS.name())
+                .setParameter("uuid", uuid)
+                .getResultList();
+
+        return result.isEmpty() ? null : (OutboxMessage) result.get(0);
+    }
+
+    @Override
+    public int deleteOldProcessedMessages(int daysToLive, int batchSize) {
+        String sql = """
+            WITH messages_to_delete AS (
+                SELECT uuid FROM {h-schema}outbox_message
+                WHERE status IN (:failed, :done, :canceled)
+                AND created_at < (NOW() - INTERVAL '1 day' * :days)
+                ORDER BY created_at
+                FOR UPDATE SKIP LOCKED
+                LIMIT :batchSize
+            )
+            DELETE FROM {h-schema}outbox_message
+            WHERE uuid IN (SELECT uuid FROM messages_to_delete)
+        """;
+
+        return entityManager.createNativeQuery(sql)
+                .setParameter("failed", FAILED.name())
+                .setParameter("done", DONE.name())
+                .setParameter("canceled", CANCELED.name())
+                .setParameter("days", daysToLive)
+                .setParameter("batchSize", batchSize)
+                .executeUpdate();
+    }
 }
 
 @Service
