@@ -1,51 +1,54 @@
 ```java
-@ExtendWith(MockitoExtension.class)
-class TrackerKafkaProducerTest {
+class StsTrackerValidatorsConfigTest {
 
-    @Mock
-    private KafkaTemplate<String, HistoryNewDto> historyNewTemplate;
+    private final StsTrackerValidatorsConfig config = new StsTrackerValidatorsConfig();
 
-    @Mock
-    private KafkaTemplate<String, PlannedDateDto> plannedDateTemplate;
+    @Test
+    void toApproveInValidator_shouldReturnTrue() {
+        SwitchCheck validator = config.toApproveInValidator();
 
-    private TrackerKafkaProducer trackerKafkaProducer;
-
-    @BeforeEach
-    void setUp() {
-        trackerKafkaProducer = new TrackerKafkaProducer(
-                historyNewTemplate,
-                plannedDateTemplate
-        );
-
-        setField(trackerKafkaProducer, "historyTopic", "tracker_history_test");
-        setField(trackerKafkaProducer, "additionalTopic", "tracker_additional_test");
+        assertNotNull(validator);
+        assertTrue(validator.check(null, null, Map.of()));
     }
 
     @Test
-    void sendHistory_shouldCallKafkaTemplateSend() {
-        UUID entityUuid = UUID.randomUUID();
+    void approveInValidator_shouldReturnTrue() {
+        SwitchCheck validator = config.approveInValidator();
 
-        HistoryNewDto dto = mock(HistoryNewDto.class);
-        when(dto.getEntityUuid()).thenReturn(entityUuid);
-        when(dto.getStatus()).thenReturn("DRAFT");
-
-        trackerKafkaProducer.sendHistory(dto);
-
-        verify(historyNewTemplate).send("tracker_history_test", entityUuid.toString(), dto);
-        verifyNoInteractions(plannedDateTemplate);
+        assertNotNull(validator);
+        assertTrue(validator.check(null, null, Map.of()));
     }
 
     @Test
-    void sendAdditional_shouldCallKafkaTemplateSend() {
-        UUID entityUuid = UUID.randomUUID();
+    void rejectInValidator_shouldReturnTrue() {
+        SwitchCheck validator = config.rejectInValidator();
 
-        PlannedDateDto dto = mock(PlannedDateDto.class);
-        when(dto.getEntityUuid()).thenReturn(entityUuid);
+        assertNotNull(validator);
+        assertTrue(validator.check(null, null, Map.of()));
+    }
 
-        trackerKafkaProducer.sendAdditional(dto);
+    @Test
+    void toApproveOutValidator_shouldReturnTrue() {
+        SwitchCheck validator = config.toApproveOutValidator();
 
-        verify(plannedDateTemplate).send("tracker_additional_test", entityUuid.toString(), dto);
-        verifyNoInteractions(historyNewTemplate);
+        assertNotNull(validator);
+        assertTrue(validator.check(null, null, Map.of()));
+    }
+
+    @Test
+    void approveOutValidator_shouldReturnTrue() {
+        SwitchCheck validator = config.approveOutValidator();
+
+        assertNotNull(validator);
+        assertTrue(validator.check(null, null, Map.of()));
+    }
+
+    @Test
+    void rejectOutValidator_shouldReturnTrue() {
+        SwitchCheck validator = config.rejectOutValidator();
+
+        assertNotNull(validator);
+        assertTrue(validator.check(null, null, Map.of()));
     }
 }
 ```
