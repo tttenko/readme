@@ -1,689 +1,228 @@
 ```java
-@Getter
-@AllArgsConstructor
-public enum OutboxMessageEventType {
+@Service
+@RequiredArgsConstructor
+public class StsEventsHistoryService {
 
-    CREATE_EVENT(false, true);
+    private static final String NO_SESSION = "NO-SESSION";
+    private static final String NO_USER_NODE = "NO-USERNODE";
+    private static final String NO_USER = "NO-USER";
 
-    private final boolean negligible;
-    private final boolean retryable;
-}
+    private final OutboxMessageService outboxMessageService;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
-public enum OutboxMessageStatus {
-    PENDING,
-    IN_PROGRESS,
-    DONE,
-    CANCELED,
-    FAILED
-}
+    /** Сохраняет событие создания СТС в outbox для дальнейшей отправки в историю. */
+    public void sendCreateEvent(StsDataEntity entity) {
+        EventCreateDto payload = EventCreateDto.builder()
+                .serviceId(StsHistoryEventIds.SERVICE_ID)
+                .id(StsHistoryEventIds.STS_CREATE)
+                .entityUuid(entity.getUuid())
+                .submittedAt(entity.getCreatedAt())
+                .submittedBy(entity.getCreatedBy().toString())
+                .session(NO_SESSION)
+                .userName(resolveFullName())
+                .userNode(NO_USER_NODE)
+                .parameters(List.of(
+                        parameter("vehicle_num", entity.getVehicleNumber()),
+                        parameter("vehicle_name", entity.getVehicleBrand())
+                ))
+                .build();
 
-@Getter
-@NoArgsConstructor(access = AccessLevel.PROTECTED)
-@AllArgsConstructor(access = AccessLevel.PROTECTED)
-@MappedSuperclass
-public abstract class BaseEntity implements Serializable {
+        OutboxMessage message = outboxMessageService.addOutboxMessage(
+                OutboxMessageEventType.CREATE_EVENT,
+                entity.getCreatedBy(),
+                entity.getUuid().toString(),
+                payload
+        );
 
-    @Serial
-    private static final long serialVersionUID = 2765238233714717629L;
-
-    @Id
-    @Column(name = "uuid", unique = true, nullable = false)
-    @GeneratedValue(strategy = GenerationType.UUID)
-    protected UUID uuid;
-
-    @Override
-    @SuppressWarnings("squid:S2097")
-    public final boolean equals(Object object) {
-        if (this == object) {
-            return true;
-        }
-        if (object == null) {
-            return false;
-        }
-
-        Class<?> objectEffectiveClass = object instanceof HibernateProxy proxy
-                ? proxy.getHibernateLazyInitializer().getPersistentClass()
-                : object.getClass();
-
-        Class<?> thisEffectiveClass = this instanceof HibernateProxy proxy
-                ? proxy.getHibernateLazyInitializer().getPersistentClass()
-                : this.getClass();
-
-        if (thisEffectiveClass != objectEffectiveClass) {
-            return false;
-        }
-
-        BaseEntity basicEntity = (BaseEntity) object;
-        return getUuid() != null && Objects.equals(getUuid(), basicEntity.getUuid());
+        applicationEventPublisher.publishEvent(new OutboxMessageEvent(message.getUuid()));
     }
 
-    @Override
-    public final int hashCode() {
-        return this instanceof HibernateProxy proxy
-                ? proxy.getHibernateLazyInitializer().getPersistentClass().hashCode()
-                : getClass().hashCode();
+    private EventParameterCreateDto parameter(String id, String value) {
+        return EventParameterCreateDto.builder()
+                .id(id)
+                .value(value)
+                .build();
+    }
+
+    private String resolveFullName() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+
+        if (authentication == null || authentication.getPrincipal() == null) {
+            return NO_USER;
+        }
+
+        Object principal = authentication.getPrincipal();
+
+        if (principal instanceof AuthorizedUser authorizedUser
+                && StringUtils.hasText(authorizedUser.getFullName())) {
+            return authorizedUser.getFullName();
+        }
+
+        return NO_USER;
     }
 }
 
-@Slf4j
-@Entity
-@Getter
-@NoArgsConstructor
-@AllArgsConstructor
-@Table(name = "OUTBOX_MESSAGE")
-public class OutboxMessage extends BaseEntity {
+@ExceptionHandler(OutboxMessageActionException.class)
+@ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+public ResponseEntity<Object> handleOutboxMessageActionException(
+        OutboxMessageActionException ex,
+        WebRequest request
+) {
+    log.error("Outbox processing preparation failed: {}", ex.getMessage(), ex);
 
-    private static final String STATUS_CHANGE_ERROR =
-            "Unable to change outbox message status to '{}', message is already processed, uuid: '{}', event type: '{}', aggregate id: '{}', status: '{}'";
-
-    @Column(name = "STATUS", nullable = false)
-    @Enumerated(EnumType.STRING)
-    private OutboxMessageStatus status = PENDING;
-
-    @Column(name = "EVENT_TYPE", nullable = false)
-    @Enumerated(EnumType.STRING)
-    private OutboxMessageEventType eventType;
-
-    @Column(name = "AGGREGATE_ID", nullable = false)
-    private String aggregateId;
-
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(name = "PAYLOAD", columnDefinition = "jsonb")
-    private String payload;
-
-    @Column(name = "CREATED_AT", nullable = false)
-    private ZonedDateTime createdAt;
-
-    @Column(name = "CREATED_BY", nullable = false)
-    private UUID createdBy;
-
-    @Column(name = "PUBLISHED_AT")
-    private ZonedDateTime publishedAt;
-
-    @Column(name = "PICKED_AT")
-    private ZonedDateTime pickedAt;
-
-    @Column(name = "NEXT_ATTEMPT_AT")
-    private ZonedDateTime nextAttemptAt = ZonedDateTime.now();
-
-    @OneToMany(mappedBy = "outboxMessage", cascade = CascadeType.ALL, orphanRemoval = true)
-    private List<OutboxMessageError> errors = new ArrayList<>();
-
-    public OutboxMessage(
-            @NotNull OutboxMessageEventType eventType,
-            @NotNull UUID createdBy,
-            @NotBlank String aggregateId,
-            @NotBlank String payload
-    ) {
-        this.eventType = eventType;
-        this.aggregateId = aggregateId;
-        this.payload = payload;
-        this.createdAt = ZonedDateTime.now();
-        this.createdBy = createdBy;
-    }
-
-    public void setDone() {
-        if (status != IN_PROGRESS) {
-            log.warn(STATUS_CHANGE_ERROR, DONE, getUuid(), eventType, aggregateId, status);
-            return;
-        }
-
-        publishedAt = ZonedDateTime.now();
-        status = DONE;
-    }
-
-    public void setCanceled() {
-        if (status != PENDING && status != IN_PROGRESS) {
-            log.warn(STATUS_CHANGE_ERROR, CANCELED, getUuid(), eventType, aggregateId, status);
-            return;
-        }
-
-        status = CANCELED;
-    }
-
-    public void retryExecution(@NotBlank String error, long delay) {
-        if (status != IN_PROGRESS) {
-            log.warn(STATUS_CHANGE_ERROR, PENDING, getUuid(), eventType, aggregateId, status);
-            return;
-        }
-
-        status = PENDING;
-        errors.add(new OutboxMessageError(error, this));
-        nextAttemptAt = ZonedDateTime.now().plus(Duration.ofSeconds(delay));
-    }
-
-    public void setFailed(@NotBlank String error) {
-        if (status != IN_PROGRESS) {
-            log.warn(STATUS_CHANGE_ERROR, FAILED, getUuid(), eventType, aggregateId, status);
-            return;
-        }
-
-        errors.add(new OutboxMessageError(error, this));
-        status = FAILED;
-    }
-}
-
-@Entity
-@Getter
-@NoArgsConstructor
-@AllArgsConstructor
-@Table(name = "OUTBOX_MESSAGE_ERROR")
-public class OutboxMessageError extends BaseEntity {
-
-    @Column(name = "ATTEMPTED_AT")
-    private ZonedDateTime attemptedAt = ZonedDateTime.now();
-
-    @Column(name = "ERROR_MESSAGE", columnDefinition = "TEXT")
-    private String errorMessage;
-
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "OUTBOX_MESSAGE_UUID", nullable = false)
-    private OutboxMessage outboxMessage;
-
-    public OutboxMessageError(
-            @NotBlank String errorMessage,
-            @NotNull OutboxMessage outboxMessage
-    ) {
-        this.errorMessage = errorMessage;
-        this.outboxMessage = outboxMessage;
-    }
-}
-
-public interface OutboxMessageRepository extends JpaRepository<OutboxMessage, UUID>,
-        OutboxMessageRepositoryCustom {
-
-    @Query("""
-        SELECT COUNT(m) > 0 FROM OutboxMessage m
-        WHERE m.eventType = :eventType
-        AND m.aggregateId = :aggregateId
-        AND m.createdAt > :createdAt
-    """)
-    boolean existsNewerMessage(
-            @Param("eventType") OutboxMessageEventType eventType,
-            @Param("aggregateId") String aggregateId,
-            @Param("createdAt") ZonedDateTime createdAt
+    return createResponseEntity(
+            "Внутренняя ошибка при подготовке события для отправки",
+            new HttpHeaders(),
+            HttpStatus.INTERNAL_SERVER_ERROR,
+            request
     );
-
-    @Query("""
-        SELECT DISTINCT om FROM OutboxMessage om
-        LEFT JOIN FETCH om.errors
-        WHERE om.publishedAt IS NULL
-        ORDER BY om.createdAt
-    """)
-    List<OutboxMessage> findUnpublishedMessagesWithErrors(Pageable pageable);
-
-    @Query("""
-        SELECT om FROM OutboxMessage om
-        LEFT JOIN FETCH om.errors
-        WHERE om.uuid = :uuid
-    """)
-    OutboxMessage findUnpublishedMessageByIdWithErrors(@Param("uuid") UUID uuid);
 }
 
-public interface OutboxMessageRepositoryCustom {
+@Configuration
+@EnableAsync
+public class AsyncConfig implements AsyncConfigurer {
 
-    List<OutboxMessage> findAndLockPendingMessagesToPublish(int limit, int visibilityTimeout);
+    @Value("${async-executor.core-pool-size:5}")
+    private int asyncExecutorCorePoolSize;
 
-    OutboxMessage findAndLockPendingMessageById(UUID uuid);
+    @Value("${async-executor.max-pool-size:20}")
+    private int asyncExecutorMaxPoolSize;
 
-    int deleteOldProcessedMessages(int daysToLive, int batchSize);
-}
+    @Value("${async-executor.queue-capacity:200}")
+    private int asyncExecutorQueueCapacity;
 
-public interface OutboxMessageRepositoryCustom {
-
-    List<OutboxMessage> findAndLockPendingMessagesToPublish(int limit, int visibilityTimeout);
-
-    OutboxMessage findAndLockPendingMessageById(UUID uuid);
-
-    int deleteOldProcessedMessages(int daysToLive, int batchSize);
-}
-
-public class OutboxMessageRepositoryCustomImpl implements OutboxMessageRepositoryCustom {
-
-    @PersistenceContext
-    private EntityManager entityManager;
+    @Value("${async-executor.await-termination-sec:30}")
+    private int asyncExecutorAwaitTermination;
 
     @Override
-    @SuppressWarnings("unchecked")
-    public List<OutboxMessage> findAndLockPendingMessagesToPublish(int limit, int visibilityTimeout) {
-        String sql = """
-            WITH cte AS (
-                SELECT uuid FROM {h-schema}outbox_message
-                WHERE (status = :pending
-                    OR (status = :inProgress AND picked_at < now() - (:vis * interval '1 second')))
-                AND next_attempt_at <= now()
-                ORDER BY created_at
-                FOR UPDATE SKIP LOCKED
-                LIMIT :limit
-            ),
-            upd AS (
-                UPDATE {h-schema}outbox_message om
-                SET status = :inProgress,
-                    picked_at = now()
-                FROM cte
-                WHERE om.uuid = cte.uuid
-                RETURNING om.*
-            )
-            SELECT * FROM upd
-        """;
-
-        return entityManager.createNativeQuery(sql, OutboxMessage.class)
-                .setParameter("pending", PENDING.name())
-                .setParameter("inProgress", IN_PROGRESS.name())
-                .setParameter("vis", visibilityTimeout)
-                .setParameter("limit", limit)
-                .getResultList();
-    }
-
-    @Override
-    public OutboxMessage findAndLockPendingMessageById(UUID uuid) {
-        String sql = """
-            WITH cte AS (
-                SELECT uuid FROM {h-schema}outbox_message
-                WHERE status = :pending AND uuid = :uuid
-                FOR UPDATE SKIP LOCKED
-            ),
-            upd AS (
-                UPDATE {h-schema}outbox_message om
-                SET status = :inProgress,
-                    picked_at = now()
-                FROM cte
-                WHERE om.uuid = cte.uuid
-                RETURNING om.*
-            )
-            SELECT * FROM upd
-        """;
-
-        List<?> result = entityManager.createNativeQuery(sql, OutboxMessage.class)
-                .setParameter("pending", PENDING.name())
-                .setParameter("inProgress", IN_PROGRESS.name())
-                .setParameter("uuid", uuid)
-                .getResultList();
-
-        return result.isEmpty() ? null : (OutboxMessage) result.get(0);
-    }
-
-    @Override
-    public int deleteOldProcessedMessages(int daysToLive, int batchSize) {
-        String sql = """
-            WITH messages_to_delete AS (
-                SELECT uuid FROM {h-schema}outbox_message
-                WHERE status IN (:failed, :done, :canceled)
-                AND created_at < (NOW() - INTERVAL '1 day' * :days)
-                ORDER BY created_at
-                FOR UPDATE SKIP LOCKED
-                LIMIT :batchSize
-            )
-            DELETE FROM {h-schema}outbox_message
-            WHERE uuid IN (SELECT uuid FROM messages_to_delete)
-        """;
-
-        return entityManager.createNativeQuery(sql)
-                .setParameter("failed", FAILED.name())
-                .setParameter("done", DONE.name())
-                .setParameter("canceled", CANCELED.name())
-                .setParameter("days", daysToLive)
-                .setParameter("batchSize", batchSize)
-                .executeUpdate();
+    public Executor getAsyncExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(asyncExecutorCorePoolSize);
+        executor.setMaxPoolSize(asyncExecutorMaxPoolSize);
+        executor.setQueueCapacity(asyncExecutorQueueCapacity);
+        executor.setThreadNamePrefix("AsyncEvent-");
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(asyncExecutorAwaitTermination);
+        executor.initialize();
+        return executor;
     }
 }
 
-@Service
-@RequiredArgsConstructor
-public class OutboxMessagePersistenceService {
-
-    private final OutboxMessageRepository outboxMessageRepository;
-
-    @Transactional
-    public OutboxMessage findAndLockPendingMessageById(UUID uuid) {
-        return outboxMessageRepository.findAndLockPendingMessageById(uuid);
-    }
-
-    @Transactional
-    public List<OutboxMessage> findAndLockPendingMessagesToPublish(int limit, int visibilityTimeout) {
-        return outboxMessageRepository.findAndLockPendingMessagesToPublish(limit, visibilityTimeout);
-    }
-
-    @Transactional
-    public List<OutboxMessage> findUnpublishedMessagesWithErrors(int limit) {
-        return outboxMessageRepository.findUnpublishedMessagesWithErrors(PageRequest.of(0, limit));
-    }
-
-    @Transactional
-    public OutboxMessage findUnpublishedMessageByIdWithErrors(UUID id) {
-        OutboxMessage message = outboxMessageRepository.findUnpublishedMessageByIdWithErrors(id);
-        if (message == null) {
-            throw new EntityNotFoundException("Outbox message not found: " + id);
-        }
-        return message;
-    }
-
-    @Transactional
-    public OutboxMessage save(OutboxMessage message) {
-        return outboxMessageRepository.save(message);
-    }
-
-    @Transactional
-    public int deleteOldProcessedMessages(int daysToLive, int batchSize) {
-        return outboxMessageRepository.deleteOldProcessedMessages(daysToLive, batchSize);
-    }
-
-    @Transactional
-    public boolean existsNewerMessage(OutboxMessageEventType eventType,
-                                      String aggregateId,
-                                      ZonedDateTime createdAt) {
-        return outboxMessageRepository.existsNewerMessage(eventType, aggregateId, createdAt);
-    }
+@Configuration
+@EnableScheduling
+public class SchedulingConfig {
 }
 
-public class OutboxMessageActionException extends RuntimeException {
+async-executor:
+  core-pool-size: ${app.executor.core-pool-size:5}
+  max-pool-size: ${app.executor.max-pool-size:20}
+  queue-capacity: ${app.executor.queue-capacity:200}
+  await-termination-sec: 30
 
-    public OutboxMessageActionException(String message, Throwable cause) {
-        super(message, cause);
-    }
-}
+outbox:
+  processing:
+    delay_sec: 10
+    max-delay_sec: 14400
+    max-attempts: 10
+    visibility_timeout_sec: 300
+  cleanup:
+    cron: "0 0 3 * * ?"
+    days_to_live: 90
+    batch_size: 1000
 
-@Slf4j
-@RequiredArgsConstructor
-public abstract class OutboxMessageAction {
 
-    @Value("${outbox.processing.delay_sec:10}")
-    private int initialRetryDelay;
+<?xml version="1.1" encoding="UTF-8" standalone="no"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-3.6.xsd">
 
-    @Value("${outbox.processing.max-delay_sec:14400}")
-    private int maximumRetryDelay;
+    <changeSet id="CONTROL-VEHICLE/create_outbox_message/10" author="OpenAI">
+        <preConditions onFail="HALT" onError="HALT">
+            <not>
+                <tableExists tableName="outbox_message"/>
+            </not>
+        </preConditions>
+        <sql>
+            CREATE TABLE OUTBOX_MESSAGE (
+                UUID            UUID NOT NULL,
+                EVENT_TYPE      VARCHAR(255) NOT NULL,
+                AGGREGATE_ID    VARCHAR(255) NOT NULL,
+                PAYLOAD         JSONB,
+                CREATED_AT      TIMESTAMP WITH TIME ZONE NOT NULL,
+                CREATED_BY      UUID NOT NULL,
+                PUBLISHED_AT    TIMESTAMP WITH TIME ZONE,
+                NEXT_ATTEMPT_AT TIMESTAMP WITH TIME ZONE NOT NULL,
+                PICKED_AT       TIMESTAMP WITH TIME ZONE,
+                STATUS          VARCHAR(50) NOT NULL,
 
-    @Value("${outbox.processing.max-attempts:10}")
-    private int maximumOfRetries;
-
-    private final OutboxMessagePersistenceService outboxMessagePersistenceService;
-
-    @SuppressWarnings({"java:S2245", "java:S2140"})
-    public void execute(UUID messageId) {
-        OutboxMessage message =
-                outboxMessagePersistenceService.findUnpublishedMessageByIdWithErrors(messageId);
-
-        if (message.getEventType().isNegligible()) {
-            boolean isObsolete = outboxMessagePersistenceService.existsNewerMessage(
-                    message.getEventType(),
-                    message.getAggregateId(),
-                    message.getCreatedAt()
+                CONSTRAINT PK_OUTBOX_MESSAGE PRIMARY KEY (UUID)
             );
+        </sql>
+    </changeSet>
 
-            if (isObsolete) {
-                log.warn("Skipping obsolete outbox message: event '{}', aggregate ID '{}'",
-                        message.getEventType(), message.getAggregateId());
+    <changeSet id="CONTROL-VEHICLE/create_outbox_message/20" author="OpenAI">
+        <preConditions onFail="HALT" onError="HALT">
+            <not>
+                <tableExists tableName="outbox_message_error"/>
+            </not>
+        </preConditions>
+        <sql>
+            CREATE TABLE OUTBOX_MESSAGE_ERROR (
+                UUID                UUID NOT NULL,
+                ATTEMPTED_AT        TIMESTAMP WITH TIME ZONE NOT NULL,
+                ERROR_MESSAGE       TEXT,
+                OUTBOX_MESSAGE_UUID UUID NOT NULL,
 
-                message.setCanceled();
-                outboxMessagePersistenceService.save(message);
-                return;
-            }
-        }
-
-        try {
-            log.info("Starting processing outbox message: UUID '{}', event '{}', aggregate id '{}'",
-                    message.getUuid(), message.getEventType(), message.getAggregateId());
-
-            action(message);
-
-            message.setDone();
-            outboxMessagePersistenceService.save(message);
-
-            log.info("Successfully processed outbox message: UUID '{}', event '{}', aggregate id '{}'",
-                    message.getUuid(), message.getEventType(), message.getAggregateId());
-
-        } catch (Exception error) {
-
-            if (message.getErrors().size() >= maximumOfRetries - 1
-                    || !message.getEventType().isRetryable()) {
-
-                log.error(String.format(
-                        "Failed to process outbox message: UUID '%s', event '%s', aggregate id '%s'",
-                        message.getUuid(), message.getEventType(), message.getAggregateId()
-                ), error);
-
-                message.setFailed(error.getMessage());
-
-            } else {
-                long baseDelay = initialRetryDelay * (long) Math.pow(2, message.getErrors().size());
-                long jitterDelay = (long) (baseDelay * (0.8 + 0.4 * Math.random()));
-
-                message.retryExecution(
-                        error.getMessage(),
-                        Math.min(jitterDelay, maximumRetryDelay)
-                );
-
-                log.error(String.format(
-                        "Outbox message processing failed. The message will be automatically retried: UUID '%s', event '%s', aggregate id '%s', next attempt at '%s'",
-                        message.getUuid(),
-                        message.getEventType(),
-                        message.getAggregateId(),
-                        message.getNextAttemptAt()
-                ), error);
-            }
-
-            outboxMessagePersistenceService.save(message);
-        }
-    }
-
-    public abstract OutboxMessageEventType getEventType();
-
-    protected abstract void action(OutboxMessage message) throws JsonProcessingException;
-}
-
-@Slf4j
-@Component
-public class CreateEventOutboxMessageAction extends OutboxMessageAction {
-
-    private final EventsHistoryClient eventsHistoryClient;
-    private final ObjectMapper objectMapper;
-
-    public CreateEventOutboxMessageAction(
-            @NotNull EventsHistoryClient eventsHistoryClient,
-            @NotNull OutboxMessagePersistenceService outboxMessagePersistenceService,
-            @NotNull ObjectMapper objectMapper
-    ) {
-        super(outboxMessagePersistenceService);
-        this.eventsHistoryClient = eventsHistoryClient;
-        this.objectMapper = objectMapper;
-    }
-
-    @Override
-    public OutboxMessageEventType getEventType() {
-        return OutboxMessageEventType.CREATE_EVENT;
-    }
-
-    @Override
-    protected void action(OutboxMessage message) throws JsonProcessingException {
-        EventCreateDto payload = objectMapper.readValue(message.getPayload(), EventCreateDto.class);
-        eventsHistoryClient.createEvent(payload);
-    }
-}
-
-@Service
-@RequiredArgsConstructor
-public class OutboxMessageActionRegistry {
-
-    private final List<OutboxMessageAction> actions;
-
-    private final Map<OutboxMessageEventType, OutboxMessageAction> actionMap =
-            new EnumMap<>(OutboxMessageEventType.class);
-
-    @PostConstruct
-    public void init() {
-        for (OutboxMessageAction action : actions) {
-            actionMap.put(action.getEventType(), action);
-        }
-    }
-
-    public OutboxMessageAction getAction(@NotNull OutboxMessageEventType eventType) {
-        OutboxMessageAction action = actionMap.get(eventType);
-
-        if (action == null) {
-            throw new IllegalArgumentException(
-                    String.format("No outbox message action registered for event '%s'", eventType)
+                CONSTRAINT PK_OUTBOX_MESSAGE_ERROR PRIMARY KEY (UUID),
+                CONSTRAINT FK_OUTBOX_MESSAGE_ERROR_OUTBOX_MESSAGE
+                    FOREIGN KEY (OUTBOX_MESSAGE_UUID)
+                    REFERENCES OUTBOX_MESSAGE(UUID)
+                    ON DELETE CASCADE
             );
-        }
+        </sql>
+    </changeSet>
 
-        return action;
-    }
-}
+    <changeSet id="CONTROL-VEHICLE/create_outbox_message/30" author="OpenAI">
+        <preConditions onFail="HALT" onError="HALT">
+            <not>
+                <indexExists indexName="idx_outbox_message_pending_next_attempt"/>
+            </not>
+        </preConditions>
+        <sql>
+            CREATE INDEX idx_outbox_message_pending_next_attempt
+                ON outbox_message (next_attempt_at)
+                WHERE status = 'PENDING';
+        </sql>
+    </changeSet>
 
-@Service
-@RequiredArgsConstructor
-public class OutboxMessageDispatcher {
+    <changeSet id="CONTROL-VEHICLE/create_outbox_message/40" author="OpenAI">
+        <preConditions onFail="HALT" onError="HALT">
+            <not>
+                <indexExists indexName="idx_outbox_message_in_progress_picked_next_attempt"/>
+            </not>
+        </preConditions>
+        <sql>
+            CREATE INDEX idx_outbox_message_in_progress_picked_next_attempt
+                ON outbox_message (picked_at, next_attempt_at)
+                WHERE status = 'IN_PROGRESS';
+        </sql>
+    </changeSet>
 
-    private final OutboxMessageActionRegistry registry;
+    <changeSet id="CONTROL-VEHICLE/create_outbox_message/50" author="OpenAI">
+        <preConditions onFail="HALT" onError="HALT">
+            <not>
+                <indexExists indexName="idx_outbox_message_event_aggregate_created"/>
+            </not>
+        </preConditions>
+        <sql>
+            CREATE INDEX idx_outbox_message_event_aggregate_created
+                ON outbox_message(event_type, aggregate_id, created_at);
+        </sql>
+    </changeSet>
 
-    public void dispatch(@NotNull OutboxMessage message) {
-        OutboxMessageAction action = registry.getAction(message.getEventType());
-        action.execute(message.getUuid());
-    }
-}
+</databaseChangeLog>
 
-public record OutboxMessageEvent(@NotNull UUID uuid) implements Serializable {
-}
 
-@Component
-@RequiredArgsConstructor
-public class OutboxMessageEventListener {
-
-    private final OutboxMessageProcessor outboxMessageProcessor;
-
-    @Async
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-    public void outboxMessageHandler(OutboxMessageEvent outboxMessageEvent) {
-        outboxMessageProcessor.processOutboxMessage(outboxMessageEvent.uuid());
-    }
-}
-
-@Slf4j
-@Service
-@RequiredArgsConstructor
-public class OutboxMessageProcessor {
-
-    @Value("${outbox.processing.visibility_timeout_sec:300}")
-    private int visibilityTimeout;
-
-    private final OutboxMessagePersistenceService outboxMessagePersistenceService;
-    private final OutboxMessageDispatcher dispatcher;
-
-    @Scheduled(fixedDelayString = "${outbox.processing.delay_sec:10}000")
-    public void processOutboxMessage() {
-        List<OutboxMessage> messages =
-                outboxMessagePersistenceService.findAndLockPendingMessagesToPublish(100, visibilityTimeout);
-
-        messages.forEach(dispatcher::dispatch);
-    }
-
-    public void processOutboxMessage(UUID outboxMessageId) {
-        OutboxMessage outboxMessage =
-                outboxMessagePersistenceService.findAndLockPendingMessageById(outboxMessageId);
-
-        if (outboxMessage != null) {
-            dispatcher.dispatch(outboxMessage);
-        }
-    }
-}
-
-@Service
-@RequiredArgsConstructor
-public class OutboxMessageCleaningService {
-
-    @Value("${outbox.cleanup.days_to_live:90}")
-    private int daysToLive;
-
-    @Value("${outbox.cleanup.batch_size:1000}")
-    private int batchSize;
-
-    private final OutboxMessagePersistenceService outboxMessagePersistenceService;
-
-    @Scheduled(cron = "${outbox.cleanup.cron:0 0 3 * * ?}")
-    public void cleanOutboxMessage() throws InterruptedException {
-        int deletedCount;
-
-        do {
-            deletedCount = outboxMessagePersistenceService
-                    .deleteOldProcessedMessages(daysToLive, batchSize);
-
-            if (deletedCount > 0) {
-                Thread.sleep(1000);
-            }
-        } while (deletedCount > 0);
-    }
-}
-
-@Service
-@RequiredArgsConstructor
-public class OutboxMessageService {
-
-    private final OutboxMessagePersistenceService outboxMessagePersistenceService;
-    private final ObjectMapper objectMapper;
-
-    @Transactional
-    public OutboxMessage addOutboxMessage(
-            @NotNull OutboxMessageEventType eventType,
-            @NotNull UUID createdBy,
-            @NotBlank String aggregateId,
-            @NotNull Object payload
-    ) {
-        OutboxMessage message;
-
-        try {
-            message = new OutboxMessage(
-                    eventType,
-                    createdBy,
-                    aggregateId,
-                    objectMapper.writeValueAsString(payload)
-            );
-        } catch (JsonProcessingException e) {
-            throw new OutboxMessageActionException(
-                    String.format(
-                            "Unable to serialize payload for outbox message: event '%s', aggregate id '%s'",
-                            eventType, aggregateId
-                    ),
-                    e
-            );
-        }
-
-        return outboxMessagePersistenceService.save(message);
-    }
-}
-
-@Service
-@RequiredArgsConstructor
-public class OutboxMessageService {
-
-    private final OutboxMessagePersistenceService outboxMessagePersistenceService;
-    private final ObjectMapper objectMapper;
-
-    @Transactional
-    public OutboxMessage addOutboxMessage(
-            @NotNull OutboxMessageEventType eventType,
-            @NotNull UUID createdBy,
-            @NotBlank String aggregateId,
-            @NotNull Object payload
-    ) {
-        OutboxMessage message;
-
-        try {
-            message = new OutboxMessage(
-                    eventType,
-                    createdBy,
-                    aggregateId,
-                    objectMapper.writeValueAsString(payload)
-            );
-        } catch (JsonProcessingException e) {
-            throw new OutboxMessageActionException(
-                    String.format(
-                            "Unable to serialize payload for outbox message: event '%s', aggregate id '%s'",
-                            eventType, aggregateId
-                    ),
-                    e
-            );
-        }
-
-        return outboxMessagePersistenceService.save(message);
-    }
-}
 ```
