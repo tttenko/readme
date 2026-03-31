@@ -1,4 +1,4 @@
-<img width="1138" height="510" alt="image" src="https://github.com/user-attachments/assets/37eb3912-9c71-4231-96e0-fc489ac8d0c1" />```java
+```java
 @ExtendWith(MockitoExtension.class)
 class OutboxMessageActionRegistryTest {
 
