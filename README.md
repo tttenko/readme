@@ -1,9 +1,8 @@
 ```java
-class AsyncConfigTest {
+class ConfigTest {
 
     @Test
-    void getAsyncExecutor_shouldReturnConfiguredThreadPoolTaskExecutor() {
-        // given
+    void getAsyncExecutor_shouldCreateConfiguredThreadPoolTaskExecutor() {
         AsyncConfig asyncConfig = new AsyncConfig();
 
         ReflectionTestUtils.setField(asyncConfig, "asyncExecutorCorePoolSize", 5);
@@ -11,10 +10,8 @@ class AsyncConfigTest {
         ReflectionTestUtils.setField(asyncConfig, "asyncExecutorQueueCapacity", 200);
         ReflectionTestUtils.setField(asyncConfig, "asyncExecutorAwaitTermination", 30);
 
-        // when
         Executor executor = asyncConfig.getAsyncExecutor();
 
-        // then
         assertThat(executor).isInstanceOf(ThreadPoolTaskExecutor.class);
 
         ThreadPoolTaskExecutor taskExecutor = (ThreadPoolTaskExecutor) executor;
@@ -22,12 +19,17 @@ class AsyncConfigTest {
         assertThat(taskExecutor.getCorePoolSize()).isEqualTo(5);
         assertThat(taskExecutor.getMaxPoolSize()).isEqualTo(20);
         assertThat(taskExecutor.getThreadNamePrefix()).isEqualTo("AsyncEvent-");
+        assertThat(taskExecutor.getThreadPoolExecutor()).isNotNull();
         assertThat(taskExecutor.getThreadPoolExecutor().getQueue().remainingCapacity()).isEqualTo(200);
+    }
 
-        ThreadPoolExecutor threadPoolExecutor = taskExecutor.getThreadPoolExecutor();
-        assertThat(threadPoolExecutor).isNotNull();
+    @Test
+    void schedulingConfig_shouldBeCreated() {
+        SchedulingConfig schedulingConfig = new SchedulingConfig();
+
+        assertThat(schedulingConfig).isNotNull();
+        assertThat(schedulingConfig).isInstanceOf(SchedulingConfig.class);
     }
 }
-
                 
 ```
