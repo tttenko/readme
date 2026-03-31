@@ -1,10 +1,9 @@
 ```java
 @Test
-void givenValidEntity_whenSendCreateEvent_thenSaveMessageToOutboxAndPublishEvent() {
+void givenOutboxServiceThrowsOutboxMessageActionException_whenSendCreateEvent_thenPropagateExceptionAndDoNotPublishEvent() {
     // given
     UUID entityUuid = UUID.randomUUID();
     UUID contractUuid = UUID.randomUUID();
-    UUID outboxMessageUuid = UUID.randomUUID();
     ZonedDateTime createdAt = ZonedDateTime.now();
 
     StsDataEntity entity = new StsDataEntity();
@@ -18,16 +17,6 @@ void givenValidEntity_whenSendCreateEvent_thenSaveMessageToOutboxAndPublishEvent
     entity.setCreatedBy(AUTHOR_UUID);
     entity.setCreatedAt(createdAt);
 
-    OutboxMessage outboxMessage = mock(OutboxMessage.class);
-    when(outboxMessage.getUuid()).thenReturn(outboxMessageUuid);
-
-    when(outboxMessageService.addOutboxMessage(
-            eq(OutboxMessageEventType.CREATE_EVENT),
-            eq(AUTHOR_UUID),
-            eq(entityUuid.toString()),
-            any(EventCreateDto.class)
-    )).thenReturn(outboxMessage);
-
     AuthorizedUser authorizedUser = mock(AuthorizedUser.class);
     when(authorizedUser.getFullName()).thenReturn(FULL_NAME);
 
@@ -39,49 +28,29 @@ void givenValidEntity_whenSendCreateEvent_thenSaveMessageToOutboxAndPublishEvent
 
     SecurityContextHolder.setContext(securityContext);
 
-    ArgumentCaptor<EventCreateDto> payloadCaptor = ArgumentCaptor.forClass(EventCreateDto.class);
-    ArgumentCaptor<OutboxMessageEvent> eventCaptor = ArgumentCaptor.forClass(OutboxMessageEvent.class);
+    OutboxMessageActionException exception =
+            new OutboxMessageActionException("Unable to serialize payload for outbox message", new RuntimeException());
 
-    // when
-    stsEventsHistoryService.sendCreateEvent(entity);
+    doThrow(exception).when(outboxMessageService).addOutboxMessage(
+            eq(OutboxMessageEventType.CREATE_EVENT),
+            eq(AUTHOR_UUID),
+            eq(entityUuid.toString()),
+            any(EventCreateDto.class)
+    );
 
-    // then
+    // when / then
+    assertThatThrownBy(() -> stsEventsHistoryService.sendCreateEvent(entity))
+            .isInstanceOf(OutboxMessageActionException.class)
+            .hasMessage("Unable to serialize payload for outbox message");
+
     verify(outboxMessageService).addOutboxMessage(
             eq(OutboxMessageEventType.CREATE_EVENT),
             eq(AUTHOR_UUID),
             eq(entityUuid.toString()),
-            payloadCaptor.capture()
+            any(EventCreateDto.class)
     );
 
-    verify(applicationEventPublisher).publishEvent(eventCaptor.capture());
-    verifyNoMoreInteractions(outboxMessageService, applicationEventPublisher);
-
-    EventCreateDto actualPayload = payloadCaptor.getValue();
-    assertThat(actualPayload).isNotNull();
-    assertThat(actualPayload.getServiceId()).isEqualTo(StsHistoryEventIds.SERVICE_ID);
-    assertThat(actualPayload.getId()).isEqualTo(StsHistoryEventIds.STS_CREATE);
-    assertThat(actualPayload.getEntityUuid()).isEqualTo(entityUuid);
-    assertThat(actualPayload.getSubmittedAt()).isEqualTo(createdAt);
-    assertThat(actualPayload.getSubmittedBy()).isEqualTo(AUTHOR_UUID.toString());
-    assertThat(actualPayload.getUserName()).isEqualTo(FULL_NAME);
-    assertThat(actualPayload.getSession()).isEqualTo(NO_SESSION);
-    assertThat(actualPayload.getUserNode()).isEqualTo(NO_USER_NODE);
-
-    assertThat(actualPayload.getParameters()).isNotNull();
-    assertThat(actualPayload.getParameters()).hasSize(2);
-
-    Map<String, String> parameters = actualPayload.getParameters().stream()
-            .collect(Collectors.toMap(
-                    EventParameterCreateDto::getId,
-                    EventParameterCreateDto::getValue
-            ));
-
-    assertThat(parameters.get("vehicle_num")).isEqualTo("A123AA777");
-    assertThat(parameters.get("vehicle_name")).isEqualTo("KAMA3");
-
-    OutboxMessageEvent actualEvent = eventCaptor.getValue();
-    assertThat(actualEvent).isNotNull();
-    assertThat(actualEvent.uuid()).isEqualTo(outboxMessageUuid);
+    verifyNoInteractions(applicationEventPublisher);
+    verifyNoMoreInteractions(outboxMessageService);
 }
-
 ```
