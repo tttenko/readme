@@ -1,114 +1,140 @@
 ```java
-@Service
-@RequiredArgsConstructor
-@ConditionalOnProperty(prefix = "app.kafka", name = "enabled", havingValue = "true")
-public class StsTrackerHistoryOutboxService {
+@ExtendWith(MockitoExtension.class)
+class StsTrackerHistoryOutboxServiceTest {
 
-    private final OutboxMessageService outboxMessageService;
-    private final ApplicationEventPublisher applicationEventPublisher;
+    @Mock
+    private OutboxMessageService outboxMessageService;
 
-    /**
-     * Сохраняет событие отправки статуса СТС в tracker через outbox.
-     */
-    public void sendCreatedStatus(StsDataEntity entity) {
-        HistoryNewDto payload = HistoryNewDto.builder()
-                .code(StsTrackerSchemeCodes.STATUS_STS)
-                .entityUuid(entity.getUuid())
-                .operation(StsAction.CREATE_STS.getId())
-                .status(entity.getStatusId().name())
-                .comment(null)
-                .createdBy(entity.getCreatedBy())
-                .extCreatedBy(entity.getCreatedBy().toString())
-                .userName(entity.getCreatedBy().toString())
-                .userPosition(null)
-                .build();
+    @Mock
+    private ApplicationEventPublisher applicationEventPublisher;
 
-        OutboxMessage message = outboxMessageService.addOutboxMessage(
-                OutboxMessageEventType.SEND_TRACKER_HISTORY,
-                entity.getCreatedBy(),
-                entity.getUuid().toString(),
-                payload
+    @InjectMocks
+    private StsTrackerHistoryOutboxService stsTrackerHistoryOutboxService;
+
+    @Captor
+    private ArgumentCaptor<HistoryNewDto> historyCaptor;
+
+    @Captor
+    private ArgumentCaptor<OutboxMessageEvent> outboxEventCaptor;
+
+    @Test
+    void sendCreatedStatus_shouldBuildDtoSaveOutboxMessageAndPublishEvent() {
+        UUID entityUuid = UUID.randomUUID();
+        UUID createdBy = UUID.randomUUID();
+        UUID outboxUuid = UUID.randomUUID();
+
+        StsDataEntity entity = new StsDataEntity();
+        entity.setUuid(entityUuid);
+        entity.setCreatedBy(createdBy);
+        entity.setStatusId(StsStatus.DRAFT);
+
+        OutboxMessage outboxMessage = mock(OutboxMessage.class);
+        when(outboxMessage.getUuid()).thenReturn(outboxUuid);
+
+        when(outboxMessageService.addOutboxMessage(
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(createdBy),
+                eq(entityUuid.toString()),
+                historyCaptor.capture()
+        )).thenReturn(outboxMessage);
+
+        stsTrackerHistoryOutboxService.sendCreatedStatus(entity);
+
+        verify(outboxMessageService).addOutboxMessage(
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(createdBy),
+                eq(entityUuid.toString()),
+                any(HistoryNewDto.class)
         );
 
-        applicationEventPublisher.publishEvent(new OutboxMessageEvent(message.getUuid()));
+        verify(applicationEventPublisher).publishEvent(outboxEventCaptor.capture());
+        verifyNoMoreInteractions(outboxMessageService, applicationEventPublisher);
+
+        HistoryNewDto dto = historyCaptor.getValue();
+        OutboxMessageEvent publishedEvent = outboxEventCaptor.getValue();
+
+        assertAll(
+                () -> assertEquals(StsTrackerSchemeCodes.STATUS_STS, dto.getCode()),
+                () -> assertEquals(entityUuid, dto.getEntityUuid()),
+                () -> assertEquals(StsAction.CREATE_STS.getId(), dto.getOperation()),
+                () -> assertEquals(StsStatus.DRAFT.name(), dto.getStatus()),
+                () -> assertNull(dto.getComment()),
+                () -> assertEquals(createdBy, dto.getCreatedBy()),
+                () -> assertEquals(createdBy.toString(), dto.getExtCreatedBy()),
+                () -> assertEquals(createdBy.toString(), dto.getUserName()),
+                () -> assertNull(dto.getUserPosition()),
+                () -> assertEquals(outboxUuid, publishedEvent.uuid())
+        );
+    }
+
+
+    @ExtendWith(MockitoExtension.class)
+class StsTrackerHistoryOutboxServiceTest {
+
+    @Mock
+    private OutboxMessageService outboxMessageService;
+
+    @Mock
+    private ApplicationEventPublisher applicationEventPublisher;
+
+    @InjectMocks
+    private StsTrackerHistoryOutboxService stsTrackerHistoryOutboxService;
+
+    @Captor
+    private ArgumentCaptor<HistoryNewDto> historyCaptor;
+
+    @Captor
+    private ArgumentCaptor<OutboxMessageEvent> outboxEventCaptor;
+
+    @Test
+    void sendCreatedStatus_shouldBuildDtoSaveOutboxMessageAndPublishEvent() {
+        UUID entityUuid = UUID.randomUUID();
+        UUID createdBy = UUID.randomUUID();
+        UUID outboxUuid = UUID.randomUUID();
+
+        StsDataEntity entity = new StsDataEntity();
+        entity.setUuid(entityUuid);
+        entity.setCreatedBy(createdBy);
+        entity.setStatusId(StsStatus.DRAFT);
+
+        OutboxMessage outboxMessage = mock(OutboxMessage.class);
+        when(outboxMessage.getUuid()).thenReturn(outboxUuid);
+
+        when(outboxMessageService.addOutboxMessage(
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(createdBy),
+                eq(entityUuid.toString()),
+                historyCaptor.capture()
+        )).thenReturn(outboxMessage);
+
+        stsTrackerHistoryOutboxService.sendCreatedStatus(entity);
+
+        verify(outboxMessageService).addOutboxMessage(
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(createdBy),
+                eq(entityUuid.toString()),
+                any(HistoryNewDto.class)
+        );
+
+        verify(applicationEventPublisher).publishEvent(outboxEventCaptor.capture());
+        verifyNoMoreInteractions(outboxMessageService, applicationEventPublisher);
+
+        HistoryNewDto dto = historyCaptor.getValue();
+        OutboxMessageEvent publishedEvent = outboxEventCaptor.getValue();
+
+        assertAll(
+                () -> assertEquals(StsTrackerSchemeCodes.STATUS_STS, dto.getCode()),
+                () -> assertEquals(entityUuid, dto.getEntityUuid()),
+                () -> assertEquals(StsAction.CREATE_STS.getId(), dto.getOperation()),
+                () -> assertEquals(StsStatus.DRAFT.name(), dto.getStatus()),
+                () -> assertNull(dto.getComment()),
+                () -> assertEquals(createdBy, dto.getCreatedBy()),
+                () -> assertEquals(createdBy.toString(), dto.getExtCreatedBy()),
+                () -> assertEquals(createdBy.toString(), dto.getUserName()),
+                () -> assertNull(dto.getUserPosition()),
+                () -> assertEquals(outboxUuid, publishedEvent.uuid())
+        );
     }
 }
-
-@Slf4j
-@Component
-@ConditionalOnProperty(prefix = "app.kafka", name = "enabled", havingValue = "true")
-public class SendTrackerHistoryOutboxMessageAction extends OutboxMessageAction {
-
-    private final TrackerKafkaProducer trackerKafkaProducer;
-    private final ObjectMapper objectMapper;
-
-    public SendTrackerHistoryOutboxMessageAction(
-            TrackerKafkaProducer trackerKafkaProducer,
-            OutboxMessagePersistenceService outboxMessagePersistenceService,
-            ObjectMapper objectMapper
-    ) {
-        super(outboxMessagePersistenceService);
-        this.trackerKafkaProducer = trackerKafkaProducer;
-        this.objectMapper = objectMapper;
-    }
-
-    @Override
-    public OutboxMessageEventType getEventType() {
-        return OutboxMessageEventType.SEND_TRACKER_HISTORY;
-    }
-
-    @Override
-    protected void action(OutboxMessage message) throws JsonProcessingException {
-        HistoryNewDto payload = objectMapper.readValue(message.getPayload(), HistoryNewDto.class);
-        trackerKafkaProducer.sendHistory(payload);
-    }
-}
-
-@Slf4j
-@Component
-@RequiredArgsConstructor
-@ConditionalOnProperty(prefix = "app.kafka", name = "enabled", havingValue = "true")
-public class TrackerKafkaProducer {
-
-    @Value("${app.tracker.kafka.topic.history:tracker_history}")
-    private String historyTopic;
-
-    @Value("${app.tracker.kafka.topic.additional:tracker_additional}")
-    private String additionalTopic;
-
-    private final KafkaTemplate<String, HistoryNewDto> historyNewTemplate;
-    private final KafkaTemplate<String, PlannedDateDto> plannedDateTemplate;
-
-    public void sendHistory(HistoryNewDto dto) {
-        String key = dto.getEntityUuid().toString();
-
-        try {
-            historyNewTemplate.send(historyTopic, key, dto).get();
-
-            log.info("История статуса отправлена в Kafka. topic={}, entityUuid={}, status={}",
-                    historyTopic, dto.getEntityUuid(), dto.getStatus());
-        } catch (Exception ex) {
-            throw new IllegalStateException(
-                    "Не удалось отправить событие tracker history в Kafka. entityUuid=" + dto.getEntityUuid(),
-                    ex
-            );
-        }
-    }
-
-    public void sendAdditional(PlannedDateDto dto) {
-        String key = dto.getEntityUuid().toString();
-
-        try {
-            plannedDateTemplate.send(additionalTopic, key, dto).get();
-
-            log.info("Planned date отправлена в Kafka. topic={}, entityUuid={}",
-                    additionalTopic, dto.getEntityUuid());
-        } catch (Exception ex) {
-            throw new IllegalStateException(
-                    "Не удалось отправить additional сообщение в Kafka. entityUuid=" + dto.getEntityUuid(),
-                    ex
-            );
-        }
-    }
 }
 ```
