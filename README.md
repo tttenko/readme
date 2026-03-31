@@ -1,41 +1,31 @@
 ```java
-public void sendHistory(HistoryNewDto dto) {
-    String key = dto.getEntityUuid().toString();
+class AsyncConfigTest {
 
-    try {
-        historyNewTemplate.send(historyTopic, key, dto).get();
+    @Test
+    void getAsyncExecutor_shouldReturnConfiguredThreadPoolTaskExecutor() {
+        // given
+        AsyncConfig asyncConfig = new AsyncConfig();
 
-        log.info("The status history has been sent to Kafka. topic={}, entityUuid={}, status={}",
-                historyTopic, dto.getEntityUuid(), dto.getStatus());
+        ReflectionTestUtils.setField(asyncConfig, "asyncExecutorCorePoolSize", 5);
+        ReflectionTestUtils.setField(asyncConfig, "asyncExecutorMaxPoolSize", 20);
+        ReflectionTestUtils.setField(asyncConfig, "asyncExecutorQueueCapacity", 200);
+        ReflectionTestUtils.setField(asyncConfig, "asyncExecutorAwaitTermination", 30);
 
-    } catch (InterruptedException ex) {
-        Thread.currentThread().interrupt();
-        throw new IllegalStateException(
-                "Failed to send tracker history event to Kafka. entityUuid=" + dto.getEntityUuid(), ex);
+        // when
+        Executor executor = asyncConfig.getAsyncExecutor();
 
-    } catch (ExecutionException ex) {
-        throw new IllegalStateException(
-                "Failed to send tracker history event to Kafka. entityUuid=" + dto.getEntityUuid(), ex);
-    }
-}
+        // then
+        assertThat(executor).isInstanceOf(ThreadPoolTaskExecutor.class);
 
-public void sendAdditional(PlannedDateDto dto) {
-    String key = dto.getEntityUuid().toString();
+        ThreadPoolTaskExecutor taskExecutor = (ThreadPoolTaskExecutor) executor;
 
-    try {
-        plannedDateTemplate.send(additionalTopic, key, dto).get();
+        assertThat(taskExecutor.getCorePoolSize()).isEqualTo(5);
+        assertThat(taskExecutor.getMaxPoolSize()).isEqualTo(20);
+        assertThat(taskExecutor.getThreadNamePrefix()).isEqualTo("AsyncEvent-");
+        assertThat(taskExecutor.getThreadPoolExecutor().getQueue().remainingCapacity()).isEqualTo(200);
 
-        log.info("Planned date has been sent to Kafka. topic={}, entityUuid={}",
-                additionalTopic, dto.getEntityUuid());
-
-    } catch (InterruptedException ex) {
-        Thread.currentThread().interrupt();
-        throw new IllegalStateException(
-                "Failed to send additional event to Kafka. entityUuid=" + dto.getEntityUuid(), ex);
-
-    } catch (ExecutionException ex) {
-        throw new IllegalStateException(
-                "Failed to send additional event to Kafka. entityUuid=" + dto.getEntityUuid(), ex);
+        ThreadPoolExecutor threadPoolExecutor = taskExecutor.getThreadPoolExecutor();
+        assertThat(threadPoolExecutor).isNotNull();
     }
 }
 
