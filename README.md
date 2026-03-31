@@ -1,35 +1,82 @@
 ```java
-class ConfigTest {
+@Test
+void sendHistory_shouldThrowIllegalStateException_whenInterrupted() throws Exception {
+    UUID entityUuid = UUID.randomUUID();
 
-    @Test
-    void getAsyncExecutor_shouldCreateConfiguredThreadPoolTaskExecutor() {
-        AsyncConfig asyncConfig = new AsyncConfig();
+    HistoryNewDto dto = mock(HistoryNewDto.class);
+    when(dto.getEntityUuid()).thenReturn(entityUuid);
 
-        ReflectionTestUtils.setField(asyncConfig, "asyncExecutorCorePoolSize", 5);
-        ReflectionTestUtils.setField(asyncConfig, "asyncExecutorMaxPoolSize", 20);
-        ReflectionTestUtils.setField(asyncConfig, "asyncExecutorQueueCapacity", 200);
-        ReflectionTestUtils.setField(asyncConfig, "asyncExecutorAwaitTermination", 30);
+    CompletableFuture<SendResult<String, HistoryNewDto>> future = mock(CompletableFuture.class);
 
-        Executor executor = asyncConfig.getAsyncExecutor();
+    when(historyNewTemplate.send(anyString(), anyString(), any()))
+            .thenReturn(future);
 
-        assertThat(executor).isInstanceOf(ThreadPoolTaskExecutor.class);
+    when(future.get()).thenThrow(new InterruptedException());
 
-        ThreadPoolTaskExecutor taskExecutor = (ThreadPoolTaskExecutor) executor;
+    assertThatThrownBy(() -> trackerKafkaProducer.sendHistory(dto))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("Failed to send tracker history event");
 
-        assertThat(taskExecutor.getCorePoolSize()).isEqualTo(5);
-        assertThat(taskExecutor.getMaxPoolSize()).isEqualTo(20);
-        assertThat(taskExecutor.getThreadNamePrefix()).isEqualTo("AsyncEvent-");
-        assertThat(taskExecutor.getThreadPoolExecutor()).isNotNull();
-        assertThat(taskExecutor.getThreadPoolExecutor().getQueue().remainingCapacity()).isEqualTo(200);
-    }
-
-    @Test
-    void schedulingConfig_shouldBeCreated() {
-        SchedulingConfig schedulingConfig = new SchedulingConfig();
-
-        assertThat(schedulingConfig).isNotNull();
-        assertThat(schedulingConfig).isInstanceOf(SchedulingConfig.class);
-    }
+    verify(historyNewTemplate).send(anyString(), anyString(), eq(dto));
 }
-                
+2. sendHistory — ExecutionException
+@Test
+void sendHistory_shouldThrowIllegalStateException_whenExecutionException() throws Exception {
+    UUID entityUuid = UUID.randomUUID();
+
+    HistoryNewDto dto = mock(HistoryNewDto.class);
+    when(dto.getEntityUuid()).thenReturn(entityUuid);
+
+    CompletableFuture<SendResult<String, HistoryNewDto>> future = mock(CompletableFuture.class);
+
+    when(historyNewTemplate.send(anyString(), anyString(), any()))
+            .thenReturn(future);
+
+    when(future.get()).thenThrow(new ExecutionException(new RuntimeException()));
+
+    assertThatThrownBy(() -> trackerKafkaProducer.sendHistory(dto))
+            .isInstanceOf(IllegalStateException.class);
+
+    verify(historyNewTemplate).send(anyString(), anyString(), eq(dto));
+}
+3. sendAdditional — InterruptedException
+@Test
+void sendAdditional_shouldThrowIllegalStateException_whenInterrupted() throws Exception {
+    UUID entityUuid = UUID.randomUUID();
+
+    PlannedDateDto dto = mock(PlannedDateDto.class);
+    when(dto.getEntityUuid()).thenReturn(entityUuid);
+
+    CompletableFuture<SendResult<String, PlannedDateDto>> future = mock(CompletableFuture.class);
+
+    when(plannedDateTemplate.send(anyString(), anyString(), any()))
+            .thenReturn(future);
+
+    when(future.get()).thenThrow(new InterruptedException());
+
+    assertThatThrownBy(() -> trackerKafkaProducer.sendAdditional(dto))
+            .isInstanceOf(IllegalStateException.class);
+
+    verify(plannedDateTemplate).send(anyString(), anyString(), eq(dto));
+}
+4. sendAdditional — ExecutionException
+@Test
+void sendAdditional_shouldThrowIllegalStateException_whenExecutionException() throws Exception {
+    UUID entityUuid = UUID.randomUUID();
+
+    PlannedDateDto dto = mock(PlannedDateDto.class);
+    when(dto.getEntityUuid()).thenReturn(entityUuid);
+
+    CompletableFuture<SendResult<String, PlannedDateDto>> future = mock(CompletableFuture.class);
+
+    when(plannedDateTemplate.send(anyString(), anyString(), any()))
+            .thenReturn(future);
+
+    when(future.get()).thenThrow(new ExecutionException(new RuntimeException()));
+
+    assertThatThrownBy(() -> trackerKafkaProducer.sendAdditional(dto))
+            .isInstanceOf(IllegalStateException.class);
+
+    verify(plannedDateTemplate).send(anyString(), anyString(), eq(dto));
+}
 ```
