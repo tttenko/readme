@@ -1,21 +1,46 @@
 ```java
 @Test
-void sendCreatedStatus_shouldPublishOutboxMessageEventWithReturnedMessageUuid() {
-    UUID entityUuid = UUID.randomUUID();
-    UUID createdBy = UUID.randomUUID();
-    UUID outboxUuid = UUID.randomUUID();
+    void givenValidEntity_whenCreate_thenReturnsSavedEntity() {
+        UUID authorUuid = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
-    StsDataEntity entity = new StsDataEntity();
-    entity.setUuid(entityUuid);
-    entity.setCreatedBy(createdBy);
-    entity.setStatusId(StsStatus.DRAFT);
+        StsDataEntity entity = new StsDataEntity();
+        entity.setContractUuid(UUID.randomUUID());
+        entity.setTbCode("1234");
+        entity.setVehicleNumber("A123AA777");
+        entity.setVehicleBrand("КамАЗ");
+        entity.setComment("Тестовая запись");
+        entity.setCreatedBy(authorUuid);
 
-    OutboxMessage outboxMessage = mock(OutboxMessage.class);
-    when(outboxMessage.getUuid()).thenReturn(outboxUuid);
-    when(outboxMessageService.addOutboxMessage(any(), any(), any(), any())).thenReturn(outboxMessage);
+        UUID savedUuid = UUID.randomUUID();
 
-    stsTrackerHistoryOutboxService.sendCreatedStatus(entity);
+        StsDataEntity savedEntity = new StsDataEntity();
+        savedEntity.setUuid(savedUuid);
+        savedEntity.setContractUuid(entity.getContractUuid());
+        savedEntity.setTbCode(entity.getTbCode());
+        savedEntity.setVehicleNumber(entity.getVehicleNumber());
+        savedEntity.setVehicleBrand(entity.getVehicleBrand());
+        savedEntity.setComment(entity.getComment());
+        savedEntity.setStatusId(StsStatus.DRAFT);
+        savedEntity.setCreatedBy(authorUuid);
+        savedEntity.setDeleted(false);
 
-    verify(applicationEventPublisher).publishEvent(new OutboxMessageEvent(outboxUuid));
-}
+        when(stsDataRepository.save(entity)).thenReturn(savedEntity);
+
+        StsDataEntity actualEntity = stsDataService.create(entity);
+
+        assertThat(actualEntity).isSameAs(savedEntity);
+
+        assertThat(entity.getStatusId()).isEqualTo(StsStatus.DRAFT);
+        assertThat(entity.isDeleted()).isFalse();
+
+        verify(stsDataRepository).save(entity);
+        verify(stsEventsHistoryOutboxService).sendCreateEvent(savedEntity);
+        verify(stsTrackerHistoryOutboxService).sendCreatedStatus(savedEntity);
+
+        verifyNoMoreInteractions(
+                stsDataRepository,
+                stsEventsHistoryOutboxService,
+                stsTrackerHistoryOutboxService
+        );
+    }
 ```
