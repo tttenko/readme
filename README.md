@@ -1,46 +1,67 @@
 ```java
-@Test
-    void givenValidEntity_whenCreate_thenReturnsSavedEntity() {
-        UUID authorUuid = UUID.fromString("00000000-0000-0000-0000-000000000001");
+@ExtendWith(MockitoExtension.class)
+class TrackerKafkaProducerTest {
 
-        StsDataEntity entity = new StsDataEntity();
-        entity.setContractUuid(UUID.randomUUID());
-        entity.setTbCode("1234");
-        entity.setVehicleNumber("A123AA777");
-        entity.setVehicleBrand("КамАЗ");
-        entity.setComment("Тестовая запись");
-        entity.setCreatedBy(authorUuid);
+    @Mock
+    private KafkaTemplate<String, HistoryNewDto> historyNewTemplate;
 
-        UUID savedUuid = UUID.randomUUID();
+    @Mock
+    private KafkaTemplate<String, PlannedDateDto> plannedDateTemplate;
 
-        StsDataEntity savedEntity = new StsDataEntity();
-        savedEntity.setUuid(savedUuid);
-        savedEntity.setContractUuid(entity.getContractUuid());
-        savedEntity.setTbCode(entity.getTbCode());
-        savedEntity.setVehicleNumber(entity.getVehicleNumber());
-        savedEntity.setVehicleBrand(entity.getVehicleBrand());
-        savedEntity.setComment(entity.getComment());
-        savedEntity.setStatusId(StsStatus.DRAFT);
-        savedEntity.setCreatedBy(authorUuid);
-        savedEntity.setDeleted(false);
+    private TrackerKafkaProducer trackerKafkaProducer;
 
-        when(stsDataRepository.save(entity)).thenReturn(savedEntity);
-
-        StsDataEntity actualEntity = stsDataService.create(entity);
-
-        assertThat(actualEntity).isSameAs(savedEntity);
-
-        assertThat(entity.getStatusId()).isEqualTo(StsStatus.DRAFT);
-        assertThat(entity.isDeleted()).isFalse();
-
-        verify(stsDataRepository).save(entity);
-        verify(stsEventsHistoryOutboxService).sendCreateEvent(savedEntity);
-        verify(stsTrackerHistoryOutboxService).sendCreatedStatus(savedEntity);
-
-        verifyNoMoreInteractions(
-                stsDataRepository,
-                stsEventsHistoryOutboxService,
-                stsTrackerHistoryOutboxService
+    @BeforeEach
+    void setUp() {
+        trackerKafkaProducer = new TrackerKafkaProducer(
+                historyNewTemplate,
+                plannedDateTemplate
         );
+
+        setField(trackerKafkaProducer, "historyTopic", "tracker_history_test");
+        setField(trackerKafkaProducer, "additionalTopic", "tracker_additional_test");
     }
+
+    @Test
+    void sendHistory_shouldCallKafkaTemplateSend() throws Exception {
+        UUID entityUuid = UUID.randomUUID();
+
+        HistoryNewDto dto = mock(HistoryNewDto.class);
+        when(dto.getEntityUuid()).thenReturn(entityUuid);
+        when(dto.getStatus()).thenReturn("DRAFT");
+
+        CompletableFuture<SendResult<String, HistoryNewDto>> future =
+                CompletableFuture.completedFuture(null);
+
+        when(historyNewTemplate.send("tracker_history_test", entityUuid.toString(), dto))
+                .thenReturn(future);
+
+        trackerKafkaProducer.sendHistory(dto);
+
+        verify(historyNewTemplate)
+                .send("tracker_history_test", entityUuid.toString(), dto);
+
+        verifyNoInteractions(plannedDateTemplate);
+    }
+
+    @Test
+    void sendAdditional_shouldCallKafkaTemplateSend() throws Exception {
+        UUID entityUuid = UUID.randomUUID();
+
+        PlannedDateDto dto = mock(PlannedDateDto.class);
+        when(dto.getEntityUuid()).thenReturn(entityUuid);
+
+        CompletableFuture<SendResult<String, PlannedDateDto>> future =
+                CompletableFuture.completedFuture(null);
+
+        when(plannedDateTemplate.send("tracker_additional_test", entityUuid.toString(), dto))
+                .thenReturn(future);
+
+        trackerKafkaProducer.sendAdditional(dto);
+
+        verify(plannedDateTemplate)
+                .send("tracker_additional_test", entityUuid.toString(), dto);
+
+        verifyNoInteractions(historyNewTemplate);
+    }
+}
 ```
