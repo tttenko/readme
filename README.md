@@ -1,67 +1,88 @@
 ```java
 @ExtendWith(MockitoExtension.class)
-class TrackerKafkaProducerTest {
+class SendTrackerHistoryOutboxMessageActionTest {
 
     @Mock
-    private KafkaTemplate<String, HistoryNewDto> historyNewTemplate;
-
-    @Mock
-    private KafkaTemplate<String, PlannedDateDto> plannedDateTemplate;
-
     private TrackerKafkaProducer trackerKafkaProducer;
+
+    @Mock
+    private OutboxMessagePersistenceService outboxMessagePersistenceService;
+
+    private SendTrackerHistoryOutboxMessageAction action;
+    private ObjectMapper objectMapper;
 
     @BeforeEach
     void setUp() {
-        trackerKafkaProducer = new TrackerKafkaProducer(
-                historyNewTemplate,
-                plannedDateTemplate
+        objectMapper = new ObjectMapper().findAndRegisterModules();
+
+        action = new SendTrackerHistoryOutboxMessageAction(
+                trackerKafkaProducer,
+                outboxMessagePersistenceService,
+                objectMapper
         );
 
-        setField(trackerKafkaProducer, "historyTopic", "tracker_history_test");
-        setField(trackerKafkaProducer, "additionalTopic", "tracker_additional_test");
+        ReflectionTestUtils.setField(action, "initialRetryDelay", 10);
+        ReflectionTestUtils.setField(action, "maximumRetryDelay", 14400);
+        ReflectionTestUtils.setField(action, "maximumOfRetries", 10);
     }
 
     @Test
-    void sendHistory_shouldCallKafkaTemplateSend() throws Exception {
+    void execute_shouldReadPayloadCallTrackerKafkaProducerAndMarkMessageDone() throws Exception {
+        UUID messageId = UUID.randomUUID();
         UUID entityUuid = UUID.randomUUID();
+        UUID createdBy = UUID.randomUUID();
 
-        HistoryNewDto dto = mock(HistoryNewDto.class);
-        when(dto.getEntityUuid()).thenReturn(entityUuid);
-        when(dto.getStatus()).thenReturn("DRAFT");
+        HistoryNewDto payload = HistoryNewDto.builder()
+                .code(StsTrackerSchemeCodes.STATUS_STS)
+                .entityUuid(entityUuid)
+                .operation(StsAction.CREATE_STS.getId())
+                .status(StsStatus.DRAFT.name())
+                .comment(null)
+                .createdBy(createdBy)
+                .extCreatedBy(createdBy.toString())
+                .userName(createdBy.toString())
+                .userPosition(null)
+                .build();
 
-        CompletableFuture<SendResult<String, HistoryNewDto>> future =
-                CompletableFuture.completedFuture(null);
+        OutboxMessage message = new OutboxMessage(
+                OutboxMessageEventType.SEND_TRACKER_HISTORY,
+                createdBy,
+                entityUuid.toString(),
+                objectMapper.writeValueAsString(payload)
+        );
 
-        when(historyNewTemplate.send("tracker_history_test", entityUuid.toString(), dto))
-                .thenReturn(future);
+        ReflectionTestUtils.setField(message, "uuid", messageId);
+        ReflectionTestUtils.setField(message, "status", OutboxMessageStatus.IN_PROGRESS);
 
-        trackerKafkaProducer.sendHistory(dto);
+        when(outboxMessagePersistenceService.findUnpublishedMessageByIdWithErrors(messageId))
+                .thenReturn(message);
 
-        verify(historyNewTemplate)
-                .send("tracker_history_test", entityUuid.toString(), dto);
+        when(outboxMessagePersistenceService.save(any(OutboxMessage.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
 
-        verifyNoInteractions(plannedDateTemplate);
-    }
+        action.execute(messageId);
 
-    @Test
-    void sendAdditional_shouldCallKafkaTemplateSend() throws Exception {
-        UUID entityUuid = UUID.randomUUID();
+        ArgumentCaptor<HistoryNewDto> payloadCaptor =
+                ArgumentCaptor.forClass(HistoryNewDto.class);
 
-        PlannedDateDto dto = mock(PlannedDateDto.class);
-        when(dto.getEntityUuid()).thenReturn(entityUuid);
+        verify(trackerKafkaProducer).sendHistory(payloadCaptor.capture());
 
-        CompletableFuture<SendResult<String, PlannedDateDto>> future =
-                CompletableFuture.completedFuture(null);
+        HistoryNewDto sentPayload = payloadCaptor.getValue();
 
-        when(plannedDateTemplate.send("tracker_additional_test", entityUuid.toString(), dto))
-                .thenReturn(future);
+        assertEquals(StsTrackerSchemeCodes.STATUS_STS, sentPayload.getCode());
+        assertEquals(entityUuid, sentPayload.getEntityUuid());
+        assertEquals(StsAction.CREATE_STS.getId(), sentPayload.getOperation());
+        assertEquals(StsStatus.DRAFT.name(), sentPayload.getStatus());
+        assertNull(sentPayload.getComment());
+        assertEquals(createdBy, sentPayload.getCreatedBy());
+        assertEquals(createdBy.toString(), sentPayload.getExtCreatedBy());
+        assertEquals(createdBy.toString(), sentPayload.getUserName());
+        assertNull(sentPayload.getUserPosition());
 
-        trackerKafkaProducer.sendAdditional(dto);
-
-        verify(plannedDateTemplate)
-                .send("tracker_additional_test", entityUuid.toString(), dto);
-
-        verifyNoInteractions(historyNewTemplate);
+        verify(outboxMessagePersistenceService).save(argThat(saved ->
+                saved.getStatus() == OutboxMessageStatus.DONE
+                        && saved.getPublishedAt() != null
+        ));
     }
 }
 ```
