@@ -1,92 +1,23 @@
 ```java
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
+@Test
+void givenOutboxMessageActionException_whenHandleOutboxMessageActionException_thenReturnInternalServerErrorResponse() {
+    // given
+    String exceptionMessage = "Unable to serialize payload for outbox message";
+    String expectedMessage = "Внутренняя ошибка при подготовке события для отправки";
 
-import java.util.List;
-import java.util.UUID;
+    OutboxMessageActionException exception =
+            new OutboxMessageActionException(exceptionMessage, new RuntimeException("Serialization error"));
 
-import static org.mockito.Mockito.*;
+    // when
+    ResponseEntity<Object> response =
+            globalExceptionHandler.handleOutboxMessageActionException(exception, webRequest);
 
-@ExtendWith(MockitoExtension.class)
-class OutboxMessageProcessorTest {
+    // then
+    assertThat(response).isNotNull();
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+    assertThat(response.getBody()).isInstanceOf(String.class);
+    assertThat(response.getBody()).isEqualTo(expectedMessage);
 
-    @Mock
-    private OutboxMessagePersistenceService outboxMessagePersistenceService;
-
-    @Mock
-    private OutboxMessageDispatcher dispatcher;
-
-    private OutboxMessageProcessor outboxMessageProcessor;
-
-    @BeforeEach
-    void setUp() {
-        outboxMessageProcessor = new OutboxMessageProcessor(
-                outboxMessagePersistenceService,
-                dispatcher
-        );
-
-        ReflectionTestUtils.setField(outboxMessageProcessor, "visibilityTimeout", 300);
-    }
-
-    @Test
-    void processOutboxMessage_shouldDispatchAllLockedMessages() {
-        OutboxMessage message1 = new OutboxMessage(
-                OutboxMessageEventType.CREATE_EVENT,
-                UUID.randomUUID(),
-                "aggregate-1",
-                "{\"key\":\"value1\"}"
-        );
-
-        OutboxMessage message2 = new OutboxMessage(
-                OutboxMessageEventType.CREATE_EVENT,
-                UUID.randomUUID(),
-                "aggregate-2",
-                "{\"key\":\"value2\"}"
-        );
-
-        when(outboxMessagePersistenceService.findAndLockPendingMessagesToPublish(100, 300))
-                .thenReturn(List.of(message1, message2));
-
-        outboxMessageProcessor.processOutboxMessage();
-
-        verify(dispatcher).dispatch(message1);
-        verify(dispatcher).dispatch(message2);
-        verifyNoMoreInteractions(dispatcher);
-    }
-
-    @Test
-    void processOutboxMessageById_shouldDispatchWhenMessageFound() {
-        UUID messageId = UUID.randomUUID();
-
-        OutboxMessage message = new OutboxMessage(
-                OutboxMessageEventType.CREATE_EVENT,
-                UUID.randomUUID(),
-                "aggregate-1",
-                "{\"key\":\"value1\"}"
-        );
-
-        when(outboxMessagePersistenceService.findAndLockPendingMessageById(messageId))
-                .thenReturn(message);
-
-        outboxMessageProcessor.processOutboxMessage(messageId);
-
-        verify(dispatcher).dispatch(message);
-    }
-
-    @Test
-    void processOutboxMessageById_shouldNotDispatchWhenMessageNotFound() {
-        UUID messageId = UUID.randomUUID();
-
-        when(outboxMessagePersistenceService.findAndLockPendingMessageById(messageId))
-                .thenReturn(null);
-
-        outboxMessageProcessor.processOutboxMessage(messageId);
-
-        verifyNoInteractions(dispatcher);
-    }
+    verifyNoInteractions(messageSource);
 }
 ```
