@@ -1,40 +1,36 @@
 ```java
-@Configuration
-@EnableAsync
-public class AsyncConfig implements AsyncConfigurer {
+class AsyncSchedulingConfigTest {
 
-    @Value("${spring.task.execution.pool.core-size:5}")
-    private int corePoolSize;
+    @Test
+    void getAsyncExecutor_shouldCreateConfiguredThreadPoolTaskExecutor() {
+        AsyncConfig asyncConfig = new AsyncConfig();
 
-    @Value("${spring.task.execution.pool.max-size:20}")
-    private int maxPoolSize;
+        ReflectionTestUtils.setField(asyncConfig, "corePoolSize", 5);
+        ReflectionTestUtils.setField(asyncConfig, "maxPoolSize", 20);
+        ReflectionTestUtils.setField(asyncConfig, "queueCapacity", 200);
+        ReflectionTestUtils.setField(asyncConfig, "threadNamePrefix", "AsyncEvent-");
+        ReflectionTestUtils.setField(asyncConfig, "waitForTasksToCompleteOnShutdown", true);
+        ReflectionTestUtils.setField(asyncConfig, "awaitTerminationPeriod", Duration.ofSeconds(30));
 
-    @Value("${spring.task.execution.pool.queue-capacity:200}")
-    private int queueCapacity;
+        Executor executor = asyncConfig.getAsyncExecutor();
 
-    @Value("${spring.task.execution.thread-name-prefix:AsyncEvent-}")
-    private String threadNamePrefix;
+        assertThat(executor).isInstanceOf(ThreadPoolTaskExecutor.class);
 
-    @Value("${spring.task.execution.shutdown.await-termination:true}")
-    private boolean waitForTasksToCompleteOnShutdown;
+        ThreadPoolTaskExecutor taskExecutor = (ThreadPoolTaskExecutor) executor;
 
-    @Value("${spring.task.execution.shutdown.await-termination-period:30s}")
-    private Duration awaitTerminationPeriod;
+        assertThat(taskExecutor.getCorePoolSize()).isEqualTo(5);
+        assertThat(taskExecutor.getMaxPoolSize()).isEqualTo(20);
+        assertThat(taskExecutor.getThreadNamePrefix()).isEqualTo("AsyncEvent-");
+        assertThat(taskExecutor.getThreadPoolExecutor()).isNotNull();
+        assertThat(taskExecutor.getThreadPoolExecutor().getQueue().remainingCapacity()).isEqualTo(200);
+    }
 
-    /**
-     * Возвращает настроенный пул потоков для асинхронных задач.
-     */
-    @Override
-    public Executor getAsyncExecutor() {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(corePoolSize);
-        executor.setMaxPoolSize(maxPoolSize);
-        executor.setQueueCapacity(queueCapacity);
-        executor.setThreadNamePrefix(threadNamePrefix);
-        executor.setWaitForTasksToCompleteOnShutdown(waitForTasksToCompleteOnShutdown);
-        executor.setAwaitTerminationSeconds((int) awaitTerminationPeriod.getSeconds());
-        executor.initialize();
-        return executor;
+    @Test
+    void schedulingConfig_shouldBeCreated() {
+        SchedulingConfig schedulingConfig = new SchedulingConfig();
+
+        assertThat(schedulingConfig).isNotNull();
+        assertThat(schedulingConfig).isInstanceOf(SchedulingConfig.class);
     }
 }
 ```
