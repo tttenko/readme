@@ -1,22 +1,22 @@
 ```java
 @ExtendWith(MockitoExtension.class)
-class SendTrackerHistoryOutboxMessageActionTest {
+class CreateEventOutboxMessageActionTest {
 
     @Mock
-    private TrackerKafkaProducer trackerKafkaProducer;
+    private EventsHistoryClient eventsHistoryClient;
 
     @Mock
     private OutboxMessagePersistenceService outboxMessagePersistenceService;
 
-    private SendTrackerHistoryOutboxMessageAction action;
+    private CreateEventOutboxMessageAction action;
     private ObjectMapper objectMapper;
 
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper().findAndRegisterModules();
 
-        action = new SendTrackerHistoryOutboxMessageAction(
-                trackerKafkaProducer,
+        action = new CreateEventOutboxMessageAction(
+                eventsHistoryClient,
                 outboxMessagePersistenceService,
                 objectMapper
         );
@@ -27,25 +27,34 @@ class SendTrackerHistoryOutboxMessageActionTest {
     }
 
     @Test
-    void execute_shouldReadPayloadCallTrackerKafkaProducerAndMarkMessageDone() throws Exception {
+    void execute_shouldReadPayloadCallEventsHistoryClientAndMarkMessageDone() throws Exception {
         UUID messageId = UUID.randomUUID();
         UUID entityUuid = UUID.randomUUID();
         UUID createdBy = UUID.randomUUID();
 
-        HistoryNewDto payload = HistoryNewDto.builder()
-                .code(StsTrackerSchemeCodes.STATUS_STS)
+        EventCreateDto payload = EventCreateDto.builder()
+                .serviceId(StsHistoryEventIds.SERVICE_ID)
+                .id(StsHistoryEventIds.STS_CREATE)
                 .entityUuid(entityUuid)
-                .operation(StsAction.CREATE_STS.getId())
-                .status(StsStatus.DRAFT.name())
-                .comment(null)
-                .createdBy(createdBy)
-                .extCreatedBy(createdBy.toString())
-                .userName(createdBy.toString())
-                .userPosition(null)
+                .submittedAt(ZonedDateTime.now())
+                .submittedBy(createdBy.toString())
+                .session("NO-SESSION")
+                .userName("Иван Иванов")
+                .userNode("NO-USERNODE")
+                .parameters(List.of(
+                        EventParameterCreateDto.builder()
+                                .id("vehicle_num")
+                                .value("A123AA77")
+                                .build(),
+                        EventParameterCreateDto.builder()
+                                .id("vehicle_name")
+                                .value("Камаз")
+                                .build()
+                ))
                 .build();
 
         OutboxMessage message = new OutboxMessage(
-                OutboxMessageEventType.SEND_TRACKER_HISTORY,
+                OutboxMessageEventType.CREATE_EVENT,
                 createdBy,
                 entityUuid.toString(),
                 objectMapper.writeValueAsString(payload)
@@ -62,22 +71,17 @@ class SendTrackerHistoryOutboxMessageActionTest {
 
         action.execute(message.getUuid());
 
-        ArgumentCaptor<HistoryNewDto> payloadCaptor =
-                ArgumentCaptor.forClass(HistoryNewDto.class);
+        ArgumentCaptor<EventCreateDto> eventCaptor =
+                ArgumentCaptor.forClass(EventCreateDto.class);
 
-        verify(trackerKafkaProducer).sendHistory(payloadCaptor.capture());
+        verify(eventsHistoryClient).createEvent(eventCaptor.capture());
 
-        HistoryNewDto sentPayload = payloadCaptor.getValue();
+        EventCreateDto sentEvent = eventCaptor.getValue();
 
-        assertEquals(StsTrackerSchemeCodes.STATUS_STS, sentPayload.getCode());
-        assertEquals(entityUuid, sentPayload.getEntityUuid());
-        assertEquals(StsAction.CREATE_STS.getId(), sentPayload.getOperation());
-        assertEquals(StsStatus.DRAFT.name(), sentPayload.getStatus());
-        assertNull(sentPayload.getComment());
-        assertEquals(createdBy, sentPayload.getCreatedBy());
-        assertEquals(createdBy.toString(), sentPayload.getExtCreatedBy());
-        assertEquals(createdBy.toString(), sentPayload.getUserName());
-        assertNull(sentPayload.getUserPosition());
+        assertEquals(StsHistoryEventIds.SERVICE_ID, sentEvent.getServiceId());
+        assertEquals(StsHistoryEventIds.STS_CREATE, sentEvent.getId());
+        assertEquals(entityUuid, sentEvent.getEntityUuid());
+        assertEquals(createdBy.toString(), sentEvent.getSubmittedBy());
 
         verify(outboxMessagePersistenceService).findUnpublishedMessageByIdWithErrors(messageId);
         verify(outboxMessagePersistenceService).save(argThat(saved ->
@@ -96,7 +100,7 @@ class SendTrackerHistoryOutboxMessageActionTest {
         action.execute(messageId);
 
         verify(outboxMessagePersistenceService).findUnpublishedMessageByIdWithErrors(messageId);
-        verifyNoInteractions(trackerKafkaProducer);
+        verifyNoInteractions(eventsHistoryClient);
         verify(outboxMessagePersistenceService, never()).save(any());
     }
 }
