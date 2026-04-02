@@ -1,290 +1,159 @@
 ```java
 @ExtendWith(MockitoExtension.class)
-class OutboxMessageActionTest {
+class OutboxMessageProcessorTest {
 
     @Mock
     private OutboxMessagePersistenceService outboxMessagePersistenceService;
 
-    @AfterEach
-    void tearDown() {
-        setEventTypeFlags(OutboxMessageEventType.CREATE_EVENT, false, true);
+    @Mock
+    private OutboxMessageDispatcher dispatcher;
+
+    private OutboxMessageProcessor processor;
+
+    @BeforeEach
+    void setUp() {
+        processor = new OutboxMessageProcessor(outboxMessagePersistenceService, dispatcher);
+        ReflectionTestUtils.setField(processor, "visibilityTimeout", 300);
     }
 
     @Test
-    void execute_shouldMarkDone_whenActionSucceeded() {
-        UUID messageId = UUID.randomUUID();
+    void processOutboxMessage_shouldContinueProcessingBatchWhenFirstMessageHasTerminalRoutingError() {
+        UUID createdBy = UUID.randomUUID();
 
-        OutboxMessage message = newMessage(
-                messageId,
+        OutboxMessage first = new OutboxMessage(
                 OutboxMessageEventType.CREATE_EVENT,
-                OutboxMessageStatus.IN_PROGRESS
+                createdBy,
+                UUID.randomUUID().toString(),
+                "{\"test\":1}"
         );
+        ReflectionTestUtils.setField(first, "uuid", UUID.randomUUID());
+        ReflectionTestUtils.setField(first, "status", OutboxMessageStatus.IN_PROGRESS);
 
-        TestOutboxMessageAction action =
-                new TestOutboxMessageAction(outboxMessagePersistenceService, null);
-
-        setRetryProperties(action);
-
-        when(outboxMessagePersistenceService.findUnpublishedMessageByIdWithErrors(messageId))
-                .thenReturn(Optional.of(message));
-
-        when(outboxMessagePersistenceService.save(any(OutboxMessage.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
-
-        action.execute(message.getUuid());
-
-        assertTrue(action.wasCalled());
-
-        verify(outboxMessagePersistenceService).findUnpublishedMessageByIdWithErrors(messageId);
-        verify(outboxMessagePersistenceService).save(argThat(saved ->
-                saved.getStatus() == OutboxMessageStatus.DONE
-                        && saved.getPublishedAt() != null
-        ));
-        verifyNoMoreInteractions(outboxMessagePersistenceService);
-    }
-
-    @Test
-    void execute_shouldCancelMessage_whenEventIsNegligibleAndObsolete() {
-        UUID messageId = UUID.randomUUID();
-
-        setEventTypeFlags(OutboxMessageEventType.CREATE_EVENT, true, true);
-
-        OutboxMessage message = newMessage(
-                messageId,
+        OutboxMessage second = new OutboxMessage(
                 OutboxMessageEventType.CREATE_EVENT,
-                OutboxMessageStatus.PENDING
+                createdBy,
+                UUID.randomUUID().toString(),
+                "{\"test\":2}"
         );
+        ReflectionTestUtils.setField(second, "uuid", UUID.randomUUID());
+        ReflectionTestUtils.setField(second, "status", OutboxMessageStatus.IN_PROGRESS);
 
-        TestOutboxMessageAction action =
-                new TestOutboxMessageAction(outboxMessagePersistenceService, null);
+        when(outboxMessagePersistenceService.findAndLockPendingMessagesToPublish(100, 300))
+                .thenReturn(List.of(first, second));
 
-        setRetryProperties(action);
+        doThrow(new IllegalArgumentException("no action registered"))
+                .when(dispatcher).dispatch(first);
 
-        when(outboxMessagePersistenceService.findUnpublishedMessageByIdWithErrors(messageId))
-                .thenReturn(Optional.of(message));
+        processor.processOutboxMessage();
 
-        when(outboxMessagePersistenceService.existsNewerMessage(
-                message.getEventType(),
-                message.getAggregateId(),
-                message.getCreatedAt()
-        )).thenReturn(true);
+        verify(dispatcher).dispatch(first);
+        verify(dispatcher).dispatch(second);
 
-        when(outboxMessagePersistenceService.save(any(OutboxMessage.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
-
-        action.execute(message.getUuid());
-
-        assertFalse(action.wasCalled());
-
-        verify(outboxMessagePersistenceService).findUnpublishedMessageByIdWithErrors(messageId);
-        verify(outboxMessagePersistenceService).existsNewerMessage(
-                message.getEventType(),
-                message.getAggregateId(),
-                message.getCreatedAt()
-        );
         verify(outboxMessagePersistenceService).save(argThat(saved ->
-                saved.getStatus() == OutboxMessageStatus.CANCELED
-        ));
-        verifyNoMoreInteractions(outboxMessagePersistenceService);
-    }
-
-    @Test
-    void execute_shouldRetryMessage_whenActionFailedAndMessageIsRetryable() {
-        UUID messageId = UUID.randomUUID();
-
-        OutboxMessage message = newMessage(
-                messageId,
-                OutboxMessageEventType.CREATE_EVENT,
-                OutboxMessageStatus.IN_PROGRESS
-        );
-
-        RuntimeException error = new RuntimeException("temporary error");
-
-        TestOutboxMessageAction action =
-                new TestOutboxMessageAction(outboxMessagePersistenceService, error);
-
-        setRetryProperties(action);
-
-        when(outboxMessagePersistenceService.findUnpublishedMessageByIdWithErrors(messageId))
-                .thenReturn(Optional.of(message));
-
-        when(outboxMessagePersistenceService.save(any(OutboxMessage.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
-
-        action.execute(message.getUuid());
-
-        assertTrue(action.wasCalled());
-
-        verify(outboxMessagePersistenceService).findUnpublishedMessageByIdWithErrors(messageId);
-        verify(outboxMessagePersistenceService).save(argThat(saved ->
-                saved.getStatus() == OutboxMessageStatus.PENDING
-                        && saved.getErrors() != null
+                saved.getUuid().equals(first.getUuid())
+                        && saved.getStatus() == OutboxMessageStatus.FAILED
                         && !saved.getErrors().isEmpty()
-                        && "temporary error".equals(saved.getErrors().get(0).getErrorMessage())
-                        && saved.getNextAttemptAt() != null
-        ));
-        verifyNoMoreInteractions(outboxMessagePersistenceService);
-    }
-
-    @Test
-    void execute_shouldMarkFailed_whenMaxRetriesExceeded() {
-        UUID messageId = UUID.randomUUID();
-
-        OutboxMessage message = newMessage(
-                messageId,
-                OutboxMessageEventType.CREATE_EVENT,
-                OutboxMessageStatus.IN_PROGRESS
-        );
-
-        for (int i = 0; i < 9; i++) {
-            message.getErrors().add(new OutboxMessageError("old-error-" + i, message));
-        }
-
-        RuntimeException error = new RuntimeException("final error");
-
-        TestOutboxMessageAction action =
-                new TestOutboxMessageAction(outboxMessagePersistenceService, error);
-
-        setRetryProperties(action);
-
-        when(outboxMessagePersistenceService.findUnpublishedMessageByIdWithErrors(messageId))
-                .thenReturn(Optional.of(message));
-
-        when(outboxMessagePersistenceService.save(any(OutboxMessage.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
-
-        action.execute(message.getUuid());
-
-        assertTrue(action.wasCalled());
-
-        verify(outboxMessagePersistenceService).findUnpublishedMessageByIdWithErrors(messageId);
-        verify(outboxMessagePersistenceService).save(argThat(saved ->
-                saved.getStatus() == OutboxMessageStatus.FAILED
-                        && saved.getErrors() != null
-                        && !saved.getErrors().isEmpty()
-                        && "final error".equals(
+                        && "no action registered".equals(
                         saved.getErrors().get(saved.getErrors().size() - 1).getErrorMessage()
                 )
         ));
-        verifyNoMoreInteractions(outboxMessagePersistenceService);
     }
 
     @Test
-    void execute_shouldMarkFailed_whenEventIsNotRetryable() {
-        UUID messageId = UUID.randomUUID();
-
-        setEventTypeFlags(OutboxMessageEventType.CREATE_EVENT, false, false);
-
-        OutboxMessage message = newMessage(
-                messageId,
-                OutboxMessageEventType.CREATE_EVENT,
-                OutboxMessageStatus.IN_PROGRESS
-        );
-
-        RuntimeException error = new RuntimeException("non-retryable error");
-
-        TestOutboxMessageAction action =
-                new TestOutboxMessageAction(outboxMessagePersistenceService, error);
-
-        setRetryProperties(action);
-
-        when(outboxMessagePersistenceService.findUnpublishedMessageByIdWithErrors(messageId))
-                .thenReturn(Optional.of(message));
-
-        when(outboxMessagePersistenceService.save(any(OutboxMessage.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
-
-        action.execute(message.getUuid());
-
-        assertTrue(action.wasCalled());
-
-        verify(outboxMessagePersistenceService).findUnpublishedMessageByIdWithErrors(messageId);
-        verify(outboxMessagePersistenceService).save(argThat(saved ->
-                saved.getStatus() == OutboxMessageStatus.FAILED
-                        && saved.getErrors() != null
-                        && !saved.getErrors().isEmpty()
-                        && "non-retryable error".equals(
-                        saved.getErrors().get(saved.getErrors().size() - 1).getErrorMessage()
-                )
-        ));
-        verifyNoMoreInteractions(outboxMessagePersistenceService);
-    }
-
-    @Test
-    void execute_shouldDoNothing_whenMessageNotFound() {
-        UUID messageId = UUID.randomUUID();
-
-        TestOutboxMessageAction action =
-                new TestOutboxMessageAction(outboxMessagePersistenceService, null);
-
-        setRetryProperties(action);
-
-        when(outboxMessagePersistenceService.findUnpublishedMessageByIdWithErrors(messageId))
-                .thenReturn(Optional.empty());
-
-        action.execute(messageId);
-
-        assertFalse(action.wasCalled());
-
-        verify(outboxMessagePersistenceService).findUnpublishedMessageByIdWithErrors(messageId);
-        verifyNoMoreInteractions(outboxMessagePersistenceService);
-    }
-
-    private void setRetryProperties(OutboxMessageAction action) {
-        ReflectionTestUtils.setField(action, "initialRetryDelay", 10);
-        ReflectionTestUtils.setField(action, "maximumRetryDelay", 14400);
-        ReflectionTestUtils.setField(action, "maximumOfRetries", 10);
-    }
-
-    private void setEventTypeFlags(OutboxMessageEventType eventType, boolean negligible, boolean retryable) {
-        ReflectionTestUtils.setField(eventType, "negligible", negligible);
-        ReflectionTestUtils.setField(eventType, "retryable", retryable);
-    }
-
-    private OutboxMessage newMessage(UUID messageId,
-                                     OutboxMessageEventType eventType,
-                                     OutboxMessageStatus status) {
+    void processOutboxMessage_shouldNotFailMessageImmediatelyWhenUnexpectedExceptionEscapes() {
+        UUID createdBy = UUID.randomUUID();
 
         OutboxMessage message = new OutboxMessage(
-                eventType,
-                UUID.randomUUID(),
+                OutboxMessageEventType.CREATE_EVENT,
+                createdBy,
                 UUID.randomUUID().toString(),
-                "{\"test\":true}"
+                "{\"test\":1}"
         );
+        ReflectionTestUtils.setField(message, "uuid", UUID.randomUUID());
+        ReflectionTestUtils.setField(message, "status", OutboxMessageStatus.IN_PROGRESS);
 
-        ReflectionTestUtils.setField(message, "uuid", messageId);
-        ReflectionTestUtils.setField(message, "status", status);
+        when(outboxMessagePersistenceService.findAndLockPendingMessagesToPublish(100, 300))
+                .thenReturn(List.of(message));
 
-        return message;
+        doThrow(new IllegalStateException("unexpected failure"))
+                .when(dispatcher).dispatch(message);
+
+        processor.processOutboxMessage();
+
+        verify(dispatcher).dispatch(message);
+        verify(outboxMessagePersistenceService, never()).save(any());
     }
 
-    private static class TestOutboxMessageAction extends OutboxMessageAction {
+    @Test
+    void processOutboxMessageById_shouldMarkMessageFailedWhenRoutingErrorOccurs() {
+        UUID createdBy = UUID.randomUUID();
+        UUID messageId = UUID.randomUUID();
 
-        private final RuntimeException errorToThrow;
-        private boolean called;
+        OutboxMessage message = new OutboxMessage(
+                OutboxMessageEventType.CREATE_EVENT,
+                createdBy,
+                UUID.randomUUID().toString(),
+                "{\"test\":1}"
+        );
+        ReflectionTestUtils.setField(message, "uuid", messageId);
+        ReflectionTestUtils.setField(message, "status", OutboxMessageStatus.IN_PROGRESS);
 
-        private TestOutboxMessageAction(OutboxMessagePersistenceService service,
-                                        RuntimeException errorToThrow) {
-            super(service);
-            this.errorToThrow = errorToThrow;
-        }
+        when(outboxMessagePersistenceService.findAndLockPendingMessageById(messageId))
+                .thenReturn(message);
 
-        @Override
-        public OutboxMessageEventType getEventType() {
-            return OutboxMessageEventType.CREATE_EVENT;
-        }
+        doThrow(new IllegalArgumentException("no action registered"))
+                .when(dispatcher).dispatch(message);
 
-        @Override
-        protected void action(OutboxMessage message) {
-            called = true;
-            if (errorToThrow != null) {
-                throw errorToThrow;
-            }
-        }
+        processor.processOutboxMessage(messageId);
 
-        boolean wasCalled() {
-            return called;
-        }
+        verify(dispatcher).dispatch(message);
+        verify(outboxMessagePersistenceService).save(argThat(saved ->
+                saved.getUuid().equals(messageId)
+                        && saved.getStatus() == OutboxMessageStatus.FAILED
+                        && !saved.getErrors().isEmpty()
+                        && "no action registered".equals(
+                        saved.getErrors().get(saved.getErrors().size() - 1).getErrorMessage()
+                )
+        ));
+    }
+
+    @Test
+    void processOutboxMessageById_shouldNotFailMessageImmediatelyWhenUnexpectedExceptionEscapes() {
+        UUID createdBy = UUID.randomUUID();
+        UUID messageId = UUID.randomUUID();
+
+        OutboxMessage message = new OutboxMessage(
+                OutboxMessageEventType.CREATE_EVENT,
+                createdBy,
+                UUID.randomUUID().toString(),
+                "{\"test\":1}"
+        );
+        ReflectionTestUtils.setField(message, "uuid", messageId);
+        ReflectionTestUtils.setField(message, "status", OutboxMessageStatus.IN_PROGRESS);
+
+        when(outboxMessagePersistenceService.findAndLockPendingMessageById(messageId))
+                .thenReturn(message);
+
+        doThrow(new IllegalStateException("unexpected failure"))
+                .when(dispatcher).dispatch(message);
+
+        processor.processOutboxMessage(messageId);
+
+        verify(dispatcher).dispatch(message);
+        verify(outboxMessagePersistenceService, never()).save(any());
+    }
+
+    @Test
+    void processOutboxMessageById_shouldDoNothingWhenMessageNotFound() {
+        UUID messageId = UUID.randomUUID();
+
+        when(outboxMessagePersistenceService.findAndLockPendingMessageById(messageId))
+                .thenReturn(null);
+
+        processor.processOutboxMessage(messageId);
+
+        verify(dispatcher, never()).dispatch(any());
+        verify(outboxMessagePersistenceService, never()).save(any());
     }
 }
 ```
