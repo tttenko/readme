@@ -1,107 +1,81 @@
 ```java
-@ExtendWith(MockitoExtension.class)
-class CreateEventOutboxMessageActionTest {
+ @Transactional
+    public List<StsDataEntity> toApprove(List<UUID> uuids) {
+        LinkedHashSet<UUID> requestedUuids = new LinkedHashSet<>(uuids);
 
-    @Mock
-    private EventsHistoryClient eventsHistoryClient;
+        List<StsDataEntity> entities = stsDataRepository.findAllByUuidInAndDeleted(requestedUuids, false);
 
-    @Mock
-    private OutboxMessagePersistenceService outboxMessagePersistenceService;
+        validateAllFound(requestedUuids, entities);
 
-    private CreateEventOutboxMessageAction action;
-    private ObjectMapper objectMapper;
+        Map<UUID, Integer> order = new HashMap<>();
+        int index = 0;
+        for (UUID uuid : requestedUuids) {
+            order.put(uuid, index++);
+        }
 
-    @BeforeEach
-    void setUp() {
-        objectMapper = new ObjectMapper().findAndRegisterModules();
+        entities.sort(Comparator.comparingInt(entity -> order.get(entity.getUuid())));
 
-        action = new CreateEventOutboxMessageAction(
-                eventsHistoryClient,
-                outboxMessagePersistenceService,
-                objectMapper
-        );
+        Map<UUID, StsStatus> oldStatuses = new HashMap<>();
 
-        ReflectionTestUtils.setField(action, "initialRetryDelay", 10);
-        ReflectionTestUtils.setField(action, "maximumRetryDelay", 14400);
-        ReflectionTestUtils.setField(action, "maximumOfRetries", 10);
+        for (StsDataEntity entity : entities) {
+            StsStatus oldStatus = entity.getStatusId();
+            StsStatus newStatus = resolveToApproveStatus(oldStatus);
+
+            oldStatuses.put(entity.getUuid(), oldStatus);
+            entity.setStatusId(newStatus);
+        }
+
+        List<StsDataEntity> savedEntities = stsDataRepository.saveAll(entities);
+
+        savedEntities.sort(Comparator.comparingInt(entity -> order.get(entity.getUuid())));
+
+        for (StsDataEntity savedEntity : savedEntities) {
+            StsStatus oldStatus = oldStatuses.get(savedEntity.getUuid());
+
+            stsEventsHistoryOutboxService.sendToApproveEvent(savedEntity, oldStatus);
+            stsTrackerHistoryOutboxService.sendToApproveStatus(savedEntity);
+        }
+
+        return savedEntities;
     }
 
-    @Test
-    void execute_shouldReadPayloadCallEventsHistoryClientAndMarkMessageDone() throws Exception {
-        UUID messageId = UUID.randomUUID();
-        UUID entityUuid = UUID.randomUUID();
-        UUID createdBy = UUID.randomUUID();
+     @Transactional
+    public List<StsDataEntity> toApprove(List<UUID> uuids) {
+        LinkedHashSet<UUID> requestedUuids = new LinkedHashSet<>(uuids);
 
-        EventCreateDto payload = EventCreateDto.builder()
-                .serviceId(StsHistoryEventIds.SERVICE_ID)
-                .id(StsHistoryEventIds.STS_CREATE)
-                .entityUuid(entityUuid)
-                .submittedAt(ZonedDateTime.now())
-                .submittedBy(createdBy.toString())
-                .session("NO-SESSION")
-                .userName("Иван Иванов")
-                .userNode("NO-USERNODE")
-                .parameters(List.of(
-                        EventParameterCreateDto.builder()
-                                .id("vehicle_num")
-                                .value("A123AA77")
-                                .build(),
-                        EventParameterCreateDto.builder()
-                                .id("vehicle_name")
-                                .value("Камаз")
-                                .build()
-                ))
-                .build();
+        List<StsDataEntity> entities = stsDataRepository.findAllByUuidInAndDeleted(requestedUuids, false);
 
-        OutboxMessage message = new OutboxMessage(
-                OutboxMessageEventType.CREATE_EVENT,
-                createdBy,
-                entityUuid.toString(),
-                objectMapper.writeValueAsString(payload)
-        );
+        validateAllFound(requestedUuids, entities);
 
-        ReflectionTestUtils.setField(message, "uuid", messageId);
-        ReflectionTestUtils.setField(message, "status", OutboxMessageStatus.IN_PROGRESS);
+        Map<UUID, Integer> order = new HashMap<>();
+        int index = 0;
+        for (UUID uuid : requestedUuids) {
+            order.put(uuid, index++);
+        }
 
-        when(outboxMessagePersistenceService.findUnpublishedMessageByIdWithErrors(messageId))
-                .thenReturn(Optional.of(message));
+        entities.sort(Comparator.comparingInt(entity -> order.get(entity.getUuid())));
 
-        when(outboxMessagePersistenceService.save(any(OutboxMessage.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        Map<UUID, StsStatus> oldStatuses = new HashMap<>();
 
-        action.execute(message.getUuid());
+        for (StsDataEntity entity : entities) {
+            StsStatus oldStatus = entity.getStatusId();
+            StsStatus newStatus = resolveToApproveStatus(oldStatus);
 
-        ArgumentCaptor<EventCreateDto> eventCaptor =
-                ArgumentCaptor.forClass(EventCreateDto.class);
+            oldStatuses.put(entity.getUuid(), oldStatus);
+            entity.setStatusId(newStatus);
+        }
 
-        verify(eventsHistoryClient).createEvent(eventCaptor.capture());
+        List<StsDataEntity> savedEntities = stsDataRepository.saveAll(entities);
 
-        EventCreateDto sentEvent = eventCaptor.getValue();
+        savedEntities.sort(Comparator.comparingInt(entity -> order.get(entity.getUuid())));
 
-        assertEquals(StsHistoryEventIds.SERVICE_ID, sentEvent.getServiceId());
-        assertEquals(StsHistoryEventIds.STS_CREATE, sentEvent.getId());
-        assertEquals(entityUuid, sentEvent.getEntityUuid());
-        assertEquals(createdBy.toString(), sentEvent.getSubmittedBy());
+        for (StsDataEntity savedEntity : savedEntities) {
+            StsStatus oldStatus = oldStatuses.get(savedEntity.getUuid());
 
-        verify(outboxMessagePersistenceService).findUnpublishedMessageByIdWithErrors(messageId);
-        verify(outboxMessagePersistenceService).save(argThat(saved ->
-                saved.getStatus() == OutboxMessageStatus.DONE
-                        && saved.getPublishedAt() != null
-        ));
+            stsEventsHistoryOutboxService.sendToApproveEvent(savedEntity, oldStatus);
+            stsTrackerHistoryOutboxService.sendToApproveStatus(savedEntity);
+        }
+
+        return savedEntities;
     }
-
-    @Test
-    void execute_shouldDoNothingWhenMessageNotFound() {
-        UUID messageId = UUID.randomUUID();
-
-        when(outboxMessagePersistenceService.findUnpublishedMessageByIdWithErrors(messageId))
-                .thenReturn(Optional.empty());
-
-        action.execute(messageId);
-
-        verify(outboxMessagePersistenceService).findUnpublishedMessageByIdWithErrors(messageId);
-        verifyNoInteractions(eventsHistoryClient);
-        verify(outboxMessagePersistenceService, never()).save(any());
-    }
-}
 ```
