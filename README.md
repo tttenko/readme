@@ -25,9 +25,6 @@ public abstract class StsIntegrationTestBase {
     @Autowired
     protected StsDataRepository stsDataRepository;
 
-    @Autowired
-    protected OutboxMessageRepository outboxMessageRepository;
-
     protected final ObjectMapper mapper = JsonMapper.builder()
             .addModule(new JavaTimeModule())
             .build()
@@ -36,15 +33,14 @@ public abstract class StsIntegrationTestBase {
     @BeforeAll
     void initBase() {
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
-        rebuildMockMvcWithoutAuthentication();
+        mockMvc = webAppContextSetup(webApplicationContext).build();
     }
 
     @BeforeEach
     void setUpBase() {
         SecurityContextHolder.clearContext();
-        outboxMessageRepository.deleteAll();
         stsDataRepository.deleteAll();
-        rebuildMockMvcWithoutAuthentication();
+        mockMvc = webAppContextSetup(webApplicationContext).build();
     }
 
     protected void setAuthentication(AuthorizedUser principal) {
@@ -55,21 +51,12 @@ public abstract class StsIntegrationTestBase {
         context.setAuthentication(auth);
         SecurityContextHolder.setContext(context);
 
-        mockMvc = webAppContextSetup(webApplicationContext)
-                .apply(springSecurity())
-                .defaultRequest(get("/").with(authentication(auth)))
-                .build();
+        mockMvc = webAppContextSetup(webApplicationContext).build();
     }
 
     protected void clearAuthentication() {
         SecurityContextHolder.clearContext();
-        rebuildMockMvcWithoutAuthentication();
-    }
-
-    private void rebuildMockMvcWithoutAuthentication() {
-        mockMvc = webAppContextSetup(webApplicationContext)
-                .apply(springSecurity())
-                .build();
+        mockMvc = webAppContextSetup(webApplicationContext).build();
     }
 
     protected AuthorizedUser buildAuthorizedInternalUser(UUID userId, Set<String> permissions) {
@@ -192,9 +179,8 @@ class StsDataControllerUiIntegrationTest extends StsIntegrationTestBase {
 
     @Test
     void toApproveStsDataByInternalUser() throws Exception {
-        setAuthentication(buildAuthorizedSupplierUser(
-                AUTH_SUPPLIER_USER_UUID,
-                DEFAULT_SUPPLIER_UUID,
+        setAuthentication(buildAuthorizedInternalUser(
+                AUTH_INTERNAL_USER_UUID,
                 Set.of()
         ));
 
@@ -202,11 +188,6 @@ class StsDataControllerUiIntegrationTest extends StsIntegrationTestBase {
 
         ToApproveStsDataRequest request = new ToApproveStsDataRequest();
         request.setUuids(List.of(sts.getUuid()));
-
-        setAuthentication(buildAuthorizedInternalUser(
-                AUTH_INTERNAL_USER_UUID,
-                Set.of()
-        ));
 
         mockMvc.perform(patch(UI_V1_PREFIX + "/sts/to_approve")
                         .content(mapper.writeValueAsString(request))
@@ -228,7 +209,7 @@ class StsDataControllerUiIntegrationTest extends StsIntegrationTestBase {
         clearAuthentication();
 
         ToApproveStsDataRequest request = new ToApproveStsDataRequest();
-        request.setUuids(List.of(UUID.randomUUID()));
+        request.setUuids(List.of(createDraftSts().getUuid()));
 
         mockMvc.perform(patch(UI_V1_PREFIX + "/sts/to_approve")
                         .content(mapper.writeValueAsString(request))
