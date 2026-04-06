@@ -1,69 +1,43 @@
 ```java
 @Test
-void givenValidRequest_whenToApproveStsData_thenReturnOk() throws Exception {
-    // given
-    UUID firstUuid = UUID.randomUUID();
-    UUID secondUuid = UUID.randomUUID();
-    UUID contractUuid = UUID.randomUUID();
-    UUID userUuid = UUID.fromString("00000000-0000-0000-0000-000000000001");
+void givenDraftEntity_whenToApprove_thenCalculateSaveAndSendEvents() {
+    UUID uuid = UUID.randomUUID();
 
-    ToApproveStsDataRequest request = new ToApproveStsDataRequest();
-    request.setUuids(List.of(firstUuid, secondUuid));
+    StsDataEntity entity = new StsDataEntity();
+    entity.setUuid(uuid);
+    entity.setStatusId(StsStatus.DRAFT);
 
-    StsDataEntity firstEntity = new StsDataEntity();
-    firstEntity.setUuid(firstUuid);
+    when(stsDataService.getExistingByUuids(List.of(uuid)))
+            .thenReturn(List.of(entity));
 
-    StsDataEntity secondEntity = new StsDataEntity();
-    secondEntity.setUuid(secondUuid);
+    when(stsStatusTransitionService.calculateNextStatus(entity, StsAction.TO_APPROVE))
+            .thenReturn(StsStatus.TO_APPROVE_IN);
 
-    StsDataDto firstDto = new StsDataDto();
-    firstDto.setUuid(firstUuid);
-    firstDto.setContractUuid(contractUuid);
-    firstDto.setTbCode("1234");
-    firstDto.setVehicleNumber("A123AA777");
-    firstDto.setVehicleBrand("КамАЗ");
-    firstDto.setComment("Первая запись");
-    firstDto.setStatusId(StsStatus.TO_APPROVE_IN);
-    firstDto.setCreatedBy(userUuid);
-    firstDto.setUpdatedBy(userUuid);
-    firstDto.setDeleted(false);
+    when(stsDataService.saveAll(List.of(entity)))
+            .thenReturn(List.of(entity));
 
-    StsDataDto secondDto = new StsDataDto();
-    secondDto.setUuid(secondUuid);
-    secondDto.setContractUuid(contractUuid);
-    secondDto.setTbCode("4321");
-    secondDto.setVehicleNumber("B777BB777");
-    secondDto.setVehicleBrand("МАЗ");
-    secondDto.setComment("Вторая запись");
-    secondDto.setStatusId(StsStatus.TO_APPROVE_OUT);
-    secondDto.setCreatedBy(userUuid);
-    secondDto.setUpdatedBy(userUuid);
-    secondDto.setDeleted(false);
+    StsBatchOperationResult<StsDataEntity> result =
+            stsWorkFlowService.toApprove(List.of(uuid));
 
-    StsBatchOperationResult<StsDataEntity> serviceResult =
-            new StsBatchOperationResult<>(List.of(firstEntity, secondEntity), List.of());
+    assertThat(result).isNotNull();
+    assertThat(result.processed()).containsExactly(entity);
+    assertThat(result.errors()).isEmpty();
+    assertThat(entity.getStatusId()).isEqualTo(StsStatus.TO_APPROVE_IN);
 
-    when(stsWorkFlowService.toApprove(List.of(firstUuid, secondUuid)))
-            .thenReturn(serviceResult);
-    when(stsDataMapper.toDto(firstEntity)).thenReturn(firstDto);
-    when(stsDataMapper.toDto(secondEntity)).thenReturn(secondDto);
+    verify(stsDataService).getExistingByUuids(List.of(uuid));
+    verify(stsStatusTransitionService)
+            .calculateNextStatus(entity, StsAction.TO_APPROVE);
+    verify(stsDataService).saveAll(List.of(entity));
+    verify(stsEventsHistoryOutboxService)
+            .sendToApproveEvent(entity, StsStatus.DRAFT);
+    verify(stsTrackerHistoryOutboxService)
+            .sendToApproveStatus(entity);
 
-    // when / then
-    mockMvc.perform(patch("/ui/v1/sts/to_approve")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(objectMapper.writeValueAsString(request)))
-            .andExpect(status().isOk())
-            .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-            .andExpect(jsonPath("$.data.processed.length()").value(2))
-            .andExpect(jsonPath("$.data.errors.length()").value(0))
-            .andExpect(jsonPath("$.data.processed[0].uuid").value(firstUuid.toString()))
-            .andExpect(jsonPath("$.data.processed[0].statusId").value("TO_APPROVE_IN"))
-            .andExpect(jsonPath("$.data.processed[1].uuid").value(secondUuid.toString()))
-            .andExpect(jsonPath("$.data.processed[1].statusId").value("TO_APPROVE_OUT"));
-
-    verify(stsWorkFlowService).toApprove(List.of(firstUuid, secondUuid));
-    verify(stsDataMapper).toDto(firstEntity);
-    verify(stsDataMapper).toDto(secondEntity);
-    verifyNoMoreInteractions(stsWorkFlowService, stsDataMapper);
+    verifyNoMoreInteractions(
+            stsDataService,
+            stsStatusTransitionService,
+            stsEventsHistoryOutboxService,
+            stsTrackerHistoryOutboxService
+    );
 }
 ```
