@@ -1,42 +1,54 @@
 ```java
 @Test
-void givenSupplierUserType_whenToApproveStsData_thenAllowed() {
+void givenPrincipalAndValidRequest_whenToApproveStsData_thenReturnWrappedMappedList() {
     // given
     AuthorizedUser principal = mock(AuthorizedUser.class);
-    when(principal.getUserType())
-            .thenReturn(ru.sber.cs.supplier.portal.authorization.dto.enums.UserType.SUPPLIER);
 
-    UUID uuid = UUID.randomUUID();
+    UUID firstUuid = UUID.randomUUID();
+    UUID secondUuid = UUID.randomUUID();
+    List<UUID> uuids = List.of(firstUuid, secondUuid);
 
     ToApproveStsDataRequest request = new ToApproveStsDataRequest();
-    request.setUuids(List.of(uuid));
+    request.setUuids(uuids);
 
-    StsDataEntity entity = new StsDataEntity();
-    entity.setUuid(uuid);
-    entity.setStatusId(StsStatus.TO_APPROVE_IN);
+    StsDataEntity firstEntity = new StsDataEntity();
+    firstEntity.setUuid(firstUuid);
+    firstEntity.setStatusId(StsStatus.TO_APPROVE_IN);
 
-    StsDataDto dto = new StsDataDto();
-    dto.setUuid(uuid);
-    dto.setStatusId(StsStatus.TO_APPROVE_IN);
+    StsDataEntity secondEntity = new StsDataEntity();
+    secondEntity.setUuid(secondUuid);
+    secondEntity.setStatusId(StsStatus.TO_APPROVE_OUT);
+
+    StsDataDto firstDto = new StsDataDto();
+    firstDto.setUuid(firstUuid);
+    firstDto.setStatusId(StsStatus.TO_APPROVE_IN);
+
+    StsDataDto secondDto = new StsDataDto();
+    secondDto.setUuid(secondUuid);
+    secondDto.setStatusId(StsStatus.TO_APPROVE_OUT);
 
     StsBatchOperationResult<StsDataEntity> serviceResult =
-            new StsBatchOperationResult<>(List.of(entity), List.of());
+            new StsBatchOperationResult<>(List.of(firstEntity, secondEntity), List.of());
 
-    when(stsWorkFlowService.toApprove(List.of(uuid))).thenReturn(serviceResult);
-    when(stsDataMapper.toDto(entity)).thenReturn(dto);
+    when(stsWorkFlowService.toApprove(uuids)).thenReturn(serviceResult);
+    when(stsDataMapper.toDto(firstEntity)).thenReturn(firstDto);
+    when(stsDataMapper.toDto(secondEntity)).thenReturn(secondDto);
 
     // when
-    ResultObj<ToApproveStsDataResultDto> result =
+    ResultObj<ToApproveStsDataResultDto> actualResult =
             stsDataController.toApproveStsData(principal, request);
 
     // then
-    assertThat(result).isNotNull();
-    assertThat(result.getData()).isNotNull();
-    assertThat(result.getData().getProcessed()).containsExactly(dto);
-    assertThat(result.getData().getErrors()).isEmpty();
+    assertThat(actualResult).isNotNull();
+    assertThat(actualResult.getData()).isNotNull();
+    assertThat(actualResult.getData().getProcessed()).hasSize(2);
+    assertThat(actualResult.getData().getProcessed().get(0)).isSameAs(firstDto);
+    assertThat(actualResult.getData().getProcessed().get(1)).isSameAs(secondDto);
+    assertThat(actualResult.getData().getErrors()).isEmpty();
 
-    verify(stsWorkFlowService).toApprove(List.of(uuid));
-    verify(stsDataMapper).toDto(entity);
+    verify(stsWorkFlowService).toApprove(uuids);
+    verify(stsDataMapper).toDto(firstEntity);
+    verify(stsDataMapper).toDto(secondEntity);
     verifyNoMoreInteractions(stsWorkFlowService, stsDataMapper);
 }
 ```
