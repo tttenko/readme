@@ -1,81 +1,66 @@
 ```java
 @Service
 @RequiredArgsConstructor
-public class StsDataService {
+public class StsStatusTransitionService {
 
-    private final StsDataRepository stsDataRepository;
+    private final Scheme stsTrackerScheme;
 
-    @Transactional(readOnly = true)
-    public Page<StsDataEntity> getPageByContractUuid(UUID contractUuid,
-                                                     TopSkipOrderFilterParams parameters) {
+    public StsStatus calculateNextStatus(StsDataEntity entity) {
+        Node currentNode = stsTrackerScheme.getNode(entity.getStatusId().name());
+        Node nextNode = stsTrackerScheme.calculateNext(currentNode, Map.of());
 
-        JpaAdapter adapter = new JpaAdapter(parameters);
-
-        Specification<StsDataEntity> userSpecification = adapter.specification();
-
-        Specification<StsDataEntity> specification = hasContractUuid(contractUuid)
-                .and(isNotDeleted())
-                .and(userSpecification);
-
-        return stsDataRepository.findAll(specification, adapter.pageable());
-    }
-
-    @Transactional(readOnly = true)
-    public StsDataEntity getByUuid(UUID uuid) {
-        return stsDataRepository.findByUuidAndDeleted(uuid, false)
-                .orElseThrow(() -> new EntityNotFoundException("Запись СТС не найдена по uuid: " + uuid));
-    }
-
-    @Transactional(readOnly = true)
-    public List<StsDataEntity> getByUuids(List<UUID> uuids) {
-        LinkedHashSet<UUID> requestedUuids = new LinkedHashSet<>(uuids);
-
-        List<StsDataEntity> entities = stsDataRepository.findAllByUuidInAndDeleted(requestedUuids, false);
-
-        validateAllFound(requestedUuids, entities);
-
-        Map<UUID, Integer> order = new HashMap<>();
-        int index = 0;
-        for (UUID uuid : requestedUuids) {
-            order.put(uuid, index++);
-        }
-
-        entities.sort(Comparator.comparingInt(entity -> order.get(entity.getUuid())));
-        return entities;
-    }
-
-    @Transactional
-    public StsDataEntity save(StsDataEntity entity) {
-        return stsDataRepository.save(entity);
-    }
-
-    @Transactional
-    public List<StsDataEntity> saveAll(List<StsDataEntity> entities) {
-        return stsDataRepository.saveAll(entities);
-    }
-
-    private void validateAllFound(Set<UUID> requestedUuids, List<StsDataEntity> entities) {
-        Set<UUID> foundUuids = entities.stream()
-                .map(StsDataEntity::getUuid)
-                .collect(Collectors.toSet());
-
-        List<UUID> missingUuids = requestedUuids.stream()
-                .filter(uuid -> !foundUuids.contains(uuid))
-                .toList();
-
-        if (!missingUuids.isEmpty()) {
-            throw new EntityNotFoundException("Записи СТС не найдены по uuid: " + missingUuids);
-        }
-    }
-
-    private Specification<StsDataEntity> hasContractUuid(UUID contractUuid) {
-        return (root, query, criteriaBuilder) ->
-                criteriaBuilder.equal(root.get("contractUuid"), contractUuid);
-    }
-
-    private Specification<StsDataEntity> isNotDeleted() {
-        return (root, query, criteriaBuilder) ->
-                criteriaBuilder.isFalse(root.get("deleted"));
+        return StsStatus.valueOf(nextNode.getId());
     }
 }
+
+@Service
+@RequiredArgsConstructor
+public class StsWorkflowService {
+
+    private final StsDataService stsDataService;
+    private final StsStatusTransitionService stsStatusTransitionService;
+    private final StsEventsHistoryOutboxService stsEventsHistoryOutboxService;
+    private final StsTrackerHistoryOutboxService stsTrackerHistoryOutboxService;
+
+    @Transactional
+    public StsDataEntity create(StsDataEntity entity) {
+        entity.setStatusId(StsStatus.DRAFT);
+        entity.setDeleted(false);
+
+        StsDataEntity savedEntity = stsDataService.save(entity);
+
+        stsEventsHistoryOutboxService.sendCreateEvent(savedEntity);
+        stsTrackerHistoryOutboxService.sendCreatedStatus(savedEntity);
+
+        return savedEntity;
+    }
+
+    @Transactional
+    public List<StsDataEntity> toApprove(List<UUID> uuids) {
+        List<StsDataEntity> entities = stsDataService.getByUuids(uuids);
+
+        Map<UUID, StsStatus> oldStatuses = new HashMap<>();
+
+        for (StsDataEntity entity : entities) {
+            StsStatus oldStatus = entity.getStatusId();
+            StsStatus newStatus = stsStatusTransitionService.calculateNextStatus(entity);
+
+            oldStatuses.put(entity.getUuid(), oldStatus);
+            entity.setStatusId(newStatus);
+        }
+
+        List<StsDataEntity> savedEntities = stsDataService.saveAll(entities);
+
+        for (StsDataEntity savedEntity : savedEntities) {
+            StsStatus oldStatus = oldStatuses.get(savedEntity.getUuid());
+
+            stsEventsHistoryOutboxService.sendToApproveEvent(savedEntity, oldStatus);
+            stsTrackerHistoryOutboxService.sendToApproveStatus(savedEntity);
+        }
+
+        return savedEntities;
+    }
+}
+
+
 ```
