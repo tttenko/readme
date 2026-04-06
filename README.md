@@ -1,9 +1,16 @@
 ```java
-private StsBatchOperationErrorDto toErrorDto(StsBatchOperationError error) {
-    StsBatchOperationErrorDto dto = new StsBatchOperationErrorDto();
-    dto.setUuid(error.uuid());
-    dto.setCode(error.code());
-    dto.setMessage(error.message());
-    return dto;
+@Configuration
+@RequiredArgsConstructor
+public class StsTrackerSchemeConfig {
 
+    private final PathSchemeFactory pathSchemeFactory;
+
+    @Value("${tracker.scheme.path}")
+    private String schemePath;
+
+    @Bean
+    public Scheme stsTrackerScheme() {
+        return pathSchemeFactory.createInstance(schemePath);
+    }
+}
 ```
