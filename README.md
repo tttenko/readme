@@ -1,52 +1,67 @@
 ```java
 @Test
-void givenPrincipalAndValidRequest_whenToApproveStsData_thenReturnWrappedMappedList() {
+void givenValidRequest_whenToApproveStsData_thenReturnOk() throws Exception {
     // given
-    AuthorizedUser principal = mock(AuthorizedUser.class);
-
     UUID firstUuid = UUID.randomUUID();
     UUID secondUuid = UUID.randomUUID();
-    List<UUID> uuids = List.of(firstUuid, secondUuid);
+    UUID contractUuid = UUID.randomUUID();
+    UUID userUuid = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
     ToApproveStsDataRequest request = new ToApproveStsDataRequest();
-    request.setUuids(uuids);
+    request.setUuids(List.of(firstUuid, secondUuid));
 
     StsDataEntity firstEntity = new StsDataEntity();
     firstEntity.setUuid(firstUuid);
-    firstEntity.setStatusId(StsStatus.TO_APPROVE_IN);
 
     StsDataEntity secondEntity = new StsDataEntity();
     secondEntity.setUuid(secondUuid);
-    secondEntity.setStatusId(StsStatus.TO_APPROVE_OUT);
 
     StsDataDto firstDto = new StsDataDto();
     firstDto.setUuid(firstUuid);
+    firstDto.setContractUuid(contractUuid);
+    firstDto.setTbCode("1234");
+    firstDto.setVehicleNumber("A123AA777");
+    firstDto.setVehicleBrand("КамАЗ");
+    firstDto.setComment("Первая запись");
     firstDto.setStatusId(StsStatus.TO_APPROVE_IN);
+    firstDto.setCreatedBy(userUuid);
+    firstDto.setUpdatedBy(userUuid);
+    firstDto.setDeleted(false);
 
     StsDataDto secondDto = new StsDataDto();
     secondDto.setUuid(secondUuid);
+    secondDto.setContractUuid(contractUuid);
+    secondDto.setTbCode("4321");
+    secondDto.setVehicleNumber("B777BB777");
+    secondDto.setVehicleBrand("МАЗ");
+    secondDto.setComment("Вторая запись");
     secondDto.setStatusId(StsStatus.TO_APPROVE_OUT);
+    secondDto.setCreatedBy(userUuid);
+    secondDto.setUpdatedBy(userUuid);
+    secondDto.setDeleted(false);
 
     StsBatchOperationResult<StsDataEntity> serviceResult =
             new StsBatchOperationResult<>(List.of(firstEntity, secondEntity), List.of());
 
-    when(stsWorkFlowService.toApprove(uuids)).thenReturn(serviceResult);
+    when(stsWorkFlowService.toApprove(List.of(firstUuid, secondUuid)))
+            .thenReturn(serviceResult);
     when(stsDataMapper.toDto(firstEntity)).thenReturn(firstDto);
     when(stsDataMapper.toDto(secondEntity)).thenReturn(secondDto);
 
-    // when
-    ResultObj<ToApproveStsDataResultDto> actualResult =
-            stsDataController.toApproveStsData(principal, request);
+    // when / then
+    mockMvc.perform(patch("/ui/v1/sts/to_approve")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(objectMapper.writeValueAsString(request)))
+            .andExpect(status().isOk())
+            .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+            .andExpect(jsonPath("$.data.processed.length()").value(2))
+            .andExpect(jsonPath("$.data.errors.length()").value(0))
+            .andExpect(jsonPath("$.data.processed[0].uuid").value(firstUuid.toString()))
+            .andExpect(jsonPath("$.data.processed[0].statusId").value("TO_APPROVE_IN"))
+            .andExpect(jsonPath("$.data.processed[1].uuid").value(secondUuid.toString()))
+            .andExpect(jsonPath("$.data.processed[1].statusId").value("TO_APPROVE_OUT"));
 
-    // then
-    assertThat(actualResult).isNotNull();
-    assertThat(actualResult.getData()).isNotNull();
-    assertThat(actualResult.getData().getProcessed()).hasSize(2);
-    assertThat(actualResult.getData().getProcessed().get(0)).isSameAs(firstDto);
-    assertThat(actualResult.getData().getProcessed().get(1)).isSameAs(secondDto);
-    assertThat(actualResult.getData().getErrors()).isEmpty();
-
-    verify(stsWorkFlowService).toApprove(uuids);
+    verify(stsWorkFlowService).toApprove(List.of(firstUuid, secondUuid));
     verify(stsDataMapper).toDto(firstEntity);
     verify(stsDataMapper).toDto(secondEntity);
     verifyNoMoreInteractions(stsWorkFlowService, stsDataMapper);
