@@ -1,167 +1,149 @@
 ```java
 @Test
-void givenValidRequest_whenToApproveStsData_thenReturnOk() throws Exception {
+void givenPrincipalAndValidRequest_whenToApproveStsData_thenReturnWrappedMappedList() {
     // given
+    AuthorizedUser principal = mock(AuthorizedUser.class);
+
     UUID firstUuid = UUID.randomUUID();
     UUID secondUuid = UUID.randomUUID();
-    UUID contractUuid = UUID.randomUUID();
-    UUID userUuid = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    List<UUID> uuids = List.of(firstUuid, secondUuid);
 
     ToApproveStsDataRequest request = new ToApproveStsDataRequest();
-    request.setUuids(List.of(firstUuid, secondUuid));
+    request.setUuids(uuids);
 
     StsDataEntity firstEntity = new StsDataEntity();
     firstEntity.setUuid(firstUuid);
+    firstEntity.setStatusId(StsStatus.TO_APPROVE_IN);
 
     StsDataEntity secondEntity = new StsDataEntity();
     secondEntity.setUuid(secondUuid);
+    secondEntity.setStatusId(StsStatus.TO_APPROVE_OUT);
 
     StsDataDto firstDto = new StsDataDto();
     firstDto.setUuid(firstUuid);
-    firstDto.setContractUuid(contractUuid);
-    firstDto.setTbCode("1234");
-    firstDto.setVehicleNumber("A123AA777");
-    firstDto.setVehicleBrand("КамАЗ");
-    firstDto.setComment("Первая запись");
     firstDto.setStatusId(StsStatus.TO_APPROVE_IN);
-    firstDto.setCreatedBy(userUuid);
-    firstDto.setUpdatedBy(userUuid);
-    firstDto.setDeleted(false);
 
     StsDataDto secondDto = new StsDataDto();
     secondDto.setUuid(secondUuid);
-    secondDto.setContractUuid(contractUuid);
-    secondDto.setTbCode("4321");
-    secondDto.setVehicleNumber("B777BB777");
-    secondDto.setVehicleBrand("МАЗ");
-    secondDto.setComment("Вторая запись");
     secondDto.setStatusId(StsStatus.TO_APPROVE_OUT);
-    secondDto.setCreatedBy(userUuid);
-    secondDto.setUpdatedBy(userUuid);
-    secondDto.setDeleted(false);
 
-    when(stsDataService.toApprove(List.of(firstUuid, secondUuid)))
-            .thenReturn(List.of(firstEntity, secondEntity));
+    when(stsDataService.toApprove(uuids)).thenReturn(List.of(firstEntity, secondEntity));
     when(stsDataMapper.toDto(firstEntity)).thenReturn(firstDto);
     when(stsDataMapper.toDto(secondEntity)).thenReturn(secondDto);
 
-    // when / then
-    mockMvc.perform(patch("/ui/v1/sts/to_approve")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(objectMapper.writeValueAsString(request)))
-            .andExpect(status().isOk())
-            .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-            .andExpect(jsonPath("$.count").value(2))
-            .andExpect(jsonPath("$.data.length()").value(2))
-            .andExpect(jsonPath("$.data[0].uuid").value(firstUuid.toString()))
-            .andExpect(jsonPath("$.data[0].statusId").value("TO_APPROVE_IN"))
-            .andExpect(jsonPath("$.data[1].uuid").value(secondUuid.toString()))
-            .andExpect(jsonPath("$.data[1].statusId").value("TO_APPROVE_OUT"));
+    // when
+    ResultObj<List<StsDataDto>> actualResult = stsDataController.toApproveStsData(principal, request);
 
-    verify(stsDataService).toApprove(List.of(firstUuid, secondUuid));
+    // then
+    assertThat(actualResult).isNotNull();
+    assertThat(actualResult.getCount()).isEqualTo(2L);
+    assertThat(actualResult.getData()).hasSize(2);
+    assertThat(actualResult.getData().get(0)).isSameAs(firstDto);
+    assertThat(actualResult.getData().get(1)).isSameAs(secondDto);
+
+    verify(stsDataService).toApprove(uuids);
     verify(stsDataMapper).toDto(firstEntity);
     verify(stsDataMapper).toDto(secondEntity);
     verifyNoMoreInteractions(stsDataService, stsDataMapper);
 }
 
-@Test
-void givenInvalidRequest_whenToApproveStsData_thenReturnBadRequest() throws Exception {
-    // given
-    String invalidRequestBody = """
-            {
-              "uuids": []
-            }
-            """;
+@ExtendWith(SpringExtension.class)
+@ContextConfiguration(classes = StsDataControllerImplMethodSecurityTest.TestConfig.class)
+class StsDataControllerImplMethodSecurityTest {
 
-    // when / then
-    mockMvc.perform(patch("/ui/v1/sts/to_approve")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(invalidRequestBody))
-            .andExpect(status().isBadRequest());
+    @jakarta.annotation.Resource
+    private StsDataController stsDataController;
 
-    verifyNoInteractions(stsDataService, stsDataMapper);
-}
+    @jakarta.annotation.Resource
+    private StsDataService stsDataService;
 
-@Test
-void givenValidRequest_whenToApproveStsData_thenReturnOk() throws Exception {
-    // given
-    UUID firstUuid = UUID.randomUUID();
-    UUID secondUuid = UUID.randomUUID();
-    UUID contractUuid = UUID.randomUUID();
-    UUID userUuid = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    @jakarta.annotation.Resource
+    private StsDataMapper stsDataMapper;
 
-    ToApproveStsDataRequest request = new ToApproveStsDataRequest();
-    request.setUuids(List.of(firstUuid, secondUuid));
+    @BeforeEach
+    void setUp() {
+        reset(stsDataService, stsDataMapper);
 
-    StsDataEntity firstEntity = new StsDataEntity();
-    firstEntity.setUuid(firstUuid);
+        SecurityContextHolder.clearContext();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken("test-user", "test-password", List.of())
+        );
+    }
 
-    StsDataEntity secondEntity = new StsDataEntity();
-    secondEntity.setUuid(secondUuid);
+    @Test
+    void givenSupplierUserType_whenToApproveStsData_thenAllowed() {
+        // given
+        AuthorizedUser principal = mock(AuthorizedUser.class);
+        when(principal.getUserType())
+                .thenReturn(ru.sber.cs.supplier.portal.authorization.dto.enums.UserType.SUPPLIER);
 
-    StsDataDto firstDto = new StsDataDto();
-    firstDto.setUuid(firstUuid);
-    firstDto.setContractUuid(contractUuid);
-    firstDto.setTbCode("1234");
-    firstDto.setVehicleNumber("A123AA777");
-    firstDto.setVehicleBrand("КамАЗ");
-    firstDto.setComment("Первая запись");
-    firstDto.setStatusId(StsStatus.TO_APPROVE_IN);
-    firstDto.setCreatedBy(userUuid);
-    firstDto.setUpdatedBy(userUuid);
-    firstDto.setDeleted(false);
+        UUID uuid = UUID.randomUUID();
 
-    StsDataDto secondDto = new StsDataDto();
-    secondDto.setUuid(secondUuid);
-    secondDto.setContractUuid(contractUuid);
-    secondDto.setTbCode("4321");
-    secondDto.setVehicleNumber("B777BB777");
-    secondDto.setVehicleBrand("МАЗ");
-    secondDto.setComment("Вторая запись");
-    secondDto.setStatusId(StsStatus.TO_APPROVE_OUT);
-    secondDto.setCreatedBy(userUuid);
-    secondDto.setUpdatedBy(userUuid);
-    secondDto.setDeleted(false);
+        ToApproveStsDataRequest request = new ToApproveStsDataRequest();
+        request.setUuids(List.of(uuid));
 
-    when(stsDataService.toApprove(List.of(firstUuid, secondUuid)))
-            .thenReturn(List.of(firstEntity, secondEntity));
-    when(stsDataMapper.toDto(firstEntity)).thenReturn(firstDto);
-    when(stsDataMapper.toDto(secondEntity)).thenReturn(secondDto);
+        StsDataEntity entity = new StsDataEntity();
+        entity.setUuid(uuid);
+        entity.setStatusId(StsStatus.TO_APPROVE_IN);
 
-    // when / then
-    mockMvc.perform(patch("/ui/v1/sts/to_approve")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(objectMapper.writeValueAsString(request)))
-            .andExpect(status().isOk())
-            .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-            .andExpect(jsonPath("$.count").value(2))
-            .andExpect(jsonPath("$.data.length()").value(2))
-            .andExpect(jsonPath("$.data[0].uuid").value(firstUuid.toString()))
-            .andExpect(jsonPath("$.data[0].statusId").value("TO_APPROVE_IN"))
-            .andExpect(jsonPath("$.data[1].uuid").value(secondUuid.toString()))
-            .andExpect(jsonPath("$.data[1].statusId").value("TO_APPROVE_OUT"));
+        StsDataDto dto = new StsDataDto();
+        dto.setUuid(uuid);
+        dto.setStatusId(StsStatus.TO_APPROVE_IN);
 
-    verify(stsDataService).toApprove(List.of(firstUuid, secondUuid));
-    verify(stsDataMapper).toDto(firstEntity);
-    verify(stsDataMapper).toDto(secondEntity);
-    verifyNoMoreInteractions(stsDataService, stsDataMapper);
-}
+        when(stsDataService.toApprove(List.of(uuid))).thenReturn(List.of(entity));
+        when(stsDataMapper.toDto(entity)).thenReturn(dto);
 
-@Test
-void givenInvalidRequest_whenToApproveStsData_thenReturnBadRequest() throws Exception {
-    // given
-    String invalidRequestBody = """
-            {
-              "uuids": []
-            }
-            """;
+        // when
+        ResultObj<List<StsDataDto>> result = stsDataController.toApproveStsData(principal, request);
 
-    // when / then
-    mockMvc.perform(patch("/ui/v1/sts/to_approve")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(invalidRequestBody))
-            .andExpect(status().isBadRequest());
+        // then
+        assertThat(result).isNotNull();
+        assertThat(result.getCount()).isEqualTo(1L);
+        assertThat(result.getData()).containsExactly(dto);
 
-    verifyNoInteractions(stsDataService, stsDataMapper);
+        verify(stsDataService).toApprove(List.of(uuid));
+        verify(stsDataMapper).toDto(entity);
+        verifyNoMoreInteractions(stsDataService, stsDataMapper);
+    }
+
+    @Test
+    void givenInternalUserType_whenToApproveStsData_thenAccessDenied() {
+        // given
+        AuthorizedUser principal = mock(AuthorizedUser.class);
+        when(principal.getUserType())
+                .thenReturn(ru.sber.cs.supplier.portal.authorization.dto.enums.UserType.INTERNAL);
+
+        ToApproveStsDataRequest request = new ToApproveStsDataRequest();
+        request.setUuids(List.of(UUID.randomUUID()));
+
+        // when / then
+        assertThrows(
+                AccessDeniedException.class,
+                () -> stsDataController.toApproveStsData(principal, request)
+        );
+
+        verifyNoInteractions(stsDataService, stsDataMapper);
+    }
+
+    @Configuration
+    @EnableMethodSecurity
+    static class TestConfig {
+
+        @Bean
+        StsDataService stsDataService() {
+            return mock(StsDataService.class);
+        }
+
+        @Bean
+        StsDataMapper stsDataMapper() {
+            return mock(StsDataMapper.class);
+        }
+
+        @Bean
+        StsDataController stsDataController(StsDataService stsDataService,
+                                            StsDataMapper stsDataMapper) {
+            return new StsDataControllerImpl(stsDataService, stsDataMapper);
+        }
+    }
 }
 ```
