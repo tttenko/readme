@@ -1,149 +1,163 @@
 ```java
 @Test
-void givenPrincipalAndValidRequest_whenToApproveStsData_thenReturnWrappedMappedList() {
+void givenDraftEntity_whenToApprove_thenMoveToApproveInSaveAndSendEvents() {
     // given
-    AuthorizedUser principal = mock(AuthorizedUser.class);
+    UUID uuid = UUID.randomUUID();
 
+    StsDataEntity entity = new StsDataEntity();
+    entity.setUuid(uuid);
+    entity.setStatusId(StsStatus.DRAFT);
+
+    when(stsDataRepository.findAllByUuidInAndDeleted(List.of(uuid), false))
+            .thenReturn(List.of(entity));
+    when(stsDataRepository.saveAll(List.of(entity)))
+            .thenReturn(List.of(entity));
+
+    // when
+    List<StsDataEntity> actualEntities = stsDataService.toApprove(List.of(uuid));
+
+    // then
+    assertThat(actualEntities).containsExactly(entity);
+    assertThat(entity.getStatusId()).isEqualTo(StsStatus.TO_APPROVE_IN);
+
+    verify(stsDataRepository).findAllByUuidInAndDeleted(List.of(uuid), false);
+    verify(stsDataRepository).saveAll(List.of(entity));
+    verify(stsEventsHistoryOutboxService).sendToApproveEvent(entity, StsStatus.DRAFT);
+    verify(stsTrackerHistoryOutboxService).sendToApproveStatus(entity);
+
+    verifyNoMoreInteractions(
+            stsDataRepository,
+            stsEventsHistoryOutboxService,
+            stsTrackerHistoryOutboxService
+    );
+}
+
+@Test
+void givenApprovedEntity_whenToApprove_thenMoveToApproveOutSaveAndSendEvents() {
+    // given
+    UUID uuid = UUID.randomUUID();
+
+    StsDataEntity entity = new StsDataEntity();
+    entity.setUuid(uuid);
+    entity.setStatusId(StsStatus.APPROVED);
+
+    when(stsDataRepository.findAllByUuidInAndDeleted(List.of(uuid), false))
+            .thenReturn(List.of(entity));
+    when(stsDataRepository.saveAll(List.of(entity)))
+            .thenReturn(List.of(entity));
+
+    // when
+    List<StsDataEntity> actualEntities = stsDataService.toApprove(List.of(uuid));
+
+    // then
+    assertThat(actualEntities).containsExactly(entity);
+    assertThat(entity.getStatusId()).isEqualTo(StsStatus.TO_APPROVE_OUT);
+
+    verify(stsDataRepository).findAllByUuidInAndDeleted(List.of(uuid), false);
+    verify(stsDataRepository).saveAll(List.of(entity));
+    verify(stsEventsHistoryOutboxService).sendToApproveEvent(entity, StsStatus.APPROVED);
+    verify(stsTrackerHistoryOutboxService).sendToApproveStatus(entity);
+
+    verifyNoMoreInteractions(
+            stsDataRepository,
+            stsEventsHistoryOutboxService,
+            stsTrackerHistoryOutboxService
+    );
+}
+
+@Test
+void givenMissingUuid_whenToApprove_thenThrowEntityNotFoundException() {
+    // given
+    UUID existingUuid = UUID.randomUUID();
+    UUID missingUuid = UUID.randomUUID();
+
+    StsDataEntity entity = new StsDataEntity();
+    entity.setUuid(existingUuid);
+    entity.setStatusId(StsStatus.DRAFT);
+
+    when(stsDataRepository.findAllByUuidInAndDeleted(List.of(existingUuid, missingUuid), false))
+            .thenReturn(List.of(entity));
+
+    // when / then
+    assertThatThrownBy(() -> stsDataService.toApprove(List.of(existingUuid, missingUuid)))
+            .isInstanceOf(EntityNotFoundException.class)
+            .hasMessage("Записи СТС не найдены по uuid: [" + missingUuid + "]");
+
+    verify(stsDataRepository).findAllByUuidInAndDeleted(List.of(existingUuid, missingUuid), false);
+    verifyNoMoreInteractions(
+            stsDataRepository,
+            stsEventsHistoryOutboxService,
+            stsTrackerHistoryOutboxService
+    );
+}
+
+@Test
+void givenUnsupportedStatus_whenToApprove_thenThrowIllegalStateException() {
+    // given
+    UUID uuid = UUID.randomUUID();
+
+    StsDataEntity entity = new StsDataEntity();
+    entity.setUuid(uuid);
+    entity.setStatusId(StsStatus.TO_APPROVE_IN);
+
+    when(stsDataRepository.findAllByUuidInAndDeleted(List.of(uuid), false))
+            .thenReturn(List.of(entity));
+
+    // when / then
+    assertThatThrownBy(() -> stsDataService.toApprove(List.of(uuid)))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("Операция toApprove недоступна для статуса: На согласовании включения");
+
+    verify(stsDataRepository).findAllByUuidInAndDeleted(List.of(uuid), false);
+    verifyNoMoreInteractions(
+            stsDataRepository,
+            stsEventsHistoryOutboxService,
+            stsTrackerHistoryOutboxService
+    );
+}
+
+Если хочешь покрыть еще и массовый сценарий, можно добавить пятый тест — смешанный список из DRAFT и APPROVED:
+
+@Test
+void givenDraftAndApprovedEntities_whenToApprove_thenUpdateEachEntityAndSendEvents() {
+    // given
     UUID firstUuid = UUID.randomUUID();
     UUID secondUuid = UUID.randomUUID();
-    List<UUID> uuids = List.of(firstUuid, secondUuid);
-
-    ToApproveStsDataRequest request = new ToApproveStsDataRequest();
-    request.setUuids(uuids);
 
     StsDataEntity firstEntity = new StsDataEntity();
     firstEntity.setUuid(firstUuid);
-    firstEntity.setStatusId(StsStatus.TO_APPROVE_IN);
+    firstEntity.setStatusId(StsStatus.DRAFT);
 
     StsDataEntity secondEntity = new StsDataEntity();
     secondEntity.setUuid(secondUuid);
-    secondEntity.setStatusId(StsStatus.TO_APPROVE_OUT);
+    secondEntity.setStatusId(StsStatus.APPROVED);
 
-    StsDataDto firstDto = new StsDataDto();
-    firstDto.setUuid(firstUuid);
-    firstDto.setStatusId(StsStatus.TO_APPROVE_IN);
-
-    StsDataDto secondDto = new StsDataDto();
-    secondDto.setUuid(secondUuid);
-    secondDto.setStatusId(StsStatus.TO_APPROVE_OUT);
-
-    when(stsDataService.toApprove(uuids)).thenReturn(List.of(firstEntity, secondEntity));
-    when(stsDataMapper.toDto(firstEntity)).thenReturn(firstDto);
-    when(stsDataMapper.toDto(secondEntity)).thenReturn(secondDto);
+    when(stsDataRepository.findAllByUuidInAndDeleted(List.of(firstUuid, secondUuid), false))
+            .thenReturn(List.of(firstEntity, secondEntity));
+    when(stsDataRepository.saveAll(List.of(firstEntity, secondEntity)))
+            .thenReturn(List.of(firstEntity, secondEntity));
 
     // when
-    ResultObj<List<StsDataDto>> actualResult = stsDataController.toApproveStsData(principal, request);
+    List<StsDataEntity> actualEntities = stsDataService.toApprove(List.of(firstUuid, secondUuid));
 
     // then
-    assertThat(actualResult).isNotNull();
-    assertThat(actualResult.getCount()).isEqualTo(2L);
-    assertThat(actualResult.getData()).hasSize(2);
-    assertThat(actualResult.getData().get(0)).isSameAs(firstDto);
-    assertThat(actualResult.getData().get(1)).isSameAs(secondDto);
+    assertThat(actualEntities).containsExactly(firstEntity, secondEntity);
+    assertThat(firstEntity.getStatusId()).isEqualTo(StsStatus.TO_APPROVE_IN);
+    assertThat(secondEntity.getStatusId()).isEqualTo(StsStatus.TO_APPROVE_OUT);
 
-    verify(stsDataService).toApprove(uuids);
-    verify(stsDataMapper).toDto(firstEntity);
-    verify(stsDataMapper).toDto(secondEntity);
-    verifyNoMoreInteractions(stsDataService, stsDataMapper);
-}
+    verify(stsDataRepository).findAllByUuidInAndDeleted(List.of(firstUuid, secondUuid), false);
+    verify(stsDataRepository).saveAll(List.of(firstEntity, secondEntity));
 
-@ExtendWith(SpringExtension.class)
-@ContextConfiguration(classes = StsDataControllerImplMethodSecurityTest.TestConfig.class)
-class StsDataControllerImplMethodSecurityTest {
+    verify(stsEventsHistoryOutboxService).sendToApproveEvent(firstEntity, StsStatus.DRAFT);
+    verify(stsEventsHistoryOutboxService).sendToApproveEvent(secondEntity, StsStatus.APPROVED);
 
-    @jakarta.annotation.Resource
-    private StsDataController stsDataController;
+    verify(stsTrackerHistoryOutboxService).sendToApproveStatus(firstEntity);
+    verify(stsTrackerHistoryOutboxService).sendToApproveStatus(secondEntity);
 
-    @jakarta.annotation.Resource
-    private StsDataService stsDataService;
-
-    @jakarta.annotation.Resource
-    private StsDataMapper stsDataMapper;
-
-    @BeforeEach
-    void setUp() {
-        reset(stsDataService, stsDataMapper);
-
-        SecurityContextHolder.clearContext();
-        SecurityContextHolder.getContext().setAuthentication(
-                new UsernamePasswordAuthenticationToken("test-user", "test-password", List.of())
-        );
-    }
-
-    @Test
-    void givenSupplierUserType_whenToApproveStsData_thenAllowed() {
-        // given
-        AuthorizedUser principal = mock(AuthorizedUser.class);
-        when(principal.getUserType())
-                .thenReturn(ru.sber.cs.supplier.portal.authorization.dto.enums.UserType.SUPPLIER);
-
-        UUID uuid = UUID.randomUUID();
-
-        ToApproveStsDataRequest request = new ToApproveStsDataRequest();
-        request.setUuids(List.of(uuid));
-
-        StsDataEntity entity = new StsDataEntity();
-        entity.setUuid(uuid);
-        entity.setStatusId(StsStatus.TO_APPROVE_IN);
-
-        StsDataDto dto = new StsDataDto();
-        dto.setUuid(uuid);
-        dto.setStatusId(StsStatus.TO_APPROVE_IN);
-
-        when(stsDataService.toApprove(List.of(uuid))).thenReturn(List.of(entity));
-        when(stsDataMapper.toDto(entity)).thenReturn(dto);
-
-        // when
-        ResultObj<List<StsDataDto>> result = stsDataController.toApproveStsData(principal, request);
-
-        // then
-        assertThat(result).isNotNull();
-        assertThat(result.getCount()).isEqualTo(1L);
-        assertThat(result.getData()).containsExactly(dto);
-
-        verify(stsDataService).toApprove(List.of(uuid));
-        verify(stsDataMapper).toDto(entity);
-        verifyNoMoreInteractions(stsDataService, stsDataMapper);
-    }
-
-    @Test
-    void givenInternalUserType_whenToApproveStsData_thenAccessDenied() {
-        // given
-        AuthorizedUser principal = mock(AuthorizedUser.class);
-        when(principal.getUserType())
-                .thenReturn(ru.sber.cs.supplier.portal.authorization.dto.enums.UserType.INTERNAL);
-
-        ToApproveStsDataRequest request = new ToApproveStsDataRequest();
-        request.setUuids(List.of(UUID.randomUUID()));
-
-        // when / then
-        assertThrows(
-                AccessDeniedException.class,
-                () -> stsDataController.toApproveStsData(principal, request)
-        );
-
-        verifyNoInteractions(stsDataService, stsDataMapper);
-    }
-
-    @Configuration
-    @EnableMethodSecurity
-    static class TestConfig {
-
-        @Bean
-        StsDataService stsDataService() {
-            return mock(StsDataService.class);
-        }
-
-        @Bean
-        StsDataMapper stsDataMapper() {
-            return mock(StsDataMapper.class);
-        }
-
-        @Bean
-        StsDataController stsDataController(StsDataService stsDataService,
-                                            StsDataMapper stsDataMapper) {
-            return new StsDataControllerImpl(stsDataService, stsDataMapper);
-        }
-    }
+    verifyNoMoreInteractions(
+            stsDataRepository,
+            stsEventsHistoryOutboxService,
+            stsTrackerHistoryOutboxService
+    );
 }
 ```
