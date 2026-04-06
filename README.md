@@ -1,103 +1,62 @@
 ```java
-class StsTrackerValidatorsConfigTest {
+@Transactional
+    public StsBatchOperationResult<StsDataEntity> toApprove(List<UUID> uuids) {
 
-    private final StsTrackerValidatorsConfig config = new StsTrackerValidatorsConfig();
+        LinkedHashSet<UUID> requestedUuids = new LinkedHashSet<>(uuids);
 
-    @Test
-    void toApproveInValidator_shouldReturnTrue_whenActionIsToApprove() {
-        SwitchCheck validator = config.toApproveInValidator();
+        List<StsDataEntity> existingEntities =
+                stsDataService.getExistingByUuids(new ArrayList<>(requestedUuids));
 
-        assertNotNull(validator);
-        assertTrue(validator.check(null, null, Map.of("action", StsAction.TO_APPROVE.getId())));
+        Map<UUID, StsDataEntity> entitiesByUuid = existingEntities.stream()
+                .collect(Collectors.toMap(StsDataEntity::getUuid, Function.identity()));
+
+        List<StsBatchOperationError> errors = new ArrayList<>();
+        List<StsDataEntity> toSave = new ArrayList<>();
+        Map<UUID, StsStatus> oldStatuses = new HashMap<>();
+
+        for (UUID uuid : requestedUuids) {
+            StsDataEntity entity = entitiesByUuid.get(uuid);
+
+            if (entity == null) {
+                errors.add(new StsBatchOperationError(
+                        uuid,
+                        ERROR_NOT_FOUND,
+                        "Запись СТС не найдена"
+                ));
+                continue;
+            }
+
+            try {
+                StsStatus oldStatus = entity.getStatusId();
+
+                StsStatus newStatus =
+                        stsStatusTransitionService.calculateNextStatus(entity, StsAction.TO_APPROVE);
+
+                oldStatuses.put(entity.getUuid(), oldStatus);
+                entity.setStatusId(newStatus);
+                toSave.add(entity);
+
+            } catch (Exception ex) {
+                errors.add(new StsBatchOperationError(
+                        uuid,
+                        ERROR_INVALID_STATUS,
+                        ex.getMessage()
+                ));
+            }
+        }
+
+        List<StsDataEntity> savedEntities = toSave.isEmpty()
+                ? List.of()
+                : stsDataService.saveAll(toSave);
+
+        for (StsDataEntity savedEntity : savedEntities) {
+            StsStatus oldStatus = oldStatuses.get(savedEntity.getUuid());
+
+            stsEventsHistoryOutboxService.sendToApproveEvent(savedEntity, oldStatus);
+            stsTrackerHistoryOutboxService.sendToApproveStatus(savedEntity);
+        }
+
+        return new StsBatchOperationResult<>(savedEntities, errors);
     }
-
-    @Test
-    void toApproveInValidator_shouldReturnFalse_whenActionIsNotToApprove() {
-        SwitchCheck validator = config.toApproveInValidator();
-
-        assertNotNull(validator);
-        assertFalse(validator.check(null, null, Map.of("action", StsAction.APPROVE.getId())));
-    }
-
-    @Test
-    void approveInValidator_shouldReturnTrue_whenActionIsApprove() {
-        SwitchCheck validator = config.approveInValidator();
-
-        assertNotNull(validator);
-        assertTrue(validator.check(null, null, Map.of("action", StsAction.APPROVE.getId())));
-    }
-
-    @Test
-    void approveInValidator_shouldReturnFalse_whenActionIsNotApprove() {
-        SwitchCheck validator = config.approveInValidator();
-
-        assertNotNull(validator);
-        assertFalse(validator.check(null, null, Map.of("action", StsAction.REJECT.getId())));
-    }
-
-    @Test
-    void rejectInValidator_shouldReturnTrue_whenActionIsReject() {
-        SwitchCheck validator = config.rejectInValidator();
-
-        assertNotNull(validator);
-        assertTrue(validator.check(null, null, Map.of("action", StsAction.REJECT.getId())));
-    }
-
-    @Test
-    void rejectInValidator_shouldReturnFalse_whenActionIsNotReject() {
-        SwitchCheck validator = config.rejectInValidator();
-
-        assertNotNull(validator);
-        assertFalse(validator.check(null, null, Map.of("action", StsAction.APPROVE.getId())));
-    }
-
-    @Test
-    void toApproveOutValidator_shouldReturnTrue_whenActionIsToApprove() {
-        SwitchCheck validator = config.toApproveOutValidator();
-
-        assertNotNull(validator);
-        assertTrue(validator.check(null, null, Map.of("action", StsAction.TO_APPROVE.getId())));
-    }
-
-    @Test
-    void toApproveOutValidator_shouldReturnFalse_whenActionIsNotToApprove() {
-        SwitchCheck validator = config.toApproveOutValidator();
-
-        assertNotNull(validator);
-        assertFalse(validator.check(null, null, Map.of("action", StsAction.REJECT.getId())));
-    }
-
-    @Test
-    void approveOutValidator_shouldReturnTrue_whenActionIsApprove() {
-        SwitchCheck validator = config.approveOutValidator();
-
-        assertNotNull(validator);
-        assertTrue(validator.check(null, null, Map.of("action", StsAction.APPROVE.getId())));
-    }
-
-    @Test
-    void approveOutValidator_shouldReturnFalse_whenActionIsNotApprove() {
-        SwitchCheck validator = config.approveOutValidator();
-
-        assertNotNull(validator);
-        assertFalse(validator.check(null, null, Map.of("action", StsAction.TO_APPROVE.getId())));
-    }
-
-    @Test
-    void rejectOutValidator_shouldReturnTrue_whenActionIsReject() {
-        SwitchCheck validator = config.rejectOutValidator();
-
-        assertNotNull(validator);
-        assertTrue(validator.check(null, null, Map.of("action", StsAction.REJECT.getId())));
-    }
-
-    @Test
-    void rejectOutValidator_shouldReturnFalse_whenActionIsNotReject() {
-        SwitchCheck validator = config.rejectOutValidator();
-
-        assertNotNull(validator);
-        assertFalse(validator.check(null, null, Map.of("action", StsAction.APPROVE.getId())));
-    }
-}
 
 ```
