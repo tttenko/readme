@@ -1,163 +1,272 @@
 ```java
-@Test
-void givenDraftEntity_whenToApprove_thenMoveToApproveInSaveAndSendEvents() {
-    // given
-    UUID uuid = UUID.randomUUID();
+@ExtendWith(MockitoExtension.class)
+class StsEventsHistoryServiceTest {
 
-    StsDataEntity entity = new StsDataEntity();
-    entity.setUuid(uuid);
-    entity.setStatusId(StsStatus.DRAFT);
+    private static final UUID AUTHOR_UUID = UUID.randomUUID();
+    private static final String FULL_NAME = "Сенышин Осман Людовикович";
 
-    when(stsDataRepository.findAllByUuidInAndDeleted(List.of(uuid), false))
-            .thenReturn(List.of(entity));
-    when(stsDataRepository.saveAll(List.of(entity)))
-            .thenReturn(List.of(entity));
+    @Mock
+    private OutboxMessageService outboxMessageService;
 
-    // when
-    List<StsDataEntity> actualEntities = stsDataService.toApprove(List.of(uuid));
+    @Mock
+    private ApplicationEventPublisher applicationEventPublisher;
 
-    // then
-    assertThat(actualEntities).containsExactly(entity);
-    assertThat(entity.getStatusId()).isEqualTo(StsStatus.TO_APPROVE_IN);
+    @InjectMocks
+    private StsEventsHistoryOutboxService stsEventsHistoryService;
 
-    verify(stsDataRepository).findAllByUuidInAndDeleted(List.of(uuid), false);
-    verify(stsDataRepository).saveAll(List.of(entity));
-    verify(stsEventsHistoryOutboxService).sendToApproveEvent(entity, StsStatus.DRAFT);
-    verify(stsTrackerHistoryOutboxService).sendToApproveStatus(entity);
+    @AfterEach
+    void clearSecurityContext() {
+        SecurityContextHolder.clearContext();
+    }
 
-    verifyNoMoreInteractions(
-            stsDataRepository,
-            stsEventsHistoryOutboxService,
-            stsTrackerHistoryOutboxService
-    );
-}
+    @Test
+    void givenValidEntity_whenSendCreateEvent_thenSaveMessageToOutboxAndPublishEvent() {
+        // given
+        UUID entityUuid = UUID.randomUUID();
+        UUID outboxMessageUuid = UUID.randomUUID();
+        ZonedDateTime createdAt = ZonedDateTime.now();
 
-@Test
-void givenApprovedEntity_whenToApprove_thenMoveToApproveOutSaveAndSendEvents() {
-    // given
-    UUID uuid = UUID.randomUUID();
+        StsDataEntity entity = new StsDataEntity();
+        entity.setUuid(entityUuid);
+        entity.setTbCode("1234");
+        entity.setVehicleNumber("A123AA777");
+        entity.setVehicleBrand("КАМАЗ");
+        entity.setComment("Тестовая запись");
+        entity.setStatusId(StsStatus.DRAFT);
+        entity.setCreatedBy(AUTHOR_UUID);
+        entity.setUpdatedBy(UUID.randomUUID());
+        entity.setCreatedAt(createdAt);
 
-    StsDataEntity entity = new StsDataEntity();
-    entity.setUuid(uuid);
-    entity.setStatusId(StsStatus.APPROVED);
+        OutboxMessage outboxMessage = mock(OutboxMessage.class);
+        when(outboxMessage.getUuid()).thenReturn(outboxMessageUuid);
 
-    when(stsDataRepository.findAllByUuidInAndDeleted(List.of(uuid), false))
-            .thenReturn(List.of(entity));
-    when(stsDataRepository.saveAll(List.of(entity)))
-            .thenReturn(List.of(entity));
+        when(outboxMessageService.addOutboxMessage(
+                eq(OutboxMessageEventType.CREATE_EVENT),
+                eq(AUTHOR_UUID),
+                eq(entityUuid.toString()),
+                any(EventCreateDto.class)
+        )).thenReturn(outboxMessage);
 
-    // when
-    List<StsDataEntity> actualEntities = stsDataService.toApprove(List.of(uuid));
+        mockSecurityContext(FULL_NAME);
 
-    // then
-    assertThat(actualEntities).containsExactly(entity);
-    assertThat(entity.getStatusId()).isEqualTo(StsStatus.TO_APPROVE_OUT);
+        ArgumentCaptor<EventCreateDto> payloadCaptor = ArgumentCaptor.forClass(EventCreateDto.class);
+        ArgumentCaptor<OutboxMessageEvent> eventCaptor = ArgumentCaptor.forClass(OutboxMessageEvent.class);
 
-    verify(stsDataRepository).findAllByUuidInAndDeleted(List.of(uuid), false);
-    verify(stsDataRepository).saveAll(List.of(entity));
-    verify(stsEventsHistoryOutboxService).sendToApproveEvent(entity, StsStatus.APPROVED);
-    verify(stsTrackerHistoryOutboxService).sendToApproveStatus(entity);
+        // when
+        stsEventsHistoryService.sendCreateEvent(entity);
 
-    verifyNoMoreInteractions(
-            stsDataRepository,
-            stsEventsHistoryOutboxService,
-            stsTrackerHistoryOutboxService
-    );
-}
+        // then
+        verify(outboxMessageService).addOutboxMessage(
+                eq(OutboxMessageEventType.CREATE_EVENT),
+                eq(AUTHOR_UUID),
+                eq(entityUuid.toString()),
+                payloadCaptor.capture()
+        );
 
-@Test
-void givenMissingUuid_whenToApprove_thenThrowEntityNotFoundException() {
-    // given
-    UUID existingUuid = UUID.randomUUID();
-    UUID missingUuid = UUID.randomUUID();
+        verify(applicationEventPublisher).publishEvent(eventCaptor.capture());
+        verifyNoMoreInteractions(outboxMessageService, applicationEventPublisher);
 
-    StsDataEntity entity = new StsDataEntity();
-    entity.setUuid(existingUuid);
-    entity.setStatusId(StsStatus.DRAFT);
+        EventCreateDto payload = payloadCaptor.getValue();
 
-    when(stsDataRepository.findAllByUuidInAndDeleted(List.of(existingUuid, missingUuid), false))
-            .thenReturn(List.of(entity));
+        assertThat(payload.getServiceId()).isEqualTo(StsHistoryEventIds.SERVICE_ID);
+        assertThat(payload.getId()).isEqualTo(StsHistoryEventIds.STS_CREATE);
+        assertThat(payload.getEntityUuid()).isEqualTo(entityUuid);
+        assertThat(payload.getSubmittedAt()).isEqualTo(createdAt);
+        assertThat(payload.getSubmittedBy()).isEqualTo(AUTHOR_UUID.toString());
+        assertThat(payload.getUserName()).isEqualTo(FULL_NAME);
+        assertThat(payload.getSession()).isEqualTo("NO-SESSION");
+        assertThat(payload.getUserNode()).isEqualTo("NO-USERNODE");
 
-    // when / then
-    assertThatThrownBy(() -> stsDataService.toApprove(List.of(existingUuid, missingUuid)))
-            .isInstanceOf(EntityNotFoundException.class)
-            .hasMessage("Записи СТС не найдены по uuid: [" + missingUuid + "]");
+        Map<String, String> params = payload.getParameters().stream()
+                .collect(Collectors.toMap(
+                        EventParameterCreateDto::getId,
+                        EventParameterCreateDto::getValue
+                ));
 
-    verify(stsDataRepository).findAllByUuidInAndDeleted(List.of(existingUuid, missingUuid), false);
-    verifyNoMoreInteractions(
-            stsDataRepository,
-            stsEventsHistoryOutboxService,
-            stsTrackerHistoryOutboxService
-    );
-}
+        assertThat(params.get("vehicle_num")).isEqualTo("A123AA777");
+        assertThat(params.get("vehicle_name")).isEqualTo("КАМАЗ");
 
-@Test
-void givenUnsupportedStatus_whenToApprove_thenThrowIllegalStateException() {
-    // given
-    UUID uuid = UUID.randomUUID();
+        OutboxMessageEvent event = eventCaptor.getValue();
+        assertThat(event.getUuid()).isEqualTo(outboxMessageUuid);
+    }
 
-    StsDataEntity entity = new StsDataEntity();
-    entity.setUuid(uuid);
-    entity.setStatusId(StsStatus.TO_APPROVE_IN);
+    @Test
+    void givenOutboxServiceThrows_whenSendCreateEvent_thenPropagateExceptionAndDoNotPublishEvent() {
+        // given
+        UUID entityUuid = UUID.randomUUID();
+        ZonedDateTime createdAt = ZonedDateTime.now();
 
-    when(stsDataRepository.findAllByUuidInAndDeleted(List.of(uuid), false))
-            .thenReturn(List.of(entity));
+        StsDataEntity entity = new StsDataEntity();
+        entity.setUuid(entityUuid);
+        entity.setVehicleNumber("A123AA777");
+        entity.setVehicleBrand("КАМАЗ");
+        entity.setStatusId(StsStatus.DRAFT);
+        entity.setCreatedBy(AUTHOR_UUID);
+        entity.setUpdatedBy(UUID.randomUUID());
+        entity.setCreatedAt(createdAt);
 
-    // when / then
-    assertThatThrownBy(() -> stsDataService.toApprove(List.of(uuid)))
-            .isInstanceOf(IllegalStateException.class)
-            .hasMessage("Операция toApprove недоступна для статуса: На согласовании включения");
+        mockSecurityContext(FULL_NAME);
 
-    verify(stsDataRepository).findAllByUuidInAndDeleted(List.of(uuid), false);
-    verifyNoMoreInteractions(
-            stsDataRepository,
-            stsEventsHistoryOutboxService,
-            stsTrackerHistoryOutboxService
-    );
-}
+        OutboxMessageActionException exception =
+                new OutboxMessageActionException(
+                        "Unable to serialize payload for outbox message",
+                        new RuntimeException()
+                );
 
-Если хочешь покрыть еще и массовый сценарий, можно добавить пятый тест — смешанный список из DRAFT и APPROVED:
+        doThrow(exception).when(outboxMessageService).addOutboxMessage(
+                eq(OutboxMessageEventType.CREATE_EVENT),
+                eq(AUTHOR_UUID),
+                eq(entityUuid.toString()),
+                any(EventCreateDto.class)
+        );
 
-@Test
-void givenDraftAndApprovedEntities_whenToApprove_thenUpdateEachEntityAndSendEvents() {
-    // given
-    UUID firstUuid = UUID.randomUUID();
-    UUID secondUuid = UUID.randomUUID();
+        // when / then
+        assertThatThrownBy(() -> stsEventsHistoryService.sendCreateEvent(entity))
+                .isInstanceOf(OutboxMessageActionException.class)
+                .hasMessage("Unable to serialize payload for outbox message");
 
-    StsDataEntity firstEntity = new StsDataEntity();
-    firstEntity.setUuid(firstUuid);
-    firstEntity.setStatusId(StsStatus.DRAFT);
+        verify(outboxMessageService).addOutboxMessage(
+                eq(OutboxMessageEventType.CREATE_EVENT),
+                eq(AUTHOR_UUID),
+                eq(entityUuid.toString()),
+                any(EventCreateDto.class)
+        );
 
-    StsDataEntity secondEntity = new StsDataEntity();
-    secondEntity.setUuid(secondUuid);
-    secondEntity.setStatusId(StsStatus.APPROVED);
+        verifyNoInteractions(applicationEventPublisher);
+        verifyNoMoreInteractions(outboxMessageService);
+    }
 
-    when(stsDataRepository.findAllByUuidInAndDeleted(List.of(firstUuid, secondUuid), false))
-            .thenReturn(List.of(firstEntity, secondEntity));
-    when(stsDataRepository.saveAll(List.of(firstEntity, secondEntity)))
-            .thenReturn(List.of(firstEntity, secondEntity));
+    @Test
+    void givenValidEntityAndOldStatus_whenSendToApproveEvent_thenSaveMessageToOutboxAndPublishEvent() {
+        // given
+        UUID entityUuid = UUID.randomUUID();
+        UUID outboxMessageUuid = UUID.randomUUID();
+        ZonedDateTime updatedAt = ZonedDateTime.now();
 
-    // when
-    List<StsDataEntity> actualEntities = stsDataService.toApprove(List.of(firstUuid, secondUuid));
+        StsDataEntity entity = new StsDataEntity();
+        entity.setUuid(entityUuid);
+        entity.setTbCode("1234");
+        entity.setVehicleNumber("A123AA777");
+        entity.setVehicleBrand("КАМАЗ");
+        entity.setStatusId(StsStatus.TO_APPROVE_IN);
+        entity.setUpdatedBy(AUTHOR_UUID);
+        entity.setUpdatedAt(updatedAt);
 
-    // then
-    assertThat(actualEntities).containsExactly(firstEntity, secondEntity);
-    assertThat(firstEntity.getStatusId()).isEqualTo(StsStatus.TO_APPROVE_IN);
-    assertThat(secondEntity.getStatusId()).isEqualTo(StsStatus.TO_APPROVE_OUT);
+        OutboxMessage outboxMessage = mock(OutboxMessage.class);
+        when(outboxMessage.getUuid()).thenReturn(outboxMessageUuid);
 
-    verify(stsDataRepository).findAllByUuidInAndDeleted(List.of(firstUuid, secondUuid), false);
-    verify(stsDataRepository).saveAll(List.of(firstEntity, secondEntity));
+        when(outboxMessageService.addOutboxMessage(
+                eq(OutboxMessageEventType.CREATE_EVENT),
+                eq(AUTHOR_UUID),
+                eq(entityUuid.toString()),
+                any(EventCreateDto.class)
+        )).thenReturn(outboxMessage);
 
-    verify(stsEventsHistoryOutboxService).sendToApproveEvent(firstEntity, StsStatus.DRAFT);
-    verify(stsEventsHistoryOutboxService).sendToApproveEvent(secondEntity, StsStatus.APPROVED);
+        mockSecurityContext(FULL_NAME);
 
-    verify(stsTrackerHistoryOutboxService).sendToApproveStatus(firstEntity);
-    verify(stsTrackerHistoryOutboxService).sendToApproveStatus(secondEntity);
+        ArgumentCaptor<EventCreateDto> payloadCaptor = ArgumentCaptor.forClass(EventCreateDto.class);
+        ArgumentCaptor<OutboxMessageEvent> eventCaptor = ArgumentCaptor.forClass(OutboxMessageEvent.class);
 
-    verifyNoMoreInteractions(
-            stsDataRepository,
-            stsEventsHistoryOutboxService,
-            stsTrackerHistoryOutboxService
-    );
+        // when
+        stsEventsHistoryService.sendToApproveEvent(entity, StsStatus.DRAFT);
+
+        // then
+        verify(outboxMessageService).addOutboxMessage(
+                eq(OutboxMessageEventType.CREATE_EVENT),
+                eq(AUTHOR_UUID),
+                eq(entityUuid.toString()),
+                payloadCaptor.capture()
+        );
+
+        verify(applicationEventPublisher).publishEvent(eventCaptor.capture());
+        verifyNoMoreInteractions(outboxMessageService, applicationEventPublisher);
+
+        EventCreateDto payload = payloadCaptor.getValue();
+
+        assertThat(payload.getServiceId()).isEqualTo(StsHistoryEventIds.SERVICE_ID);
+        assertThat(payload.getId()).isEqualTo(StsHistoryEventIds.STS_UPDATE);
+        assertThat(payload.getEntityUuid()).isEqualTo(entityUuid);
+        assertThat(payload.getSubmittedAt()).isEqualTo(updatedAt);
+        assertThat(payload.getSubmittedBy()).isEqualTo(AUTHOR_UUID.toString());
+        assertThat(payload.getUserName()).isEqualTo(FULL_NAME);
+        assertThat(payload.getSession()).isEqualTo("NO-SESSION");
+        assertThat(payload.getUserNode()).isEqualTo("NO-USERNODE");
+
+        Map<String, String> params = payload.getParameters().stream()
+                .collect(Collectors.toMap(
+                        EventParameterCreateDto::getId,
+                        EventParameterCreateDto::getValue
+                ));
+
+        assertThat(params.get("vehicle_num")).isEqualTo("A123AA777");
+        assertThat(params.get("vehicle_name")).isEqualTo("КАМАЗ");
+
+        assertThat(payload.getChangedFields()).hasSize(1);
+        EventChangedFieldCreateDto changedField = payload.getChangedFields().get(0);
+        assertThat(changedField.getId()).isEqualTo("status");
+        assertThat(changedField.getOldValue()).isEqualTo("Черновик");
+        assertThat(changedField.getNewValue()).isEqualTo("На согласовании включения");
+
+        OutboxMessageEvent event = eventCaptor.getValue();
+        assertThat(event.getUuid()).isEqualTo(outboxMessageUuid);
+    }
+
+    @Test
+    void givenOutboxServiceThrows_whenSendToApproveEvent_thenPropagateExceptionAndDoNotPublishEvent() {
+        // given
+        UUID entityUuid = UUID.randomUUID();
+        ZonedDateTime updatedAt = ZonedDateTime.now();
+
+        StsDataEntity entity = new StsDataEntity();
+        entity.setUuid(entityUuid);
+        entity.setVehicleNumber("A123AA777");
+        entity.setVehicleBrand("КАМАЗ");
+        entity.setStatusId(StsStatus.TO_APPROVE_OUT);
+        entity.setUpdatedBy(AUTHOR_UUID);
+        entity.setUpdatedAt(updatedAt);
+
+        mockSecurityContext(FULL_NAME);
+
+        OutboxMessageActionException exception =
+                new OutboxMessageActionException(
+                        "Unable to serialize payload for outbox message",
+                        new RuntimeException()
+                );
+
+        doThrow(exception).when(outboxMessageService).addOutboxMessage(
+                eq(OutboxMessageEventType.CREATE_EVENT),
+                eq(AUTHOR_UUID),
+                eq(entityUuid.toString()),
+                any(EventCreateDto.class)
+        );
+
+        // when / then
+        assertThatThrownBy(() -> stsEventsHistoryService.sendToApproveEvent(entity, StsStatus.APPROVED))
+                .isInstanceOf(OutboxMessageActionException.class)
+                .hasMessage("Unable to serialize payload for outbox message");
+
+        verify(outboxMessageService).addOutboxMessage(
+                eq(OutboxMessageEventType.CREATE_EVENT),
+                eq(AUTHOR_UUID),
+                eq(entityUuid.toString()),
+                any(EventCreateDto.class)
+        );
+
+        verifyNoInteractions(applicationEventPublisher);
+        verifyNoMoreInteractions(outboxMessageService);
+    }
+
+    private void mockSecurityContext(String fullName) {
+        AuthorizedUser authorizedUser = mock(AuthorizedUser.class);
+        when(authorizedUser.getFullName()).thenReturn(fullName);
+
+        Authentication authentication = mock(Authentication.class);
+        when(authentication.getPrincipal()).thenReturn(authorizedUser);
+
+        SecurityContext securityContext = mock(SecurityContext.class);
+        when(securityContext.getAuthentication()).thenReturn(authentication);
+
+        SecurityContextHolder.setContext(securityContext);
+    }
 }
 ```
