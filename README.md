@@ -1,9 +1,6 @@
 ```java
 @ExtendWith(MockitoExtension.class)
-class StsEventsHistoryServiceTest {
-
-    private static final UUID AUTHOR_UUID = UUID.randomUUID();
-    private static final String FULL_NAME = "Сенышин Осман Людовикович";
+class StsTrackerHistoryOutboxServiceTest {
 
     @Mock
     private OutboxMessageService outboxMessageService;
@@ -12,100 +9,103 @@ class StsEventsHistoryServiceTest {
     private ApplicationEventPublisher applicationEventPublisher;
 
     @InjectMocks
-    private StsEventsHistoryOutboxService stsEventsHistoryService;
+    private StsTrackerHistoryOutboxService stsTrackerHistoryOutboxService;
 
-    @AfterEach
-    void clearSecurityContext() {
-        SecurityContextHolder.clearContext();
-    }
+    @Captor
+    private ArgumentCaptor<HistoryNewDto> historyCaptor;
+
+    @Captor
+    private ArgumentCaptor<OutboxMessageEvent> outboxEventCaptor;
 
     @Test
-    void givenValidEntity_whenSendCreateEvent_thenSaveMessageToOutboxAndPublishEvent() {
+    void sendCreatedStatus_shouldBuildDtoSaveOutboxMessageAndPublishEvent() {
         // given
         UUID entityUuid = UUID.randomUUID();
-        UUID outboxMessageUuid = UUID.randomUUID();
-        ZonedDateTime createdAt = ZonedDateTime.now();
+        UUID createdBy = UUID.randomUUID();
+        UUID outboxUuid = UUID.randomUUID();
 
         StsDataEntity entity = new StsDataEntity();
         entity.setUuid(entityUuid);
-        entity.setTbCode("1234");
-        entity.setVehicleNumber("A123AA777");
-        entity.setVehicleBrand("КАМАЗ");
-        entity.setComment("Тестовая запись");
+        entity.setCreatedBy(createdBy);
         entity.setStatusId(StsStatus.DRAFT);
-        entity.setCreatedBy(AUTHOR_UUID);
-        entity.setUpdatedBy(UUID.randomUUID());
-        entity.setCreatedAt(createdAt);
 
         OutboxMessage outboxMessage = mock(OutboxMessage.class);
-        when(outboxMessage.getUuid()).thenReturn(outboxMessageUuid);
+        when(outboxMessage.getUuid()).thenReturn(outboxUuid);
 
         when(outboxMessageService.addOutboxMessage(
-                eq(OutboxMessageEventType.CREATE_EVENT),
-                eq(AUTHOR_UUID),
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(createdBy),
                 eq(entityUuid.toString()),
-                any(EventCreateDto.class)
+                historyCaptor.capture()
         )).thenReturn(outboxMessage);
 
-        mockSecurityContext(FULL_NAME);
-
-        ArgumentCaptor<EventCreateDto> payloadCaptor = ArgumentCaptor.forClass(EventCreateDto.class);
-        ArgumentCaptor<OutboxMessageEvent> eventCaptor = ArgumentCaptor.forClass(OutboxMessageEvent.class);
-
         // when
-        stsEventsHistoryService.sendCreateEvent(entity);
+        stsTrackerHistoryOutboxService.sendCreatedStatus(entity);
 
         // then
         verify(outboxMessageService).addOutboxMessage(
-                eq(OutboxMessageEventType.CREATE_EVENT),
-                eq(AUTHOR_UUID),
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(createdBy),
                 eq(entityUuid.toString()),
-                payloadCaptor.capture()
+                any(HistoryNewDto.class)
         );
 
-        verify(applicationEventPublisher).publishEvent(eventCaptor.capture());
+        verify(applicationEventPublisher).publishEvent(outboxEventCaptor.capture());
         verifyNoMoreInteractions(outboxMessageService, applicationEventPublisher);
 
-        EventCreateDto payload = payloadCaptor.getValue();
+        HistoryNewDto dto = historyCaptor.getValue();
+        OutboxMessageEvent publishedEvent = outboxEventCaptor.getValue();
 
-        assertThat(payload.getServiceId()).isEqualTo(StsHistoryEventIds.SERVICE_ID);
-        assertThat(payload.getId()).isEqualTo(StsHistoryEventIds.STS_CREATE);
-        assertThat(payload.getEntityUuid()).isEqualTo(entityUuid);
-        assertThat(payload.getSubmittedAt()).isEqualTo(createdAt);
-        assertThat(payload.getSubmittedBy()).isEqualTo(AUTHOR_UUID.toString());
-        assertThat(payload.getUserName()).isEqualTo(FULL_NAME);
-        assertThat(payload.getSession()).isEqualTo("NO-SESSION");
-        assertThat(payload.getUserNode()).isEqualTo("NO-USERNODE");
-
-        Map<String, String> params = payload.getParameters().stream()
-                .collect(Collectors.toMap(
-                        EventParameterCreateDto::getId,
-                        EventParameterCreateDto::getValue
-                ));
-
-        assertThat(params.get("vehicle_num")).isEqualTo("A123AA777");
-        assertThat(params.get("vehicle_name")).isEqualTo("КАМАЗ");
-
-        OutboxMessageEvent event = eventCaptor.getValue();
-        assertThat(event.getUuid()).isEqualTo(outboxMessageUuid);
+        assertAll(
+                () -> assertEquals(StsTrackerSchemeCodes.STATUS_STS, dto.getCode()),
+                () -> assertEquals(entityUuid, dto.getEntityUuid()),
+                () -> assertEquals(StsAction.CREATE_STS.getId(), dto.getOperation()),
+                () -> assertEquals(StsStatus.DRAFT.name(), dto.getStatus()),
+                () -> assertNull(dto.getComment()),
+                () -> assertEquals(createdBy, dto.getCreatedBy()),
+                () -> assertEquals(createdBy.toString(), dto.getExtCreatedBy()),
+                () -> assertEquals(createdBy.toString(), dto.getUserName()),
+                () -> assertNull(dto.getUserPosition()),
+                () -> assertEquals(outboxUuid, publishedEvent.getUuid())
+        );
     }
 
     @Test
-    void givenOutboxServiceThrows_whenSendCreateEvent_thenPropagateExceptionAndDoNotPublishEvent() {
+    void sendCreatedStatus_shouldPublishOutboxMessageEventWithReturnedMessageUuid() {
         // given
         UUID entityUuid = UUID.randomUUID();
-        ZonedDateTime createdAt = ZonedDateTime.now();
+        UUID createdBy = UUID.randomUUID();
+        UUID outboxUuid = UUID.randomUUID();
 
         StsDataEntity entity = new StsDataEntity();
         entity.setUuid(entityUuid);
-        entity.setVehicleNumber("A123AA777");
-        entity.setVehicleBrand("КАМАЗ");
+        entity.setCreatedBy(createdBy);
         entity.setStatusId(StsStatus.DRAFT);
-        entity.setCreatedBy(AUTHOR_UUID);
-        entity.setUpdatedBy(UUID.randomUUID());
-        entity.setCreatedAt(createdAt);
 
-        mockSecurityContext(FULL_NAME);
+        OutboxMessage outboxMessage = mock(OutboxMessage.class);
+        when(outboxMessage.getUuid()).thenReturn(outboxUuid);
+
+        when(outboxMessageService.addOutboxMessage(any(), any(), any(), any()))
+                .thenReturn(outboxMessage);
+
+        // when
+        stsTrackerHistoryOutboxService.sendCreatedStatus(entity);
+
+        // then
+        verify(applicationEventPublisher)
+                .publishEvent(new OutboxMessageEvent(outboxUuid));
+    }
+
+    @Test
+    void sendCreatedStatus_whenOutboxServiceThrows_thenPropagateExceptionAndDoNotPublishEvent() {
+        // given
+        UUID entityUuid = UUID.randomUUID();
+        UUID createdBy = UUID.randomUUID();
+
+        StsDataEntity entity = new StsDataEntity();
+        entity.setUuid(entityUuid);
+        entity.setCreatedBy(createdBy);
+        entity.setStatusId(StsStatus.DRAFT);
 
         OutboxMessageActionException exception =
                 new OutboxMessageActionException(
@@ -114,22 +114,22 @@ class StsEventsHistoryServiceTest {
                 );
 
         doThrow(exception).when(outboxMessageService).addOutboxMessage(
-                eq(OutboxMessageEventType.CREATE_EVENT),
-                eq(AUTHOR_UUID),
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(createdBy),
                 eq(entityUuid.toString()),
-                any(EventCreateDto.class)
+                any(HistoryNewDto.class)
         );
 
         // when / then
-        assertThatThrownBy(() -> stsEventsHistoryService.sendCreateEvent(entity))
+        assertThatThrownBy(() -> stsTrackerHistoryOutboxService.sendCreatedStatus(entity))
                 .isInstanceOf(OutboxMessageActionException.class)
                 .hasMessage("Unable to serialize payload for outbox message");
 
         verify(outboxMessageService).addOutboxMessage(
-                eq(OutboxMessageEventType.CREATE_EVENT),
-                eq(AUTHOR_UUID),
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(createdBy),
                 eq(entityUuid.toString()),
-                any(EventCreateDto.class)
+                any(HistoryNewDto.class)
         );
 
         verifyNoInteractions(applicationEventPublisher);
@@ -137,95 +137,94 @@ class StsEventsHistoryServiceTest {
     }
 
     @Test
-    void givenValidEntityAndOldStatus_whenSendToApproveEvent_thenSaveMessageToOutboxAndPublishEvent() {
+    void sendToApproveStatus_shouldBuildDtoSaveOutboxMessageAndPublishEvent() {
         // given
         UUID entityUuid = UUID.randomUUID();
-        UUID outboxMessageUuid = UUID.randomUUID();
-        ZonedDateTime updatedAt = ZonedDateTime.now();
+        UUID updatedBy = UUID.randomUUID();
+        UUID outboxUuid = UUID.randomUUID();
 
         StsDataEntity entity = new StsDataEntity();
         entity.setUuid(entityUuid);
-        entity.setTbCode("1234");
-        entity.setVehicleNumber("A123AA777");
-        entity.setVehicleBrand("КАМАЗ");
+        entity.setUpdatedBy(updatedBy);
         entity.setStatusId(StsStatus.TO_APPROVE_IN);
-        entity.setUpdatedBy(AUTHOR_UUID);
-        entity.setUpdatedAt(updatedAt);
 
         OutboxMessage outboxMessage = mock(OutboxMessage.class);
-        when(outboxMessage.getUuid()).thenReturn(outboxMessageUuid);
+        when(outboxMessage.getUuid()).thenReturn(outboxUuid);
 
         when(outboxMessageService.addOutboxMessage(
-                eq(OutboxMessageEventType.CREATE_EVENT),
-                eq(AUTHOR_UUID),
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(updatedBy),
                 eq(entityUuid.toString()),
-                any(EventCreateDto.class)
+                historyCaptor.capture()
         )).thenReturn(outboxMessage);
 
-        mockSecurityContext(FULL_NAME);
-
-        ArgumentCaptor<EventCreateDto> payloadCaptor = ArgumentCaptor.forClass(EventCreateDto.class);
-        ArgumentCaptor<OutboxMessageEvent> eventCaptor = ArgumentCaptor.forClass(OutboxMessageEvent.class);
-
         // when
-        stsEventsHistoryService.sendToApproveEvent(entity, StsStatus.DRAFT);
+        stsTrackerHistoryOutboxService.sendToApproveStatus(entity);
 
         // then
         verify(outboxMessageService).addOutboxMessage(
-                eq(OutboxMessageEventType.CREATE_EVENT),
-                eq(AUTHOR_UUID),
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(updatedBy),
                 eq(entityUuid.toString()),
-                payloadCaptor.capture()
+                any(HistoryNewDto.class)
         );
 
-        verify(applicationEventPublisher).publishEvent(eventCaptor.capture());
+        verify(applicationEventPublisher).publishEvent(outboxEventCaptor.capture());
         verifyNoMoreInteractions(outboxMessageService, applicationEventPublisher);
 
-        EventCreateDto payload = payloadCaptor.getValue();
+        HistoryNewDto dto = historyCaptor.getValue();
+        OutboxMessageEvent publishedEvent = outboxEventCaptor.getValue();
 
-        assertThat(payload.getServiceId()).isEqualTo(StsHistoryEventIds.SERVICE_ID);
-        assertThat(payload.getId()).isEqualTo(StsHistoryEventIds.STS_UPDATE);
-        assertThat(payload.getEntityUuid()).isEqualTo(entityUuid);
-        assertThat(payload.getSubmittedAt()).isEqualTo(updatedAt);
-        assertThat(payload.getSubmittedBy()).isEqualTo(AUTHOR_UUID.toString());
-        assertThat(payload.getUserName()).isEqualTo(FULL_NAME);
-        assertThat(payload.getSession()).isEqualTo("NO-SESSION");
-        assertThat(payload.getUserNode()).isEqualTo("NO-USERNODE");
-
-        Map<String, String> params = payload.getParameters().stream()
-                .collect(Collectors.toMap(
-                        EventParameterCreateDto::getId,
-                        EventParameterCreateDto::getValue
-                ));
-
-        assertThat(params.get("vehicle_num")).isEqualTo("A123AA777");
-        assertThat(params.get("vehicle_name")).isEqualTo("КАМАЗ");
-
-        assertThat(payload.getChangedFields()).hasSize(1);
-        EventChangedFieldCreateDto changedField = payload.getChangedFields().get(0);
-        assertThat(changedField.getId()).isEqualTo("status");
-        assertThat(changedField.getOldValue()).isEqualTo("Черновик");
-        assertThat(changedField.getNewValue()).isEqualTo("На согласовании включения");
-
-        OutboxMessageEvent event = eventCaptor.getValue();
-        assertThat(event.getUuid()).isEqualTo(outboxMessageUuid);
+        assertAll(
+                () -> assertEquals(StsTrackerSchemeCodes.STATUS_STS, dto.getCode()),
+                () -> assertEquals(entityUuid, dto.getEntityUuid()),
+                () -> assertEquals(StsAction.TO_APPROVE.getId(), dto.getOperation()),
+                () -> assertEquals(StsStatus.TO_APPROVE_IN.name(), dto.getStatus()),
+                () -> assertNull(dto.getComment()),
+                () -> assertEquals(updatedBy, dto.getCreatedBy()),
+                () -> assertEquals(updatedBy.toString(), dto.getExtCreatedBy()),
+                () -> assertEquals(updatedBy.toString(), dto.getUserName()),
+                () -> assertNull(dto.getUserPosition()),
+                () -> assertEquals(outboxUuid, publishedEvent.getUuid())
+        );
     }
 
     @Test
-    void givenOutboxServiceThrows_whenSendToApproveEvent_thenPropagateExceptionAndDoNotPublishEvent() {
+    void sendToApproveStatus_shouldPublishOutboxMessageEventWithReturnedMessageUuid() {
         // given
         UUID entityUuid = UUID.randomUUID();
-        ZonedDateTime updatedAt = ZonedDateTime.now();
+        UUID updatedBy = UUID.randomUUID();
+        UUID outboxUuid = UUID.randomUUID();
 
         StsDataEntity entity = new StsDataEntity();
         entity.setUuid(entityUuid);
-        entity.setVehicleNumber("A123AA777");
-        entity.setVehicleBrand("КАМАЗ");
+        entity.setUpdatedBy(updatedBy);
         entity.setStatusId(StsStatus.TO_APPROVE_OUT);
-        entity.setUpdatedBy(AUTHOR_UUID);
-        entity.setUpdatedAt(updatedAt);
 
-        mockSecurityContext(FULL_NAME);
+        OutboxMessage outboxMessage = mock(OutboxMessage.class);
+        when(outboxMessage.getUuid()).thenReturn(outboxUuid);
+
+        when(outboxMessageService.addOutboxMessage(any(), any(), any(), any()))
+                .thenReturn(outboxMessage);
+
+        // when
+        stsTrackerHistoryOutboxService.sendToApproveStatus(entity);
+
+        // then
+        verify(applicationEventPublisher)
+                .publishEvent(new OutboxMessageEvent(outboxUuid));
+    }
+
+    @Test
+    void sendToApproveStatus_whenOutboxServiceThrows_thenPropagateExceptionAndDoNotPublishEvent() {
+        // given
+        UUID entityUuid = UUID.randomUUID();
+        UUID updatedBy = UUID.randomUUID();
+
+        StsDataEntity entity = new StsDataEntity();
+        entity.setUuid(entityUuid);
+        entity.setUpdatedBy(updatedBy);
+        entity.setStatusId(StsStatus.TO_APPROVE_OUT);
 
         OutboxMessageActionException exception =
                 new OutboxMessageActionException(
@@ -234,39 +233,26 @@ class StsEventsHistoryServiceTest {
                 );
 
         doThrow(exception).when(outboxMessageService).addOutboxMessage(
-                eq(OutboxMessageEventType.CREATE_EVENT),
-                eq(AUTHOR_UUID),
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(updatedBy),
                 eq(entityUuid.toString()),
-                any(EventCreateDto.class)
+                any(HistoryNewDto.class)
         );
 
         // when / then
-        assertThatThrownBy(() -> stsEventsHistoryService.sendToApproveEvent(entity, StsStatus.APPROVED))
+        assertThatThrownBy(() -> stsTrackerHistoryOutboxService.sendToApproveStatus(entity))
                 .isInstanceOf(OutboxMessageActionException.class)
                 .hasMessage("Unable to serialize payload for outbox message");
 
         verify(outboxMessageService).addOutboxMessage(
-                eq(OutboxMessageEventType.CREATE_EVENT),
-                eq(AUTHOR_UUID),
+                eq(OutboxMessageEventType.SEND_TRACKER_HISTORY),
+                eq(updatedBy),
                 eq(entityUuid.toString()),
-                any(EventCreateDto.class)
+                any(HistoryNewDto.class)
         );
 
         verifyNoInteractions(applicationEventPublisher);
         verifyNoMoreInteractions(outboxMessageService);
-    }
-
-    private void mockSecurityContext(String fullName) {
-        AuthorizedUser authorizedUser = mock(AuthorizedUser.class);
-        when(authorizedUser.getFullName()).thenReturn(fullName);
-
-        Authentication authentication = mock(Authentication.class);
-        when(authentication.getPrincipal()).thenReturn(authorizedUser);
-
-        SecurityContext securityContext = mock(SecurityContext.class);
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-
-        SecurityContextHolder.setContext(securityContext);
     }
 }
 ```
