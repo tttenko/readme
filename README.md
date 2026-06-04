@@ -1,219 +1,321 @@
 ```java
 
-@Import(value = [EnablerController::class])
-@ContextConfiguration(classes = [EnablerControllerTest.Config::class])
-internal class EnablerControllerTest : ControllerTestBase() {
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.extension.ExtendWith
+import org.mockito.InjectMocks
+import org.mockito.Mock
+import org.mockito.Mockito.verify
+import org.mockito.junit.jupiter.MockitoExtension
+import org.mockito.kotlin.any
+import org.mockito.kotlin.argumentCaptor
+import org.mockito.kotlin.never
+import org.mockito.kotlin.whenever
+import org.springframework.http.HttpStatus
+import org.springframework.web.server.ResponseStatusException
+import ru.sber.prm.dto.references.enabler.CreateEnablerRequest
+import ru.sber.prm.dto.references.enabler.CreateEnablerResponse
+import ru.sber.prm.dto.references.enabler.EnablerResponse
+import ru.sber.prm.dto.references.enabler.UpdateEnablerRequest
+import ru.sber.prm.entity.references.EnablerEntity
+import ru.sber.prm.exception.AiBadRequestException
+import ru.sber.prm.repository.references.EnablerRepository
+import ru.sber.prm.service.references.EnablerService
+import ru.sber.prm.service.references.toEnablerResponse
+import ru.sber.prm.service.MessageProvider
+import ru.sber.prm.util.MessageCode.ENABLER_NAME_ALREADY_EXISTS
+import ru.sber.prm.util.MessageCode.ENABLER_NOT_FOUND
 
-    @Autowired
+@ExtendWith(MockitoExtension::class)
+internal class EnablerServiceTest {
+
+    @Mock
+    private lateinit var enablerRepository: EnablerRepository
+
+    @Mock
+    private lateinit var messageProvider: MessageProvider
+
+    @InjectMocks
     private lateinit var service: EnablerService
 
-    @Autowired
-    private lateinit var mapper: ObjectMapper
-
-    @TestConfiguration
-    internal class Config {
-
-        @Bean
-        open fun service() = mockk<EnablerService>()
-    }
-
-    @BeforeEach
-    fun setUp() {
-        clearMocks(service)
-    }
-
     @Test
-    @WithMockUser(authorities = ["CMS_ADMIN"])
-    fun `should get enabler references with success by default`() {
+    fun `should get only active enabler references when include disabled is false`() {
         // given
-        val expectedResult = listOf(
-            EnablerResponse(
-                id = 1L,
-                name = "Enabler 1",
-                disabled = false
-            ),
-            EnablerResponse(
-                id = 2L,
-                name = "Enabler 2",
-                disabled = false
-            )
-        )
-
-        every { service.getEnablerReferences(false) } returns expectedResult
-
-        // when / then
-        mockMvc.perform(MockMvcRequestBuilders.get(API_URL))
-            .andExpect(MockMvcResultMatchers.status().isOk)
-            .andExpect(MockMvcResultMatchers.jsonPath("$[0].id", equalTo(1)))
-            .andExpect(MockMvcResultMatchers.jsonPath("$[0].name", equalTo("Enabler 1")))
-            .andExpect(MockMvcResultMatchers.jsonPath("$[0].disabled", equalTo(false)))
-            .andExpect(MockMvcResultMatchers.jsonPath("$[1].id", equalTo(2)))
-            .andExpect(MockMvcResultMatchers.jsonPath("$[1].name", equalTo("Enabler 2")))
-            .andExpect(MockMvcResultMatchers.jsonPath("$[1].disabled", equalTo(false)))
-
-        verify(exactly = 1) {
-            service.getEnablerReferences(false)
+        val entity = EnablerEntity().apply {
+            id = 1L
+            name = "Enabler 1"
+            disabled = false
         }
+
+        whenever(enablerRepository.findAllByDisabledIsFalse())
+            .thenReturn(listOf(entity))
+
+        // when
+        val result = service.getEnablerReferences(includeDisabled = false)
+
+        // then
+        assertEquals(1, result.size)
+        assertEquals(1L, result[0].id)
+        assertEquals("Enabler 1", result[0].name)
+        assertEquals(false, result[0].disabled)
+
+        verify(enablerRepository).findAllByDisabledIsFalse()
+        verify(enablerRepository, never()).findAll()
     }
 
     @Test
-    @WithMockUser(authorities = ["PROJECT_OFFICE"])
-    fun `should get enabler references with disabled with success`() {
+    fun `should get all enabler references when include disabled is true`() {
         // given
-        val expectedResult = listOf(
-            EnablerResponse(
-                id = 1L,
-                name = "Enabler 1",
-                disabled = false
-            ),
-            EnablerResponse(
-                id = 2L,
-                name = "Enabler 2",
-                disabled = true
-            )
-        )
-
-        every { service.getEnablerReferences(true) } returns expectedResult
-
-        // when / then
-        mockMvc.perform(
-            MockMvcRequestBuilders.get(API_URL)
-                .param("includeDisabled", "true")
-        )
-            .andExpect(MockMvcResultMatchers.status().isOk)
-            .andExpect(MockMvcResultMatchers.jsonPath("$[0].id", equalTo(1)))
-            .andExpect(MockMvcResultMatchers.jsonPath("$[0].disabled", equalTo(false)))
-            .andExpect(MockMvcResultMatchers.jsonPath("$[1].id", equalTo(2)))
-            .andExpect(MockMvcResultMatchers.jsonPath("$[1].disabled", equalTo(true)))
-
-        verify(exactly = 1) {
-            service.getEnablerReferences(true)
+        val activeEntity = EnablerEntity().apply {
+            id = 1L
+            name = "Active enabler"
+            disabled = false
         }
+
+        val disabledEntity = EnablerEntity().apply {
+            id = 2L
+            name = "Disabled enabler"
+            disabled = true
+        }
+
+        whenever(enablerRepository.findAll())
+            .thenReturn(listOf(activeEntity, disabledEntity))
+
+        // when
+        val result = service.getEnablerReferences(includeDisabled = true)
+
+        // then
+        assertEquals(2, result.size)
+
+        assertEquals(1L, result[0].id)
+        assertEquals("Active enabler", result[0].name)
+        assertEquals(false, result[0].disabled)
+
+        assertEquals(2L, result[1].id)
+        assertEquals("Disabled enabler", result[1].name)
+        assertEquals(true, result[1].disabled)
+
+        verify(enablerRepository).findAll()
+        verify(enablerRepository, never()).findAllByDisabledIsFalse()
     }
 
     @Test
-    @WithMockUser(authorities = ["CMS_ADMIN"])
-    fun `should get empty enabler references with success`() {
+    fun `should return empty list when enablers not found`() {
         // given
-        every { service.getEnablerReferences(false) } returns emptyList()
+        whenever(enablerRepository.findAllByDisabledIsFalse())
+            .thenReturn(emptyList())
 
-        // when / then
-        mockMvc.perform(MockMvcRequestBuilders.get(API_URL))
-            .andExpect(MockMvcResultMatchers.status().isOk)
-            .andExpect(MockMvcResultMatchers.content().json("[]"))
+        // when
+        val result = service.getEnablerReferences(includeDisabled = false)
 
-        verify(exactly = 1) {
-            service.getEnablerReferences(false)
-        }
+        // then
+        assertEquals(0, result.size)
+
+        verify(enablerRepository).findAllByDisabledIsFalse()
     }
 
     @Test
-    @WithMockUser(authorities = ["CMS_ADMIN"])
     fun `should create enabler with success`() {
         // given
         val request = CreateEnablerRequest(
             name = "Enabler 1"
         )
 
-        val expectedResult = CreateEnablerResponse(
+        val savedEntity = EnablerEntity().apply {
             id = 1L
-        )
-
-        every { service.createEnabler(request) } returns expectedResult
-
-        // when / then
-        mockMvc.perform(
-            MockMvcRequestBuilders.post(API_URL)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(mapper.writeValueAsString(request))
-        )
-            .andExpect(MockMvcResultMatchers.status().isCreated)
-            .andExpect(MockMvcResultMatchers.jsonPath("$.id", equalTo(1)))
-
-        verify(exactly = 1) {
-            service.createEnabler(request)
+            name = "Enabler 1"
+            disabled = false
         }
+
+        whenever(enablerRepository.existsByNormalizedName(request.name))
+            .thenReturn(false)
+
+        whenever(enablerRepository.save(any<EnablerEntity>()))
+            .thenReturn(savedEntity)
+
+        // when
+        val result = service.createEnabler(request)
+
+        // then
+        assertEquals(CreateEnablerResponse(id = 1L), result)
+
+        val entityCaptor = argumentCaptor<EnablerEntity>()
+        verify(enablerRepository).save(entityCaptor.capture())
+
+        assertEquals("Enabler 1", entityCaptor.firstValue.name)
+        assertEquals(false, entityCaptor.firstValue.disabled)
     }
 
     @Test
-    @WithMockUser(authorities = ["CMS_ADMIN"])
+    fun `should throw bad request when create enabler name already exists`() {
+        // given
+        val request = CreateEnablerRequest(
+            name = "Enabler 1"
+        )
+
+        whenever(enablerRepository.existsByNormalizedName(request.name))
+            .thenReturn(true)
+
+        whenever(messageProvider[ENABLER_NAME_ALREADY_EXISTS])
+            .thenReturn("Название {0} уже существует")
+
+        // when
+        val exception = assertThrows(AiBadRequestException::class.java) {
+            service.createEnabler(request)
+        }
+
+        // then
+        assertEquals("Название Enabler 1 уже существует", exception.message)
+
+        verify(enablerRepository).existsByNormalizedName(request.name)
+        verify(enablerRepository, never()).save(any<EnablerEntity>())
+    }
+
+    @Test
     fun `should update enabler with success`() {
         // given
-        val givenId = 1L
+        val id = 1L
 
         val request = UpdateEnablerRequest(
             name = "Updated enabler",
             disabled = true
         )
 
-        every {
-            service.updateEnabler(
-                id = givenId,
-                request = request
-            )
-        } just runs
-
-        // when / then
-        mockMvc.perform(
-            MockMvcRequestBuilders.put("$API_URL/$givenId")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(mapper.writeValueAsString(request))
-        )
-            .andExpect(MockMvcResultMatchers.status().isOk)
-
-        verify(exactly = 1) {
-            service.updateEnabler(
-                id = givenId,
-                request = request
-            )
+        val entity = EnablerEntity().apply {
+            this.id = id
+            name = "Old enabler"
+            disabled = false
         }
+
+        whenever(enablerRepository.findEnablerEntityById(id))
+            .thenReturn(entity)
+
+        whenever(enablerRepository.existsByNormalizedNameAndIdNot(request.name, id))
+            .thenReturn(false)
+
+        whenever(enablerRepository.save(any<EnablerEntity>()))
+            .thenAnswer { invocation -> invocation.getArgument(0) }
+
+        // when
+        service.updateEnabler(id, request)
+
+        // then
+        val entityCaptor = argumentCaptor<EnablerEntity>()
+        verify(enablerRepository).save(entityCaptor.capture())
+
+        assertEquals(id, entityCaptor.firstValue.id)
+        assertEquals("Updated enabler", entityCaptor.firstValue.name)
+        assertEquals(true, entityCaptor.firstValue.disabled)
     }
 
     @Test
-    @WithMockUser(authorities = ["PROJECT_OFFICE"])
-    fun `should return forbidden when project office tries to create enabler`() {
+    fun `should throw not found when update enabler entity not found`() {
         // given
-        val request = CreateEnablerRequest(
-            name = "Enabler 1"
-        )
+        val id = 1L
 
-        // when / then
-        mockMvc.perform(
-            MockMvcRequestBuilders.post(API_URL)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(mapper.writeValueAsString(request))
-        )
-            .andExpect(MockMvcResultMatchers.status().isForbidden)
-
-        verify(exactly = 0) {
-            service.createEnabler(any())
-        }
-    }
-
-    @Test
-    @WithMockUser(authorities = ["PROJECT_OFFICE"])
-    fun `should return forbidden when project office tries to update enabler`() {
-        // given
         val request = UpdateEnablerRequest(
             name = "Updated enabler",
             disabled = false
         )
 
-        // when / then
-        mockMvc.perform(
-            MockMvcRequestBuilders.put("$API_URL/1")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(mapper.writeValueAsString(request))
-        )
-            .andExpect(MockMvcResultMatchers.status().isForbidden)
+        whenever(enablerRepository.findEnablerEntityById(id))
+            .thenReturn(null)
 
-        verify(exactly = 0) {
-            service.updateEnabler(any(), any())
+        whenever(messageProvider[ENABLER_NOT_FOUND])
+            .thenReturn("Enabler с id {0} не найден")
+
+        // when
+        val exception = assertThrows(ResponseStatusException::class.java) {
+            service.updateEnabler(id, request)
         }
+
+        // then
+        assertEquals(HttpStatus.NOT_FOUND, exception.statusCode)
+        assertEquals("Enabler с id 1 не найден", exception.reason)
+
+        verify(enablerRepository).findEnablerEntityById(id)
+        verify(enablerRepository, never()).save(any<EnablerEntity>())
     }
 
-    private companion object {
-        private const val API_URL = "/api/ai/v1/reference/enabler"
+    @Test
+    fun `should throw bad request when update enabler name already exists`() {
+        // given
+        val id = 1L
+
+        val request = UpdateEnablerRequest(
+            name = "Enabler 1",
+            disabled = true
+        )
+
+        val entity = EnablerEntity().apply {
+            this.id = id
+            name = "Old enabler"
+            disabled = false
+        }
+
+        whenever(enablerRepository.findEnablerEntityById(id))
+            .thenReturn(entity)
+
+        whenever(enablerRepository.existsByNormalizedNameAndIdNot(request.name, id))
+            .thenReturn(true)
+
+        whenever(messageProvider[ENABLER_NAME_ALREADY_EXISTS])
+            .thenReturn("Название {0} уже существует")
+
+        // when
+        val exception = assertThrows(AiBadRequestException::class.java) {
+            service.updateEnabler(id, request)
+        }
+
+        // then
+        assertEquals("Название Enabler 1 уже существует", exception.message)
+
+        verify(enablerRepository).findEnablerEntityById(id)
+        verify(enablerRepository).existsByNormalizedNameAndIdNot(request.name, id)
+        verify(enablerRepository, never()).save(any<EnablerEntity>())
+    }
+
+    @Test
+    fun `should map enabler entity to enabler response`() {
+        // given
+        val entity = EnablerEntity().apply {
+            id = 1L
+            name = "Enabler 1"
+            disabled = true
+        }
+
+        // when
+        val result = entity.toEnablerResponse()
+
+        // then
+        assertEquals(
+            EnablerResponse(
+                id = 1L,
+                name = "Enabler 1",
+                disabled = true
+            ),
+            result
+        )
+    }
+
+    @Test
+    fun `should map null disabled as false`() {
+        // given
+        val entity = EnablerEntity().apply {
+            id = 1L
+            name = "Enabler 1"
+            disabled = null
+        }
+
+        // when
+        val result = entity.toEnablerResponse()
+
+        // then
+        assertEquals(1L, result.id)
+        assertEquals("Enabler 1", result.name)
+        assertEquals(false, result.disabled)
     }
 }
 ```
