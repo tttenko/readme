@@ -1,47 +1,19 @@
 ```java
 
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertThrows
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.extension.ExtendWith
-import org.mockito.InjectMocks
-import org.mockito.Mock
-import org.mockito.Mockito.verify
-import org.mockito.junit.jupiter.MockitoExtension
-import org.mockito.kotlin.any
-import org.mockito.kotlin.argumentCaptor
-import org.mockito.kotlin.never
-import org.mockito.kotlin.whenever
-import org.springframework.http.HttpStatus
-import org.springframework.web.server.ResponseStatusException
-import ru.sber.prm.dto.references.enabler.CreateEnablerRequest
-import ru.sber.prm.dto.references.enabler.CreateEnablerResponse
-import ru.sber.prm.dto.references.enabler.EnablerResponse
-import ru.sber.prm.dto.references.enabler.UpdateEnablerRequest
-import ru.sber.prm.entity.references.EnablerEntity
-import ru.sber.prm.exception.AiBadRequestException
-import ru.sber.prm.repository.references.EnablerRepository
-import ru.sber.prm.service.references.EnablerService
-import ru.sber.prm.service.references.toEnablerResponse
-import ru.sber.prm.service.MessageProvider
-import ru.sber.prm.util.MessageCode.ENABLER_NAME_ALREADY_EXISTS
-import ru.sber.prm.util.MessageCode.ENABLER_NOT_FOUND
-
-@ExtendWith(MockitoExtension::class)
+@ExtendWith(MockKExtension::class)
 internal class EnablerServiceTest {
 
-    @Mock
+    @MockK
     private lateinit var enablerRepository: EnablerRepository
 
-    @Mock
+    @MockK
     private lateinit var messageProvider: MessageProvider
 
-    @InjectMocks
+    @InjectMockKs
     private lateinit var service: EnablerService
 
     @Test
-    fun `should get only active enabler references when include disabled is false`() {
+    fun `getEnablerReferences should return only enabled records by default`() {
         // given
         val entity = EnablerEntity().apply {
             id = 1L
@@ -49,75 +21,72 @@ internal class EnablerServiceTest {
             disabled = false
         }
 
-        whenever(enablerRepository.findAllByDisabledIsFalse())
-            .thenReturn(listOf(entity))
+        every { enablerRepository.findAllByDisabledIsFalse() } returns listOf(entity)
 
         // when
         val result = service.getEnablerReferences(includeDisabled = false)
 
         // then
-        assertEquals(1, result.size)
-        assertEquals(1L, result[0].id)
-        assertEquals("Enabler 1", result[0].name)
-        assertEquals(false, result[0].disabled)
+        verify(exactly = 1) { enablerRepository.findAllByDisabledIsFalse() }
+        verify(exactly = 0) { enablerRepository.findAll() }
 
-        verify(enablerRepository).findAllByDisabledIsFalse()
-        verify(enablerRepository, never()).findAll()
+        assertEquals(1, result.size)
+        assertEquals(1L, result.first().id)
+        assertEquals("Enabler 1", result.first().name)
+        assertEquals(false, result.first().disabled)
     }
 
     @Test
-    fun `should get all enabler references when include disabled is true`() {
+    fun `getEnablerReferences should return enabled and disabled records when includeDisabled is true`() {
         // given
-        val activeEntity = EnablerEntity().apply {
+        val enabled = EnablerEntity().apply {
             id = 1L
-            name = "Active enabler"
+            name = "Enabled enabler"
             disabled = false
         }
 
-        val disabledEntity = EnablerEntity().apply {
+        val disabled = EnablerEntity().apply {
             id = 2L
             name = "Disabled enabler"
-            disabled = true
+            this.disabled = true
         }
 
-        whenever(enablerRepository.findAll())
-            .thenReturn(listOf(activeEntity, disabledEntity))
+        every { enablerRepository.findAll() } returns listOf(enabled, disabled)
 
         // when
         val result = service.getEnablerReferences(includeDisabled = true)
 
         // then
+        verify(exactly = 1) { enablerRepository.findAll() }
+        verify(exactly = 0) { enablerRepository.findAllByDisabledIsFalse() }
+
         assertEquals(2, result.size)
 
         assertEquals(1L, result[0].id)
-        assertEquals("Active enabler", result[0].name)
+        assertEquals("Enabled enabler", result[0].name)
         assertEquals(false, result[0].disabled)
 
         assertEquals(2L, result[1].id)
         assertEquals("Disabled enabler", result[1].name)
         assertEquals(true, result[1].disabled)
-
-        verify(enablerRepository).findAll()
-        verify(enablerRepository, never()).findAllByDisabledIsFalse()
     }
 
     @Test
-    fun `should return empty list when enablers not found`() {
+    fun `getEnablerReferences should return empty list when records not found`() {
         // given
-        whenever(enablerRepository.findAllByDisabledIsFalse())
-            .thenReturn(emptyList())
+        every { enablerRepository.findAllByDisabledIsFalse() } returns emptyList()
 
         // when
         val result = service.getEnablerReferences(includeDisabled = false)
 
         // then
-        assertEquals(0, result.size)
+        verify(exactly = 1) { enablerRepository.findAllByDisabledIsFalse() }
 
-        verify(enablerRepository).findAllByDisabledIsFalse()
+        assertEquals(0, result.size)
     }
 
     @Test
-    fun `should create enabler with success`() {
+    fun `createEnabler should save entity and return id`() {
         // given
         val request = CreateEnablerRequest(
             name = "Enabler 1"
@@ -129,37 +98,32 @@ internal class EnablerServiceTest {
             disabled = false
         }
 
-        whenever(enablerRepository.existsByNormalizedName(request.name))
-            .thenReturn(false)
+        val entitySlot = slot<EnablerEntity>()
 
-        whenever(enablerRepository.save(any<EnablerEntity>()))
-            .thenReturn(savedEntity)
+        every { enablerRepository.existsByNormalizedName(request.name) } returns false
+        every { enablerRepository.save(capture(entitySlot)) } returns savedEntity
 
         // when
         val result = service.createEnabler(request)
 
         // then
+        verify(exactly = 1) { enablerRepository.existsByNormalizedName(request.name) }
+        verify(exactly = 1) { enablerRepository.save(any()) }
+
         assertEquals(CreateEnablerResponse(id = 1L), result)
-
-        val entityCaptor = argumentCaptor<EnablerEntity>()
-        verify(enablerRepository).save(entityCaptor.capture())
-
-        assertEquals("Enabler 1", entityCaptor.firstValue.name)
-        assertEquals(false, entityCaptor.firstValue.disabled)
+        assertEquals("Enabler 1", entitySlot.captured.name)
+        assertEquals(false, entitySlot.captured.disabled)
     }
 
     @Test
-    fun `should throw bad request when create enabler name already exists`() {
+    fun `createEnabler should throw BAD_REQUEST when name already exists`() {
         // given
         val request = CreateEnablerRequest(
             name = "Enabler 1"
         )
 
-        whenever(enablerRepository.existsByNormalizedName(request.name))
-            .thenReturn(true)
-
-        whenever(messageProvider[ENABLER_NAME_ALREADY_EXISTS])
-            .thenReturn("Название {0} уже существует")
+        every { enablerRepository.existsByNormalizedName(request.name) } returns true
+        every { messageProvider[ENABLER_NAME_ALREADY_EXISTS] } returns "Название {0} уже существует"
 
         // when
         val exception = assertThrows(AiBadRequestException::class.java) {
@@ -167,14 +131,15 @@ internal class EnablerServiceTest {
         }
 
         // then
-        assertEquals("Название Enabler 1 уже существует", exception.message)
+        verify(exactly = 1) { enablerRepository.existsByNormalizedName(request.name) }
+        verify(exactly = 1) { messageProvider[ENABLER_NAME_ALREADY_EXISTS] }
+        verify(exactly = 0) { enablerRepository.save(any()) }
 
-        verify(enablerRepository).existsByNormalizedName(request.name)
-        verify(enablerRepository, never()).save(any<EnablerEntity>())
+        assertEquals("Название Enabler 1 уже существует", exception.message)
     }
 
     @Test
-    fun `should update enabler with success`() {
+    fun `updateEnabler should update existing entity and save it`() {
         // given
         val id = 1L
 
@@ -189,29 +154,27 @@ internal class EnablerServiceTest {
             disabled = false
         }
 
-        whenever(enablerRepository.findEnablerEntityById(id))
-            .thenReturn(entity)
+        val entitySlot = slot<EnablerEntity>()
 
-        whenever(enablerRepository.existsByNormalizedNameAndIdNot(request.name, id))
-            .thenReturn(false)
-
-        whenever(enablerRepository.save(any<EnablerEntity>()))
-            .thenAnswer { invocation -> invocation.getArgument(0) }
+        every { enablerRepository.findEnablerEntityById(id) } returns entity
+        every { enablerRepository.existsByNormalizedNameAndIdNot(request.name, id) } returns false
+        every { enablerRepository.save(capture(entitySlot)) } returns entity
 
         // when
         service.updateEnabler(id, request)
 
         // then
-        val entityCaptor = argumentCaptor<EnablerEntity>()
-        verify(enablerRepository).save(entityCaptor.capture())
+        verify(exactly = 1) { enablerRepository.findEnablerEntityById(id) }
+        verify(exactly = 1) { enablerRepository.existsByNormalizedNameAndIdNot(request.name, id) }
+        verify(exactly = 1) { enablerRepository.save(any()) }
 
-        assertEquals(id, entityCaptor.firstValue.id)
-        assertEquals("Updated enabler", entityCaptor.firstValue.name)
-        assertEquals(true, entityCaptor.firstValue.disabled)
+        assertEquals(id, entitySlot.captured.id)
+        assertEquals("Updated enabler", entitySlot.captured.name)
+        assertEquals(true, entitySlot.captured.disabled)
     }
 
     @Test
-    fun `should throw not found when update enabler entity not found`() {
+    fun `updateEnabler should throw NOT_FOUND when entity does not exist`() {
         // given
         val id = 1L
 
@@ -220,11 +183,8 @@ internal class EnablerServiceTest {
             disabled = false
         )
 
-        whenever(enablerRepository.findEnablerEntityById(id))
-            .thenReturn(null)
-
-        whenever(messageProvider[ENABLER_NOT_FOUND])
-            .thenReturn("Enabler с id {0} не найден")
+        every { enablerRepository.findEnablerEntityById(id) } returns null
+        every { messageProvider[ENABLER_NOT_FOUND] } returns "Enabler с id {0} не найден"
 
         // when
         val exception = assertThrows(ResponseStatusException::class.java) {
@@ -232,15 +192,17 @@ internal class EnablerServiceTest {
         }
 
         // then
+        verify(exactly = 1) { enablerRepository.findEnablerEntityById(id) }
+        verify(exactly = 1) { messageProvider[ENABLER_NOT_FOUND] }
+        verify(exactly = 0) { enablerRepository.existsByNormalizedNameAndIdNot(any(), any()) }
+        verify(exactly = 0) { enablerRepository.save(any()) }
+
         assertEquals(HttpStatus.NOT_FOUND, exception.statusCode)
         assertEquals("Enabler с id 1 не найден", exception.reason)
-
-        verify(enablerRepository).findEnablerEntityById(id)
-        verify(enablerRepository, never()).save(any<EnablerEntity>())
     }
 
     @Test
-    fun `should throw bad request when update enabler name already exists`() {
+    fun `updateEnabler should throw BAD_REQUEST when name already exists`() {
         // given
         val id = 1L
 
@@ -255,14 +217,9 @@ internal class EnablerServiceTest {
             disabled = false
         }
 
-        whenever(enablerRepository.findEnablerEntityById(id))
-            .thenReturn(entity)
-
-        whenever(enablerRepository.existsByNormalizedNameAndIdNot(request.name, id))
-            .thenReturn(true)
-
-        whenever(messageProvider[ENABLER_NAME_ALREADY_EXISTS])
-            .thenReturn("Название {0} уже существует")
+        every { enablerRepository.findEnablerEntityById(id) } returns entity
+        every { enablerRepository.existsByNormalizedNameAndIdNot(request.name, id) } returns true
+        every { messageProvider[ENABLER_NAME_ALREADY_EXISTS] } returns "Название {0} уже существует"
 
         // when
         val exception = assertThrows(AiBadRequestException::class.java) {
@@ -270,15 +227,16 @@ internal class EnablerServiceTest {
         }
 
         // then
-        assertEquals("Название Enabler 1 уже существует", exception.message)
+        verify(exactly = 1) { enablerRepository.findEnablerEntityById(id) }
+        verify(exactly = 1) { enablerRepository.existsByNormalizedNameAndIdNot(request.name, id) }
+        verify(exactly = 1) { messageProvider[ENABLER_NAME_ALREADY_EXISTS] }
+        verify(exactly = 0) { enablerRepository.save(any()) }
 
-        verify(enablerRepository).findEnablerEntityById(id)
-        verify(enablerRepository).existsByNormalizedNameAndIdNot(request.name, id)
-        verify(enablerRepository, never()).save(any<EnablerEntity>())
+        assertEquals("Название Enabler 1 уже существует", exception.message)
     }
 
     @Test
-    fun `should map enabler entity to enabler response`() {
+    fun `toEnablerResponse should map entity to response`() {
         // given
         val entity = EnablerEntity().apply {
             id = 1L
@@ -301,7 +259,7 @@ internal class EnablerServiceTest {
     }
 
     @Test
-    fun `should map null disabled as false`() {
+    fun `toEnablerResponse should map null disabled as false`() {
         // given
         val entity = EnablerEntity().apply {
             id = 1L
