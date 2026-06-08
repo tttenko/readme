@@ -1,180 +1,333 @@
 ```java
 
 @Component
-class GigausageIssueUpdater(
-    private val jiraIssueRepository: JiraIssueRepository,
+class StatusSlaUpdater(
+    private val agentStatusSlaRepository: AgentStatusSlaRepository,
+    private val statusRepository: StatusRepository,
     private val messageProvider: MessageProvider,
 ) {
 
+    /**
+     * Синхронизирует записи agent_status_sla с блоком statusSla из PATCH-запроса.
+     *
+     * Возвращает только дельту:
+     * 1. новые сроки;
+     * 2. существующие сроки, у которых изменилась календарная дата.
+     *
+     * completedDate существующих записей не изменяется.
+     */
     fun update(
         agent: AIAgentEntity,
-        rawValue: Any?,
-    ) {
-        val gigausageValues = parseGigausageValues(rawValue)
-
-        val existingIssues =
-            jiraIssueRepository.findByAgentIdAndTypeAndProject(
-                agentId = agent.id,
-                type = ISSUE_TYPE,
-                project = PROJECT,
-            )
-
-        if (gigausageValues.isEmpty()) {
-            jiraIssueRepository.deleteAll(existingIssues)
-            return
+        rawStatusSla: Any?,
+    ): List<StatusSlaDto> {
+        val agentId = requireNotNull(agent.id) {
+            "AI-agent must be persisted before statusSla update"
         }
 
         /*
-         * Ключ — jiraKey.
-         * Значение — исходная строка из запроса:
-         * либо GIGAUSAGE-123,
-         * либо URL.
-         *
-         * associateBy также убирает дубли по jiraKey.
+         * Сначала полностью парсим и валидируем запрос.
+         * До этого момента состояние БД не изменяется.
          */
-        val requestedValuesByKey = gigausageValues.associateBy { gigausage ->
-            extractJiraKey(gigausage)
-        }
-
-        deleteIssuesMissingInRequest(
-            existingIssues = existingIssues,
-            requestedKeys = requestedValuesByKey.keys,
+        val requestedStatusSla = parseStatusSla(
+            rawStatusSla = rawStatusSla,
         )
 
-        createOrUpdateIssues(
-            agent = agent,
-            existingIssues = existingIssues,
-            requestedValuesByKey = requestedValuesByKey,
+        validateDuplicateStatuses(
+            requestedStatusSla = requestedStatusSla,
         )
-    }
 
-    private fun parseGigausageValues(
-        rawValue: Any?,
-    ): List<String> {
-        if (rawValue == null) {
+        /*
+         * Одним запросом получаем текущие SLA агента.
+         */
+        val existingStatusSla =
+            agentStatusSlaRepository.findAllByAiAgentId(
+                agentId = agentId,
+            )
+
+        /*
+         * Если statusSla = null или statusSla = [],
+         * удаляем все связанные с агентом сроки.
+         */
+        if (requestedStatusSla.isEmpty()) {
+            if (existingStatusSla.isNotEmpty()) {
+                agentStatusSlaRepository.deleteAll(existingStatusSla)
+            }
+
             return emptyList()
         }
 
-        if (rawValue !is List<*>) {
-            throwWrongGigausageValue()
-        }
+        /*
+         * Одним запросом получаем все активные статусы справочника
+         * и индексируем их по code.
+         */
+        val activeStatusesByCode = statusRepository
+            .findAllByDisabledIsFalse()
+            .mapNotNull { status ->
+                status.code?.let { code -> code to status }
+            }
+            .toMap()
 
-        return rawValue.map { value ->
-            val gigausage = (value as? String)?.trim()
+        val requestedStatusCodes = requestedStatusSla
+            .map { statusSla -> statusSla.status }
+            .toSet()
 
-            if (gigausage.isNullOrEmpty() || !isValidGigausage(gigausage)) {
-                throwWrongGigausageValue()
+        validateStatusesExist(
+            requestedCodes = requestedStatusCodes,
+            statusesByCode = activeStatusesByCode,
+        )
+
+        /*
+         * Текущие SLA индексируем по agent_status_id,
+         * который является частью составного первичного ключа.
+         */
+        val existingStatusSlaByStatusId = existingStatusSla
+            .associateBy { entity ->
+                entity.primaryKey.agentStatusId
             }
 
-            gigausage
-        }
-    }
+        val requestedStatusIds = mutableSetOf<Long>()
 
-    private fun isValidGigausage(
-        gigausage: String,
-    ): Boolean {
-        val isJiraKey = gigausage.startsWith(GIGAUSAGE_PREFIX)
+        /*
+         * Здесь одновременно собираются:
+         * - новые сущности;
+         * - существующие сущности с изменённой plannedDate.
+         *
+         * В конце будет один вызов saveAll().
+         */
+        val entitiesToSave = mutableListOf<AgentStatusSlaEntity>()
 
-        val isJiraUrl =
-            gigausage.startsWith(JIRA_URL_PREFIX) &&
-                gigausage
-                    .split("/")
-                    .any { pathPart ->
-                        pathPart.startsWith(GIGAUSAGE_PREFIX)
-                    }
+        /*
+         * Дельта для последующего создания jira_change
+         * с changeType = plannedDate.
+         */
+        val delta = mutableListOf<StatusSlaDto>()
 
-        return isJiraKey || isJiraUrl
-    }
-
-    private fun extractJiraKey(
-        gigausage: String,
-    ): String {
-        if (gigausage.startsWith(GIGAUSAGE_PREFIX)) {
-            return gigausage
-        }
-
-        return gigausage
-            .split("/")
-            .first { pathPart ->
-                pathPart.startsWith(GIGAUSAGE_PREFIX)
-            }
-    }
-
-    private fun deleteIssuesMissingInRequest(
-        existingIssues: List<JiraIssueEntity>,
-        requestedKeys: Set<String>,
-    ) {
-        existingIssues
-            .filter { existingIssue ->
-                existingIssue.jiraKey !in requestedKeys
-            }
-            .forEach { issueToDelete ->
-                jiraIssueRepository.delete(entity = issueToDelete)
-            }
-    }
-
-    private fun createOrUpdateIssues(
-        agent: AIAgentEntity,
-        existingIssues: List<JiraIssueEntity>,
-        requestedValuesByKey: Map<String, String>,
-    ) {
-        val existingIssuesByKey = existingIssues.associateBy { issue ->
-            issue.jiraKey
-        }
-
-        requestedValuesByKey.forEach { (jiraKey, gigausage) ->
-            val jiraIssue =
-                existingIssuesByKey[jiraKey]
-                    ?: JiraIssueEntity(
-                        project = PROJECT,
-                        type = ISSUE_TYPE,
-                        agent = agent,
-                    )
-
-            jiraIssue.project = PROJECT
-            jiraIssue.type = ISSUE_TYPE
-
-            updateJiraKeyAndUrl(
-                jiraIssue = jiraIssue,
-                gigausage = gigausage,
+        requestedStatusSla.forEach { requestedItem ->
+            val statusEntity = requireNotNull(
+                activeStatusesByCode[requestedItem.status]
             )
 
-            jiraIssueRepository.save(entity = jiraIssue)
+            val statusId = requireNotNull(statusEntity.id)
+
+            requestedStatusIds.add(statusId)
+
+            val existingEntity =
+                existingStatusSlaByStatusId[statusId]
+
+            val requestedPlannedDate =
+                requestedItem.plannedDate.toDatabaseLocalDateTime()
+
+            if (existingEntity == null) {
+                /*
+                 * Записи с таким статусом у агента ещё нет —
+                 * создаём новую.
+                 */
+                val newEntity = AgentStatusSlaEntity().apply {
+                    /*
+                     * Сеттер сам заполнит:
+                     * primaryKey.aiAgentId = agent.id.
+                     */
+                    aiAgent = agent
+
+                    /*
+                     * Сеттер сам заполнит:
+                     * primaryKey.agentStatusId = statusEntity.id.
+                     */
+                    agentStatus = statusEntity
+
+                    plannedDate = requestedPlannedDate
+
+                    /*
+                     * completedDate не устанавливаем.
+                     * У новой записи он останется null.
+                     */
+                }
+
+                entitiesToSave.add(newEntity)
+                delta.add(requestedItem)
+
+                return@forEach
+            }
+
+            /*
+             * По документации сравнивается только дата,
+             * временная часть не учитывается.
+             */
+            val plannedDateChanged =
+                existingEntity.plannedDate?.toLocalDate() !=
+                    requestedPlannedDate.toLocalDate()
+
+            if (plannedDateChanged) {
+                /*
+                 * Меняем только plannedDate.
+                 * completedDate не изменяется и не очищается.
+                 */
+                existingEntity.plannedDate = requestedPlannedDate
+
+                entitiesToSave.add(existingEntity)
+                delta.add(requestedItem)
+            }
+        }
+
+        /*
+         * Находим существующие сроки этапов,
+         * которых нет в новом запросе.
+         */
+        val entitiesToDelete = existingStatusSla.filter { existingEntity ->
+            existingEntity.primaryKey.agentStatusId !in requestedStatusIds
+        }
+
+        /*
+         * Все новые и изменённые сущности сохраняются
+         * одним вызовом saveAll().
+         */
+        if (entitiesToSave.isNotEmpty()) {
+            agentStatusSlaRepository.saveAll(entitiesToSave)
+        }
+
+        if (entitiesToDelete.isNotEmpty()) {
+            agentStatusSlaRepository.deleteAll(entitiesToDelete)
+        }
+
+        return delta
+    }
+
+    private fun parseStatusSla(
+        rawStatusSla: Any?,
+    ): List<StatusSlaDto> {
+        /*
+         * Метод вызывается только когда ключ statusSla
+         * присутствует в PATCH-запросе.
+         *
+         * Поэтому null означает очистку текущего списка.
+         */
+        if (rawStatusSla == null) {
+            return emptyList()
+        }
+
+        val statusSlaList = rawStatusSla as? List<*>
+            ?: throwWrongStatusSlaValue()
+
+        return statusSlaList.map { rawItem ->
+            val item = rawItem as? Map<*, *>
+                ?: throwWrongStatusSlaValue()
+
+            val status = item[STATUS_FIELD] as? String
+
+            if (status.isNullOrBlank()) {
+                throwWrongStatusSlaValue()
+            }
+
+            val plannedDate = parsePlannedDate(
+                value = item[PLANNED_DATE_FIELD],
+            )
+
+            StatusSlaDto(
+                status = status,
+                plannedDate = plannedDate,
+            )
         }
     }
 
-    private fun updateJiraKeyAndUrl(
-        jiraIssue: JiraIssueEntity,
-        gigausage: String,
+    private fun parsePlannedDate(
+        value: Any?,
+    ): OffsetDateTime {
+        return when (value) {
+            is OffsetDateTime -> value
+
+            is String -> {
+                if (value.isBlank()) {
+                    throwWrongStatusSlaValue()
+                }
+
+                try {
+                    OffsetDateTime.parse(value)
+                } catch (exception: DateTimeParseException) {
+                    throwWrongStatusSlaValue()
+                }
+            }
+
+            else -> throwWrongStatusSlaValue()
+        }
+    }
+
+    /**
+     * Техническая защита от двух сроков для одного статуса.
+     *
+     * Без неё обе записи будут иметь одинаковый составной ключ:
+     * ai_agent_id + agent_status_id.
+     */
+    private fun validateDuplicateStatuses(
+        requestedStatusSla: List<StatusSlaDto>,
     ) {
-        if (gigausage.startsWith(GIGAUSAGE_PREFIX)) {
-            jiraIssue.jiraKey = gigausage
-            jiraIssue.jiraUrl = "$JIRA_BROWSE_URL/$gigausage"
-            return
-        }
+        val duplicateStatuses = requestedStatusSla
+            .groupingBy { statusSla -> statusSla.status }
+            .eachCount()
+            .filterValues { count -> count > 1 }
+            .keys
 
-        jiraIssue.jiraKey = extractJiraKey(gigausage)
-        jiraIssue.jiraUrl = gigausage
+        if (duplicateStatuses.isNotEmpty()) {
+            throw AiBadRequestException(
+                errorCode = DUPLICATE_STATUS_SLA,
+                message = MessageFormat.format(
+                    messageProvider[DUPLICATE_STATUS_SLA],
+                    duplicateStatuses.joinToString(),
+                ),
+            )
+        }
     }
 
-    private fun throwWrongGigausageValue(): Nothing {
+    /**
+     * Проверяет, что каждый code из запроса найден
+     * среди активных записей справочника status.
+     */
+    private fun validateStatusesExist(
+        requestedCodes: Set<String>,
+        statusesByCode: Map<String, StatusEntity>,
+    ) {
+        val missingStatusCodes = requestedCodes.filterNot { code ->
+            statusesByCode.containsKey(code)
+        }
+
+        if (missingStatusCodes.isNotEmpty()) {
+            throw AiBadRequestException(
+                errorCode = REFERENCE_VALUE_NOT_FOUND,
+                message = MessageFormat.format(
+                    messageProvider[REFERENCE_VALUE_NOT_FOUND],
+                    missingStatusCodes.joinToString(),
+                ),
+            )
+        }
+    }
+
+    private fun throwWrongStatusSlaValue(): Nothing {
         throw AiBadRequestException(
-            message = messageProvider[WRONG_WRONG_GIGAUSAGE],
-            errorCode = WRONG_WRONG_GIGAUSAGE,
+            errorCode = WRONG_STATUS_SLA_VALUE,
+            message = messageProvider[WRONG_STATUS_SLA_VALUE],
         )
     }
 
+    /**
+     * Entity хранит LocalDateTime, поэтому offset приводим к UTC,
+     * после чего убираем информацию о зоне.
+     */
+    private fun OffsetDateTime.toDatabaseLocalDateTime(): LocalDateTime {
+        return withOffsetSameInstant(ZoneOffset.UTC)
+            .toLocalDateTime()
+    }
+
     private companion object {
-        const val PROJECT = "gigausage"
-        const val ISSUE_TYPE = "initiative"
+        const val STATUS_FIELD = "status"
+        const val PLANNED_DATE_FIELD = "plannedDate"
 
-        const val GIGAUSAGE_PREFIX = "GIGAUSAGE"
+        const val WRONG_STATUS_SLA_VALUE =
+            "wrong.status.sla.value"
 
-        const val JIRA_URL_PREFIX =
-            "https://jira.sberbank.ru/"
+        const val DUPLICATE_STATUS_SLA =
+            "duplicate.status.sla"
 
-        const val JIRA_BROWSE_URL =
-            "https://jira.sberbank.ru/browse"
+        const val REFERENCE_VALUE_NOT_FOUND =
+            "reference.value.not.found"
     }
 }
 ```
