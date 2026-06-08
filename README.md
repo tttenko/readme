@@ -1,279 +1,180 @@
 ```java
 
-@ExtendWith(MockKExtension::class)
-internal class EnablerServiceTest {
+@Component
+class GigausageIssueUpdater(
+    private val jiraIssueRepository: JiraIssueRepository,
+    private val messageProvider: MessageProvider,
+) {
 
-    @MockK
-    private lateinit var enablerRepository: EnablerRepository
+    fun update(
+        agent: AIAgentEntity,
+        rawValue: Any?,
+    ) {
+        val gigausageValues = parseGigausageValues(rawValue)
 
-    @MockK
-    private lateinit var messageProvider: MessageProvider
+        val existingIssues =
+            jiraIssueRepository.findByAgentIdAndTypeAndProject(
+                agentId = agent.id,
+                type = ISSUE_TYPE,
+                project = PROJECT,
+            )
 
-    @InjectMockKs
-    private lateinit var service: EnablerService
-
-    @Test
-    fun `getEnablerReferences should return only enabled records by default`() {
-        // given
-        val entity = EnablerEntity().apply {
-            id = 1L
-            name = "Enabler 1"
-            disabled = false
+        if (gigausageValues.isEmpty()) {
+            jiraIssueRepository.deleteAll(existingIssues)
+            return
         }
 
-        every { enablerRepository.findAllByDisabledIsFalse() } returns listOf(entity)
-
-        // when
-        val result = service.getEnablerReferences(includeDisabled = false)
-
-        // then
-        verify(exactly = 1) { enablerRepository.findAllByDisabledIsFalse() }
-        verify(exactly = 0) { enablerRepository.findAll() }
-
-        assertEquals(1, result.size)
-        assertEquals(1L, result.first().id)
-        assertEquals("Enabler 1", result.first().name)
-        assertEquals(false, result.first().disabled)
-    }
-
-    @Test
-    fun `getEnablerReferences should return enabled and disabled records when includeDisabled is true`() {
-        // given
-        val enabled = EnablerEntity().apply {
-            id = 1L
-            name = "Enabled enabler"
-            disabled = false
+        /*
+         * Ключ — jiraKey.
+         * Значение — исходная строка из запроса:
+         * либо GIGAUSAGE-123,
+         * либо URL.
+         *
+         * associateBy также убирает дубли по jiraKey.
+         */
+        val requestedValuesByKey = gigausageValues.associateBy { gigausage ->
+            extractJiraKey(gigausage)
         }
 
-        val disabled = EnablerEntity().apply {
-            id = 2L
-            name = "Disabled enabler"
-            this.disabled = true
-        }
-
-        every { enablerRepository.findAll() } returns listOf(enabled, disabled)
-
-        // when
-        val result = service.getEnablerReferences(includeDisabled = true)
-
-        // then
-        verify(exactly = 1) { enablerRepository.findAll() }
-        verify(exactly = 0) { enablerRepository.findAllByDisabledIsFalse() }
-
-        assertEquals(2, result.size)
-
-        assertEquals(1L, result[0].id)
-        assertEquals("Enabled enabler", result[0].name)
-        assertEquals(false, result[0].disabled)
-
-        assertEquals(2L, result[1].id)
-        assertEquals("Disabled enabler", result[1].name)
-        assertEquals(true, result[1].disabled)
-    }
-
-    @Test
-    fun `getEnablerReferences should return empty list when records not found`() {
-        // given
-        every { enablerRepository.findAllByDisabledIsFalse() } returns emptyList()
-
-        // when
-        val result = service.getEnablerReferences(includeDisabled = false)
-
-        // then
-        verify(exactly = 1) { enablerRepository.findAllByDisabledIsFalse() }
-
-        assertEquals(0, result.size)
-    }
-
-    @Test
-    fun `createEnabler should save entity and return id`() {
-        // given
-        val request = CreateEnablerRequest(
-            name = "Enabler 1"
+        deleteIssuesMissingInRequest(
+            existingIssues = existingIssues,
+            requestedKeys = requestedValuesByKey.keys,
         )
 
-        val savedEntity = EnablerEntity().apply {
-            id = 1L
-            name = "Enabler 1"
-            disabled = false
-        }
-
-        val entitySlot = slot<EnablerEntity>()
-
-        every { enablerRepository.existsByNormalizedName(request.name) } returns false
-        every { enablerRepository.save(capture(entitySlot)) } returns savedEntity
-
-        // when
-        val result = service.createEnabler(request)
-
-        // then
-        verify(exactly = 1) { enablerRepository.existsByNormalizedName(request.name) }
-        verify(exactly = 1) { enablerRepository.save(any()) }
-
-        assertEquals(CreateEnablerResponse(id = 1L), result)
-        assertEquals("Enabler 1", entitySlot.captured.name)
-        assertEquals(false, entitySlot.captured.disabled)
-    }
-
-    @Test
-    fun `createEnabler should throw BAD_REQUEST when name already exists`() {
-        // given
-        val request = CreateEnablerRequest(
-            name = "Enabler 1"
-        )
-
-        every { enablerRepository.existsByNormalizedName(request.name) } returns true
-        every { messageProvider[ENABLER_NAME_ALREADY_EXISTS] } returns "Название {0} уже существует"
-
-        // when
-        val exception = assertThrows(AiBadRequestException::class.java) {
-            service.createEnabler(request)
-        }
-
-        // then
-        verify(exactly = 1) { enablerRepository.existsByNormalizedName(request.name) }
-        verify(exactly = 1) { messageProvider[ENABLER_NAME_ALREADY_EXISTS] }
-        verify(exactly = 0) { enablerRepository.save(any()) }
-
-        assertEquals("Название Enabler 1 уже существует", exception.message)
-    }
-
-    @Test
-    fun `updateEnabler should update existing entity and save it`() {
-        // given
-        val id = 1L
-
-        val request = UpdateEnablerRequest(
-            name = "Updated enabler",
-            disabled = true
-        )
-
-        val entity = EnablerEntity().apply {
-            this.id = id
-            name = "Old enabler"
-            disabled = false
-        }
-
-        val entitySlot = slot<EnablerEntity>()
-
-        every { enablerRepository.findEnablerEntityById(id) } returns entity
-        every { enablerRepository.existsByNormalizedNameAndIdNot(request.name, id) } returns false
-        every { enablerRepository.save(capture(entitySlot)) } returns entity
-
-        // when
-        service.updateEnabler(id, request)
-
-        // then
-        verify(exactly = 1) { enablerRepository.findEnablerEntityById(id) }
-        verify(exactly = 1) { enablerRepository.existsByNormalizedNameAndIdNot(request.name, id) }
-        verify(exactly = 1) { enablerRepository.save(any()) }
-
-        assertEquals(id, entitySlot.captured.id)
-        assertEquals("Updated enabler", entitySlot.captured.name)
-        assertEquals(true, entitySlot.captured.disabled)
-    }
-
-    @Test
-    fun `updateEnabler should throw NOT_FOUND when entity does not exist`() {
-        // given
-        val id = 1L
-
-        val request = UpdateEnablerRequest(
-            name = "Updated enabler",
-            disabled = false
-        )
-
-        every { enablerRepository.findEnablerEntityById(id) } returns null
-        every { messageProvider[ENABLER_NOT_FOUND] } returns "Enabler с id {0} не найден"
-
-        // when
-        val exception = assertThrows(ResponseStatusException::class.java) {
-            service.updateEnabler(id, request)
-        }
-
-        // then
-        verify(exactly = 1) { enablerRepository.findEnablerEntityById(id) }
-        verify(exactly = 1) { messageProvider[ENABLER_NOT_FOUND] }
-        verify(exactly = 0) { enablerRepository.existsByNormalizedNameAndIdNot(any(), any()) }
-        verify(exactly = 0) { enablerRepository.save(any()) }
-
-        assertEquals(HttpStatus.NOT_FOUND, exception.statusCode)
-        assertEquals("Enabler с id 1 не найден", exception.reason)
-    }
-
-    @Test
-    fun `updateEnabler should throw BAD_REQUEST when name already exists`() {
-        // given
-        val id = 1L
-
-        val request = UpdateEnablerRequest(
-            name = "Enabler 1",
-            disabled = true
-        )
-
-        val entity = EnablerEntity().apply {
-            this.id = id
-            name = "Old enabler"
-            disabled = false
-        }
-
-        every { enablerRepository.findEnablerEntityById(id) } returns entity
-        every { enablerRepository.existsByNormalizedNameAndIdNot(request.name, id) } returns true
-        every { messageProvider[ENABLER_NAME_ALREADY_EXISTS] } returns "Название {0} уже существует"
-
-        // when
-        val exception = assertThrows(AiBadRequestException::class.java) {
-            service.updateEnabler(id, request)
-        }
-
-        // then
-        verify(exactly = 1) { enablerRepository.findEnablerEntityById(id) }
-        verify(exactly = 1) { enablerRepository.existsByNormalizedNameAndIdNot(request.name, id) }
-        verify(exactly = 1) { messageProvider[ENABLER_NAME_ALREADY_EXISTS] }
-        verify(exactly = 0) { enablerRepository.save(any()) }
-
-        assertEquals("Название Enabler 1 уже существует", exception.message)
-    }
-
-    @Test
-    fun `toEnablerResponse should map entity to response`() {
-        // given
-        val entity = EnablerEntity().apply {
-            id = 1L
-            name = "Enabler 1"
-            disabled = true
-        }
-
-        // when
-        val result = entity.toEnablerResponse()
-
-        // then
-        assertEquals(
-            EnablerResponse(
-                id = 1L,
-                name = "Enabler 1",
-                disabled = true
-            ),
-            result
+        createOrUpdateIssues(
+            agent = agent,
+            existingIssues = existingIssues,
+            requestedValuesByKey = requestedValuesByKey,
         )
     }
 
-    @Test
-    fun `toEnablerResponse should map null disabled as false`() {
-        // given
-        val entity = EnablerEntity().apply {
-            id = 1L
-            name = "Enabler 1"
-            disabled = null
+    private fun parseGigausageValues(
+        rawValue: Any?,
+    ): List<String> {
+        if (rawValue == null) {
+            return emptyList()
         }
 
-        // when
-        val result = entity.toEnablerResponse()
+        if (rawValue !is List<*>) {
+            throwWrongGigausageValue()
+        }
 
-        // then
-        assertEquals(1L, result.id)
-        assertEquals("Enabler 1", result.name)
-        assertEquals(false, result.disabled)
+        return rawValue.map { value ->
+            val gigausage = (value as? String)?.trim()
+
+            if (gigausage.isNullOrEmpty() || !isValidGigausage(gigausage)) {
+                throwWrongGigausageValue()
+            }
+
+            gigausage
+        }
+    }
+
+    private fun isValidGigausage(
+        gigausage: String,
+    ): Boolean {
+        val isJiraKey = gigausage.startsWith(GIGAUSAGE_PREFIX)
+
+        val isJiraUrl =
+            gigausage.startsWith(JIRA_URL_PREFIX) &&
+                gigausage
+                    .split("/")
+                    .any { pathPart ->
+                        pathPart.startsWith(GIGAUSAGE_PREFIX)
+                    }
+
+        return isJiraKey || isJiraUrl
+    }
+
+    private fun extractJiraKey(
+        gigausage: String,
+    ): String {
+        if (gigausage.startsWith(GIGAUSAGE_PREFIX)) {
+            return gigausage
+        }
+
+        return gigausage
+            .split("/")
+            .first { pathPart ->
+                pathPart.startsWith(GIGAUSAGE_PREFIX)
+            }
+    }
+
+    private fun deleteIssuesMissingInRequest(
+        existingIssues: List<JiraIssueEntity>,
+        requestedKeys: Set<String>,
+    ) {
+        existingIssues
+            .filter { existingIssue ->
+                existingIssue.jiraKey !in requestedKeys
+            }
+            .forEach { issueToDelete ->
+                jiraIssueRepository.delete(entity = issueToDelete)
+            }
+    }
+
+    private fun createOrUpdateIssues(
+        agent: AIAgentEntity,
+        existingIssues: List<JiraIssueEntity>,
+        requestedValuesByKey: Map<String, String>,
+    ) {
+        val existingIssuesByKey = existingIssues.associateBy { issue ->
+            issue.jiraKey
+        }
+
+        requestedValuesByKey.forEach { (jiraKey, gigausage) ->
+            val jiraIssue =
+                existingIssuesByKey[jiraKey]
+                    ?: JiraIssueEntity(
+                        project = PROJECT,
+                        type = ISSUE_TYPE,
+                        agent = agent,
+                    )
+
+            jiraIssue.project = PROJECT
+            jiraIssue.type = ISSUE_TYPE
+
+            updateJiraKeyAndUrl(
+                jiraIssue = jiraIssue,
+                gigausage = gigausage,
+            )
+
+            jiraIssueRepository.save(entity = jiraIssue)
+        }
+    }
+
+    private fun updateJiraKeyAndUrl(
+        jiraIssue: JiraIssueEntity,
+        gigausage: String,
+    ) {
+        if (gigausage.startsWith(GIGAUSAGE_PREFIX)) {
+            jiraIssue.jiraKey = gigausage
+            jiraIssue.jiraUrl = "$JIRA_BROWSE_URL/$gigausage"
+            return
+        }
+
+        jiraIssue.jiraKey = extractJiraKey(gigausage)
+        jiraIssue.jiraUrl = gigausage
+    }
+
+    private fun throwWrongGigausageValue(): Nothing {
+        throw AiBadRequestException(
+            message = messageProvider[WRONG_WRONG_GIGAUSAGE],
+            errorCode = WRONG_WRONG_GIGAUSAGE,
+        )
+    }
+
+    private companion object {
+        const val PROJECT = "gigausage"
+        const val ISSUE_TYPE = "initiative"
+
+        const val GIGAUSAGE_PREFIX = "GIGAUSAGE"
+
+        const val JIRA_URL_PREFIX =
+            "https://jira.sberbank.ru/"
+
+        const val JIRA_BROWSE_URL =
+            "https://jira.sberbank.ru/browse"
     }
 }
 ```
