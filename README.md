@@ -7,15 +7,6 @@ class StatusSlaUpdater(
     private val messageProvider: MessageProvider,
 ) {
 
-    /**
-     * Синхронизирует записи agent_status_sla с данными из PATCH-запроса.
-     *
-     * Возвращает дельту:
-     * - новые записи;
-     * - существующие записи, у которых изменилась plannedDate.
-     *
-     * completedDate существующих записей не изменяется.
-     */
     fun update(
         agent: AIAgentEntity,
         rawStatusSla: Any?,
@@ -24,10 +15,6 @@ class StatusSlaUpdater(
             "AI-agent must be persisted before statusSla update"
         }
 
-        /*
-         * Сначала полностью парсим и валидируем запрос.
-         * До окончания валидации данные в БД не изменяются.
-         */
         val requestedStatusSla = parseStatusSla(
             rawStatusSla = rawStatusSla,
         )
@@ -36,18 +23,11 @@ class StatusSlaUpdater(
             requestedStatusSla = requestedStatusSla,
         )
 
-        /*
-         * Одним запросом получаем текущие SLA агента.
-         */
         val existingStatusSla =
             agentStatusSlaRepository.findAllByAiAgentId(
                 agentId = agentId,
             )
 
-        /*
-         * Если переданы null или пустой список,
-         * удаляем все SLA агента.
-         */
         if (requestedStatusSla.isEmpty()) {
             if (existingStatusSla.isNotEmpty()) {
                 agentStatusSlaRepository.deleteAll(existingStatusSla)
@@ -56,19 +36,12 @@ class StatusSlaUpdater(
             return emptyList()
         }
 
-        /*
-         * После parseStatusSla status гарантированно не null,
-         * поэтому здесь используем requireNotNull.
-         */
         val requestedStatusCodes: Set<String> = requestedStatusSla
             .map { statusSla ->
                 requireNotNull(statusSla.status)
             }
             .toSet()
 
-        /*
-         * Одним запросом получаем активные статусы справочника.
-         */
         val activeStatusesByCode: Map<String, StatusEntity> =
             statusRepository
                 .findAllByDisabledIsFalse()
@@ -84,30 +57,19 @@ class StatusSlaUpdater(
             statusesByCode = activeStatusesByCode,
         )
 
-        /*
-         * Текущие SLA индексируем по ID статуса.
-         */
         val existingStatusSlaByStatusId = existingStatusSla
             .associateBy { entity ->
                 entity.primaryKey.agentStatusId
             }
 
         val requestedStatusIds = mutableSetOf<Long>()
-
-        /*
-         * Сюда собираем и новые, и изменённые сущности,
-         * чтобы выполнить один saveAll().
-         */
         val entitiesToSave = mutableListOf<AgentStatusSlaEntity>()
-
-        /*
-         * Дельта для jira_change с changeType = plannedDate.
-         */
         val delta = mutableListOf<StatusSlaDto>()
 
         requestedStatusSla.forEach { requestedItem ->
             val statusCode = requireNotNull(requestedItem.status)
-            val plannedDate = requireNotNull(requestedItem.plannedDate)
+            val requestedPlannedDate =
+                requireNotNull(requestedItem.plannedDate)
 
             val statusEntity = requireNotNull(
                 activeStatusesByCode[statusCode]
@@ -120,88 +82,46 @@ class StatusSlaUpdater(
             val existingEntity =
                 existingStatusSlaByStatusId[statusId]
 
-            /*
-             * Entity хранит LocalDateTime,
-             * DTO содержит LocalDate.
-             */
-            val requestedPlannedDateTime =
-                plannedDate.atStartOfDay()
-
             if (existingEntity == null) {
                 val newEntity = AgentStatusSlaEntity().apply {
-                    /*
-                     * Сеттер заполнит primaryKey.aiAgentId.
-                     */
                     aiAgent = agent
-
-                    /*
-                     * Сеттер заполнит primaryKey.agentStatusId.
-                     */
                     agentStatus = statusEntity
-
-                    plannedDate = requestedPlannedDateTime
-
-                    /*
-                     * completedDate для новой записи не заполняем.
-                     */
+                    plannedDate = requestedPlannedDate
                 }
 
                 entitiesToSave.add(newEntity)
 
-                /*
-                 * В дельту completedDate не передаём,
-                 * потому что JIRA-синхронизация касается plannedDate.
-                 */
                 delta.add(
                     StatusSlaDto(
                         status = statusCode,
-                        plannedDate = plannedDate,
+                        plannedDate = requestedPlannedDate,
                     )
                 )
 
                 return@forEach
             }
 
-            /*
-             * Сравнение только по календарной дате.
-             *
-             * Хотя DTO уже содержит LocalDate,
-             * entity хранит LocalDateTime, поэтому у старого значения
-             * берём только toLocalDate().
-             */
             val plannedDateChanged =
-                existingEntity.plannedDate?.toLocalDate() != plannedDate
+                existingEntity.plannedDate != requestedPlannedDate
 
             if (plannedDateChanged) {
-                /*
-                 * Меняем только plannedDate.
-                 * completedDate не трогаем.
-                 */
-                existingEntity.plannedDate =
-                    requestedPlannedDateTime
+                existingEntity.plannedDate = requestedPlannedDate
 
                 entitiesToSave.add(existingEntity)
 
                 delta.add(
                     StatusSlaDto(
                         status = statusCode,
-                        plannedDate = plannedDate,
+                        plannedDate = requestedPlannedDate,
                     )
                 )
             }
         }
 
-        /*
-         * Удаляем записи для этапов,
-         * отсутствующих в новом запросе.
-         */
         val entitiesToDelete = existingStatusSla.filter { existingEntity ->
             existingEntity.primaryKey.agentStatusId !in requestedStatusIds
         }
 
-        /*
-         * Новые и изменённые сущности сохраняем одним вызовом.
-         */
         if (entitiesToSave.isNotEmpty()) {
             agentStatusSlaRepository.saveAll(entitiesToSave)
         }
@@ -216,10 +136,6 @@ class StatusSlaUpdater(
     private fun parseStatusSla(
         rawStatusSla: Any?,
     ): List<StatusSlaDto> {
-        /*
-         * Метод вызывается только при наличии ключа statusSla.
-         * null интерпретируется как очистка списка.
-         */
         if (rawStatusSla == null) {
             return emptyList()
         }
@@ -260,10 +176,6 @@ class StatusSlaUpdater(
                 }
 
                 try {
-                    /*
-                     * Поддерживает строку формата:
-                     * 2026-05-03
-                     */
                     LocalDate.parse(value)
                 } catch (exception: Exception) {
                     throwWrongStatusSlaValue()
@@ -281,9 +193,13 @@ class StatusSlaUpdater(
             .map { statusSla ->
                 requireNotNull(statusSla.status)
             }
-            .groupingBy { statusCode -> statusCode }
+            .groupingBy { statusCode ->
+                statusCode
+            }
             .eachCount()
-            .filterValues { count -> count > 1 }
+            .filterValues { count ->
+                count > 1
+            }
             .keys
 
         if (duplicateStatuses.isNotEmpty()) {
