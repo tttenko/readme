@@ -1,242 +1,404 @@
 ```java
 
+@Entity
+@Table(name = "jira_change")
+open class JiraChangeEntity(
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(
+        name = "agent_id",
+        referencedColumnName = "id",
+        nullable = false,
+    )
+    open var agent: AIAgentEntity? = null,
+
+    @Column(
+        name = "change_type",
+        length = 50,
+        nullable = false,
+    )
+    open var changeType: String? = null,
+
+    @Type(JsonType::class)
+    @Column(
+        name = "payload",
+        columnDefinition = "jsonb",
+        nullable = false,
+    )
+    open var payload: JsonNode? = null,
+
+    @Column(
+        name = "created",
+        nullable = false,
+    )
+    open var created: LocalDateTime = LocalDateTime.now(),
+
+) : BasicLongEntity()
+
+@Repository
+interface JiraChangeRepository :
+    JpaRepository<JiraChangeEntity, Long>
+
+data class JiraPlannedDateDto(
+    val status: String,
+    val plannedDate: Instant,
+)
+
+data class JiraPlannedDatePayload(
+    val statusSla: List<JiraPlannedDateDto>,
+)
+
 @Component
-open class StatusSlaUpdater(
-    private val agentStatusSlaRepository: AgentStatusSlaRepository,
-    private val statusRepository: StatusRepository,
-    private val messageProvider: MessageProvider,
+open class JiraChangeUpdater(
+    private val jiraIssueRepository: JiraIssueRepository,
+    private val jiraChangeRepository: JiraChangeRepository,
+    private val objectMapper: ObjectMapper,
 ) {
 
     open fun update(
         agent: AIAgentEntity,
-        rawStatusSlaValue: Any?,
-    ): List<StatusSlaDto> {
-
-        val persistedAgentId = requireNotNull(agent.id) {
-            "AI-agent must be persisted before statusSla update"
-        }
-
-        val requestedStatusSlaItems = parseStatusSla(
-            rawStatusSla = rawStatusSlaValue,
-        )
-
-        val persistedStatusSlaEntities =
-            agentStatusSlaRepository.findAllByAiAgentId(
-                agentId = persistedAgentId,
-            )
-
-        if (requestedStatusSlaItems.isEmpty()) {
-            if (persistedStatusSlaEntities.isNotEmpty()) {
-                agentStatusSlaRepository.deleteAll(
-                    entities = persistedStatusSlaEntities,
-                )
-            }
-
-            return emptyList()
-        }
-
-        val requestedStatusCodes = requestedStatusSlaItems
-            .map { requestedStatusSla ->
-                requireNotNull(requestedStatusSla.status)
-            }
-            .toSet()
-
-        val activeStatusesByCode = statusRepository
-            .findAllByDisabledIsFalse()
-            .mapNotNull { activeStatus ->
-                activeStatus.code?.let { statusCode ->
-                    statusCode to activeStatus
-                }
-            }
-            .toMap()
-
-        validateRequestedStatusesExist(
-            requestedStatusCodes = requestedStatusCodes,
-            activeStatusesByCode = activeStatusesByCode,
-        )
-
-        val persistedStatusSlaByStatusId =
-            persistedStatusSlaEntities.associateBy { persistedStatusSla ->
-                persistedStatusSla.primaryKey.agentStatusId
-            }
-
-        val requestedStatusIds = mutableSetOf<Long>()
-
-        val statusSlaEntitiesToSave =
-            mutableListOf<AgentStatusSlaEntity>()
-
-        val changedStatusSlaItems =
-            mutableListOf<StatusSlaDto>()
-
-        requestedStatusSlaItems.forEach { requestedStatusSla ->
-
-            val requestedStatusCode =
-                requireNotNull(requestedStatusSla.status)
-
-            val requestedPlannedDate =
-                requireNotNull(requestedStatusSla.plannedDate)
-
-            val requestedStatusEntity = requireNotNull(
-                activeStatusesByCode[requestedStatusCode]
-            )
-
-            val requestedStatusId =
-                requireNotNull(requestedStatusEntity.id)
-
-            requestedStatusIds.add(requestedStatusId)
-
-            val persistedStatusSla =
-                persistedStatusSlaByStatusId[requestedStatusId]
-
-            val requestedPlannedDateTime =
-                requestedPlannedDate.atStartOfDay()
-
-            if (persistedStatusSla == null) {
-                val newStatusSlaEntity =
-                    AgentStatusSlaEntity().apply {
-                        aiAgent = agent
-                        agentStatus = requestedStatusEntity
-                        plannedDate = requestedPlannedDateTime
-                    }
-
-                statusSlaEntitiesToSave.add(newStatusSlaEntity)
-
-                changedStatusSlaItems.add(
-                    StatusSlaDto(
-                        status = requestedStatusCode,
-                        plannedDate = requestedPlannedDate,
-                    )
-                )
-
-                return@forEach
-            }
-
-            val hasPlannedDateChanged =
-                persistedStatusSla.plannedDate?.toLocalDate() !=
-                    requestedPlannedDate
-
-            if (hasPlannedDateChanged) {
-                persistedStatusSla.plannedDate =
-                    requestedPlannedDateTime
-
-                statusSlaEntitiesToSave.add(persistedStatusSla)
-
-                changedStatusSlaItems.add(
-                    StatusSlaDto(
-                        status = requestedStatusCode,
-                        plannedDate = requestedPlannedDate,
-                    )
-                )
-            }
-        }
-
-        val statusSlaEntitiesToDelete =
-            persistedStatusSlaEntities.filter { persistedStatusSla ->
-                persistedStatusSla.primaryKey.agentStatusId !in
-                    requestedStatusIds
-            }
-
-        if (statusSlaEntitiesToSave.isNotEmpty()) {
-            agentStatusSlaRepository.saveAll(
-                entities = statusSlaEntitiesToSave,
-            )
-        }
-
-        if (statusSlaEntitiesToDelete.isNotEmpty()) {
-            agentStatusSlaRepository.deleteAll(
-                entities = statusSlaEntitiesToDelete,
-            )
-        }
-
-        return changedStatusSlaItems
-    }
-
-    private fun parseStatusSla(
-        rawStatusSla: Any?,
-    ): List<StatusSlaDto> {
-
-        if (rawStatusSla == null) {
-            return emptyList()
-        }
-
-        val statusSlaList = rawStatusSla as? List<*>
-            ?: throwWrongStatusSlaValue()
-
-        return statusSlaList.map { rawItem ->
-
-            val item = rawItem as? Map<*, *>
-                ?: throwWrongStatusSlaValue()
-
-            val status = item[STATUS_FIELD] as? String
-
-            if (status.isNullOrBlank()) {
-                throwWrongStatusSlaValue()
-            }
-
-            val plannedDate = parseLocalDate(
-                value = item[PLANNED_DATE_FIELD],
-            )
-
-            StatusSlaDto(
-                status = status,
-                plannedDate = plannedDate,
-            )
-        }
-    }
-
-    private fun parseLocalDate(
-        value: Any?,
-    ): LocalDate {
-
-        return when (value) {
-            is LocalDate -> value
-
-            is String -> {
-                if (value.isBlank()) {
-                    throwWrongStatusSlaValue()
-                }
-
-                try {
-                    LocalDate.parse(value)
-                } catch (_: DateTimeParseException) {
-                    throwWrongStatusSlaValue()
-                }
-            }
-
-            else -> throwWrongStatusSlaValue()
-        }
-    }
-
-    private fun validateRequestedStatusesExist(
-        requestedStatusCodes: Set<String>,
-        activeStatusesByCode: Map<String, StatusEntity>,
+        request: Map<String, Any?>,
+        changedStatusSla: List<StatusSlaDto>,
+        userId: Long,
     ) {
-        val missingStatusCodes =
-            requestedStatusCodes.filterNot { requestedStatusCode ->
-                activeStatusesByCode.containsKey(requestedStatusCode)
-            }
+        val agentId = agent.id
 
-        if (missingStatusCodes.isNotEmpty()) {
-            throw AiBadRequestException(
-                errorCode = PROCESS_WITH_ID_NOT_FOUND,
-                message = MessageFormat.format(
-                    messageProvider[PROCESS_WITH_ID_NOT_FOUND],
-                    missingStatusCodes.joinToString(),
-                ),
+        /*
+         * Проверяем, привязана ли инициатива к CROSSGOAL.
+         */
+        val hasCrossgoalInitiative =
+            jiraIssueRepository.existsByAgentIdAndTypeAndProject(
+                agentId = agentId,
+                type = INITIATIVE_ISSUE_TYPE,
+                project = CROSSGOAL_PROJECT,
             )
+
+        /*
+         * Если связи с CROSSGOAL нет,
+         * синхронизация не требуется.
+         */
+        if (!hasCrossgoalInitiative) {
+            return
         }
+
+        val currentDateTime = LocalDateTime.now()
+
+        val jiraChangesToSave =
+            mutableListOf<JiraChangeEntity>()
+
+        createInitiativeChange(
+            agent = agent,
+            request = request,
+            created = currentDateTime,
+        )?.let { initiativeChange ->
+            jiraChangesToSave.add(initiativeChange)
+        }
+
+        createPlannedDateChange(
+            agent = agent,
+            changedStatusSla = changedStatusSla,
+            created = currentDateTime,
+        )?.let { plannedDateChange ->
+            jiraChangesToSave.add(plannedDateChange)
+        }
+
+        /*
+         * Ни одного изменения для JIRA не найдено.
+         */
+        if (jiraChangesToSave.isEmpty()) {
+            return
+        }
+
+        jiraChangeRepository.saveAll(
+            jiraChangesToSave
+        )
+
+        /*
+         * Если создана хотя бы одна запись jira_change,
+         * выставляем pendingUpdate.
+         */
+        agent.jiraStatus = PENDING_UPDATE_STATUS
+        agent.updated = currentDateTime
+        agent.updatedBy = userId
     }
 
-    private fun throwWrongStatusSlaValue(): Nothing {
-        throw AiBadRequestException(
-            errorCode = WRONG_STATUS_SLA_VALUE,
-            message = messageProvider[WRONG_STATUS_SLA_VALUE],
+    private fun createInitiativeChange(
+        agent: AIAgentEntity,
+        request: Map<String, Any?>,
+        created: LocalDateTime,
+    ): JiraChangeEntity? {
+
+        /*
+         * В payload помещаются только поля,
+         * перечисленные в документации.
+         *
+         * filterKeys сохраняет и поля со значением null,
+         * если ключ присутствовал в PATCH-запросе.
+         */
+        val initiativePayload = request
+            .filterKeys { fieldName ->
+                fieldName in INITIATIVE_SYNC_FIELDS
+            }
+
+        if (initiativePayload.isEmpty()) {
+            return null
+        }
+
+        return JiraChangeEntity(
+            agent = agent,
+            changeType = INITIATIVE_CHANGE_TYPE,
+            payload = objectMapper.valueToTree(
+                initiativePayload
+            ),
+            created = created,
+        )
+    }
+
+    private fun createPlannedDateChange(
+        agent: AIAgentEntity,
+        changedStatusSla: List<StatusSlaDto>,
+        created: LocalDateTime,
+    ): JiraChangeEntity? {
+
+        /*
+         * StatusSlaUpdater уже вернул только дельту.
+         */
+        if (changedStatusSla.isEmpty()) {
+            return null
+        }
+
+        val changedPlannedDates =
+            changedStatusSla.map { statusSla ->
+
+                val status =
+                    requireNotNull(statusSla.status)
+
+                val plannedDate =
+                    requireNotNull(statusSla.plannedDate)
+
+                JiraPlannedDateDto(
+                    status = status,
+                    plannedDate = plannedDate
+                        .atStartOfDay()
+                        .toInstant(ZoneOffset.UTC),
+                )
+            }
+
+        val plannedDatePayload =
+            JiraPlannedDatePayload(
+                statusSla = changedPlannedDates,
+            )
+
+        return JiraChangeEntity(
+            agent = agent,
+            changeType = PLANNED_DATE_CHANGE_TYPE,
+            payload = objectMapper.valueToTree(
+                plannedDatePayload
+            ),
+            created = created,
         )
     }
 
     private companion object {
-        const val STATUS_FIELD = "status"
-        const val PLANNED_DATE_FIELD = "plannedDate"
+        const val CROSSGOAL_PROJECT = "crossgoal"
+        const val INITIATIVE_ISSUE_TYPE = "initiative"
+
+        const val INITIATIVE_CHANGE_TYPE = "initiative"
+        const val PLANNED_DATE_CHANGE_TYPE = "plannedDate"
+
+        const val PENDING_UPDATE_STATUS = "pendingUpdate"
+
+        val INITIATIVE_SYNC_FIELDS = setOf(
+            "agentName",
+            "agentDescription",
+            "agentInitiativeType",
+            "block",
+            "division",
+            "strategies",
+            "processes",
+            "enablers",
+            "involvedResources",
+            "agentEffectOptimization",
+            "agentEffectRevenue",
+        )
     }
-} 
+}
+
+@Component
+open class JiraChangeUpdater(
+    private val jiraIssueRepository: JiraIssueRepository,
+    private val jiraChangeRepository: JiraChangeRepository,
+    private val objectMapper: ObjectMapper,
+) {
+
+    open fun update(
+        agent: AIAgentEntity,
+        request: Map<String, Any?>,
+        changedStatusSla: List<StatusSlaDto>,
+        userId: Long,
+    ) {
+        val agentId = agent.id
+
+        /*
+         * Проверяем, привязана ли инициатива к CROSSGOAL.
+         */
+        val hasCrossgoalInitiative =
+            jiraIssueRepository.existsByAgentIdAndTypeAndProject(
+                agentId = agentId,
+                type = INITIATIVE_ISSUE_TYPE,
+                project = CROSSGOAL_PROJECT,
+            )
+
+        /*
+         * Если связи с CROSSGOAL нет,
+         * синхронизация не требуется.
+         */
+        if (!hasCrossgoalInitiative) {
+            return
+        }
+
+        val currentDateTime = LocalDateTime.now()
+
+        val jiraChangesToSave =
+            mutableListOf<JiraChangeEntity>()
+
+        createInitiativeChange(
+            agent = agent,
+            request = request,
+            created = currentDateTime,
+        )?.let { initiativeChange ->
+            jiraChangesToSave.add(initiativeChange)
+        }
+
+        createPlannedDateChange(
+            agent = agent,
+            changedStatusSla = changedStatusSla,
+            created = currentDateTime,
+        )?.let { plannedDateChange ->
+            jiraChangesToSave.add(plannedDateChange)
+        }
+
+        /*
+         * Ни одного изменения для JIRA не найдено.
+         */
+        if (jiraChangesToSave.isEmpty()) {
+            return
+        }
+
+        jiraChangeRepository.saveAll(
+            jiraChangesToSave
+        )
+
+        /*
+         * Если создана хотя бы одна запись jira_change,
+         * выставляем pendingUpdate.
+         */
+        agent.jiraStatus = PENDING_UPDATE_STATUS
+        agent.updated = currentDateTime
+        agent.updatedBy = userId
+    }
+
+    private fun createInitiativeChange(
+        agent: AIAgentEntity,
+        request: Map<String, Any?>,
+        created: LocalDateTime,
+    ): JiraChangeEntity? {
+
+        /*
+         * В payload помещаются только поля,
+         * перечисленные в документации.
+         *
+         * filterKeys сохраняет и поля со значением null,
+         * если ключ присутствовал в PATCH-запросе.
+         */
+        val initiativePayload = request
+            .filterKeys { fieldName ->
+                fieldName in INITIATIVE_SYNC_FIELDS
+            }
+
+        if (initiativePayload.isEmpty()) {
+            return null
+        }
+
+        return JiraChangeEntity(
+            agent = agent,
+            changeType = INITIATIVE_CHANGE_TYPE,
+            payload = objectMapper.valueToTree(
+                initiativePayload
+            ),
+            created = created,
+        )
+    }
+
+    private fun createPlannedDateChange(
+        agent: AIAgentEntity,
+        changedStatusSla: List<StatusSlaDto>,
+        created: LocalDateTime,
+    ): JiraChangeEntity? {
+
+        /*
+         * StatusSlaUpdater уже вернул только дельту.
+         */
+        if (changedStatusSla.isEmpty()) {
+            return null
+        }
+
+        val changedPlannedDates =
+            changedStatusSla.map { statusSla ->
+
+                val status =
+                    requireNotNull(statusSla.status)
+
+                val plannedDate =
+                    requireNotNull(statusSla.plannedDate)
+
+                JiraPlannedDateDto(
+                    status = status,
+                    plannedDate = plannedDate
+                        .atStartOfDay()
+                        .toInstant(ZoneOffset.UTC),
+                )
+            }
+
+        val plannedDatePayload =
+            JiraPlannedDatePayload(
+                statusSla = changedPlannedDates,
+            )
+
+        return JiraChangeEntity(
+            agent = agent,
+            changeType = PLANNED_DATE_CHANGE_TYPE,
+            payload = objectMapper.valueToTree(
+                plannedDatePayload
+            ),
+            created = created,
+        )
+    }
+
+    private companion object {
+        const val CROSSGOAL_PROJECT = "crossgoal"
+        const val INITIATIVE_ISSUE_TYPE = "initiative"
+
+        const val INITIATIVE_CHANGE_TYPE = "initiative"
+        const val PLANNED_DATE_CHANGE_TYPE = "plannedDate"
+
+        const val PENDING_UPDATE_STATUS = "pendingUpdate"
+
+        val INITIATIVE_SYNC_FIELDS = setOf(
+            "agentName",
+            "agentDescription",
+            "agentInitiativeType",
+            "block",
+            "division",
+            "strategies",
+            "processes",
+            "enablers",
+            "involvedResources",
+            "agentEffectOptimization",
+            "agentEffectRevenue",
+        )
+    }
+}
+
+
 ```
