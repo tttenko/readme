@@ -1,121 +1,153 @@
 ```java
 
+@Component
+open class EnablerUpdater(
+    private val enablerRepository: EnablerRepository,
+    private val messageProvider: MessageProvider,
+) {
+
+    open fun update(
+        agent: AIAgentEntity,
+        rawEnablersValue: Any?,
+    ) {
+        val requestedEnablerIds = parseEnablerIds(
+            rawEnablersValue = rawEnablersValue,
+        )
+
+        /*
+         * null или пустой список означает удаление
+         * всех связей агента с энейблерами.
+         */
+        if (requestedEnablerIds.isEmpty()) {
+            agent.enablers.clear()
+            return
+        }
+
+        val requestedEnablers =
+            enablerRepository.findAllById(
+                requestedEnablerIds
+            )
+
+        validateRequestedEnablersExist(
+            requestedEnablerIds = requestedEnablerIds,
+            requestedEnablers = requestedEnablers,
+        )
+
+        /*
+         * AIAgentEntity является владельцем ManyToMany-связи,
+         * поэтому Hibernate самостоятельно синхронизирует
+         * таблицу agent_enabler при сохранении агента.
+         */
+        agent.enablers.clear()
+        agent.enablers.addAll(requestedEnablers)
+    }
+
+    private fun parseEnablerIds(
+        rawEnablersValue: Any?,
+    ): Set<Long> {
+        if (rawEnablersValue == null) {
+            return emptySet()
+        }
+
+        val rawEnablers =
+            rawEnablersValue as? List<*>
+                ?: throwWrongEnablersValue()
+
+        return rawEnablers
+            .map { rawEnablerId ->
+                val enablerId =
+                    (rawEnablerId as? Number)?.toLong()
+                        ?: throwWrongEnablersValue()
+
+                if (enablerId <= 0) {
+                    throwWrongEnablersValue()
+                }
+
+                enablerId
+            }
+            .toSet()
+    }
+
+    private fun validateRequestedEnablersExist(
+        requestedEnablerIds: Set<Long>,
+        requestedEnablers: List<EnablerEntity>,
+    ) {
+        val existingEnablerIds =
+            requestedEnablers
+                .mapNotNull { enabler ->
+                    enabler.id
+                }
+                .toSet()
+
+        val missingEnablerIds =
+            requestedEnablerIds - existingEnablerIds
+
+        if (missingEnablerIds.isNotEmpty()) {
+            throw AiBadRequestException(
+                errorCode = ENABLER_WITH_ID_NOT_FOUND,
+                message = MessageFormat.format(
+                    messageProvider[ENABLER_WITH_ID_NOT_FOUND],
+                    missingEnablerIds.joinToString(),
+                ),
+            )
+        }
+    }
+
+    private fun throwWrongEnablersValue(): Nothing {
+        throw AiBadRequestException(
+            errorCode = WRONG_ENABLERS_VALUE,
+            message = messageProvider[WRONG_ENABLERS_VALUE],
+        )
+    }
+}
+
 /**
- * Синхронизирует связанные с AI-агентом JIRA-инициативы проекта GIGAUSAGE.
+ * Обновляет связи AI-агента с энейблерами по переданному списку идентификаторов.
  *
- * Компонент валидирует входные значения, создаёт и обновляет актуальные
- * записи `jira_issue`, а также удаляет записи, отсутствующие в запросе.
+ * Проверяет корректность значений и существование энейблеров в справочнике.
+ * `null` или пустой список удаляет все текущие связи агента с энейблерами.
  */
 @Component
-open class GigausageIssueUpdater(
-    private val jiraIssueRepository: JiraIssueRepository,
+open class EnablerUpdater(
+    private val enablerRepository: EnablerRepository,
     private val messageProvider: MessageProvider,
 ) {
 
     /**
-     * Обновляет GIGAUSAGE-задачи агента по данным PATCH-запроса.
-     *
-     * Пустой список или `null` удаляет все связанные GIGAUSAGE-записи.
-     *
-     * @param agent обновляемый AI-агент.
-     * @param rawValue список JIRA-ключей или URL.
+     * Заменяет текущий набор энейблеров агента переданным набором.
      */
     open fun update(
         agent: AIAgentEntity,
-        rawValue: Any?,
+        rawEnablersValue: Any?,
     ) {
-        // текущая реализация
+        // ...
     }
 
     /**
-     * Преобразует необработанное значение запроса в список
-     * валидных GIGAUSAGE-ключей или URL.
-     *
-     * @param rawValue значение поля `gigausage`.
-     * @return нормализованный список строк.
-     * @throws AiBadRequestException если формат значения некорректен.
+     * Преобразует входное значение в уникальный набор идентификаторов энейблеров.
      */
-    private fun parseGigausageValues(
-        rawValue: Any?,
-    ): List<String> {
-        // текущая реализация
+    private fun parseEnablerIds(
+        rawEnablersValue: Any?,
+    ): Set<Long> {
+        // ...
     }
 
     /**
-     * Проверяет, является ли значение допустимым JIRA-ключом
-     * или URL проекта GIGAUSAGE.
-     *
-     * @param gigausage проверяемое значение.
-     * @return `true`, если значение соответствует допустимому формату.
+     * Проверяет существование всех запрошенных энейблеров в справочнике.
      */
-    private fun isValidGigausage(
-        gigausage: String,
-    ): Boolean {
-        // текущая реализация
-    }
-
-    /**
-     * Извлекает JIRA-ключ GIGAUSAGE из ключа или полного URL.
-     *
-     * @param gigausage JIRA-ключ или URL.
-     * @return извлечённый JIRA-ключ.
-     */
-    private fun extractJiraKey(
-        gigausage: String,
-    ): String {
-        // текущая реализация
-    }
-
-    /**
-     * Удаляет существующие JIRA-записи, ключи которых
-     * отсутствуют в текущем запросе.
-     *
-     * @param existingIssues существующие GIGAUSAGE-записи агента.
-     * @param requestedKeys ключи, переданные в запросе.
-     */
-    private fun deleteIssuesMissingInRequest(
-        existingIssues: List<JiraIssueEntity>,
-        requestedKeys: Set<String>,
+    private fun validateRequestedEnablersExist(
+        requestedEnablerIds: Set<Long>,
+        requestedEnablers: List<EnablerEntity>,
     ) {
-        // текущая реализация
+        // ...
     }
 
     /**
-     * Создаёт новые или обновляет существующие GIGAUSAGE-записи.
-     *
-     * @param agent обновляемый AI-агент.
-     * @param existingIssues существующие JIRA-записи агента.
-     * @param requestedValuesByKey значения запроса, сгруппированные по JIRA-ключу.
+     * Выбрасывает ошибку некорректного значения поля `enablers`.
      */
-    private fun createOrUpdateIssues(
-        agent: AIAgentEntity,
-        existingIssues: List<JiraIssueEntity>,
-        requestedValuesByKey: Map<String, String>,
-    ) {
-        // текущая реализация
-    }
-
-    /**
-     * Заполняет JIRA-ключ и URL сущности в зависимости
-     * от формата переданного значения.
-     *
-     * @param jiraIssue обновляемая сущность JIRA-задачи.
-     * @param gigausage JIRA-ключ или полный URL.
-     */
-    private fun updateJiraKeyAndUrl(
-        jiraIssue: JiraIssueEntity,
-        gigausage: String,
-    ) {
-        // текущая реализация
-    }
-
-    /**
-     * Завершает обработку ошибкой некорректного значения `gigausage`.
-     *
-     * @throws AiBadRequestException всегда.
-     */
-    private fun throwWrongGigausageValue(): Nothing {
-        // текущая реализация
+    private fun throwWrongEnablersValue(): Nothing {
+        // ...
     }
 }
+
 ```
