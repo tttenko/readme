@@ -1,152 +1,292 @@
 ```java
 
 @Component
-open class EnablerUpdater(
-    private val enablerRepository: EnablerRepository,
+open class ContactValidator(
     private val messageProvider: MessageProvider,
 ) {
 
-    open fun update(
-        agent: AIAgentEntity,
-        rawEnablersValue: Any?,
+    open fun validate(
+        contacts: List<ContactInfoActionDto>,
+        operationDetails: String,
     ) {
-        val requestedEnablerIds = parseEnablerIds(
-            rawEnablersValue = rawEnablersValue,
+        validateRequiredFields(
+            contacts = contacts,
+            operationDetails = operationDetails,
         )
 
-        /*
-         * null или пустой список означает удаление
-         * всех связей агента с энейблерами.
-         */
-        if (requestedEnablerIds.isEmpty()) {
-            agent.enablers.clear()
-            return
-        }
-
-        val requestedEnablers =
-            enablerRepository.findAllById(
-                requestedEnablerIds
-            )
-
-        validateRequestedEnablersExist(
-            requestedEnablerIds = requestedEnablerIds,
-            requestedEnablers = requestedEnablers,
+        validateDuplicateTypes(
+            contacts = contacts,
+            operationDetails = operationDetails,
         )
-
-        /*
-         * AIAgentEntity является владельцем ManyToMany-связи,
-         * поэтому Hibernate самостоятельно синхронизирует
-         * таблицу agent_enabler при сохранении агента.
-         */
-        agent.enablers.clear()
-        agent.enablers.addAll(requestedEnablers)
     }
 
-    private fun parseEnablerIds(
-        rawEnablersValue: Any?,
-    ): Set<Long> {
-        if (rawEnablersValue == null) {
-            return emptySet()
-        }
+    private fun validateRequiredFields(
+        contacts: List<ContactInfoActionDto>,
+        operationDetails: String,
+    ) {
+        contacts.forEach { contact ->
 
-        val rawEnablers =
-            rawEnablersValue as? List<*>
-                ?: throwWrongEnablersValue()
+            val hasType =
+                !contact.type.isNullOrBlank()
 
-        return rawEnablers
-            .map { rawEnablerId ->
-                val enablerId =
-                    (rawEnablerId as? Number)?.toLong()
-                        ?: throwWrongEnablersValue()
+            val hasUserId =
+                contact.userId != null
 
-                if (enablerId <= 0) {
-                    throwWrongEnablersValue()
-                }
+            val hasContact =
+                contact.contact != null
 
-                enablerId
+            /*
+             * Обязателен type и должен быть указан
+             * ровно один вариант:
+             * либо userId, либо contact.
+             */
+            if (
+                !hasType ||
+                hasUserId == hasContact
+            ) {
+                throwRequiredFieldsMissing(
+                    operationDetails = operationDetails,
+                )
             }
-            .toSet()
+
+            /*
+             * Для нового контакта, у которого нет ID,
+             * email обязателен: по нему выполняется
+             * поиск или создание ContactEntity.
+             */
+            if (
+                hasContact &&
+                contact.contact?.id == null &&
+                contact.contact?.email.isNullOrBlank()
+            ) {
+                throwRequiredFieldsMissing(
+                    operationDetails = operationDetails,
+                )
+            }
+        }
     }
 
-    private fun validateRequestedEnablersExist(
-        requestedEnablerIds: Set<Long>,
-        requestedEnablers: List<EnablerEntity>,
+    private fun validateDuplicateTypes(
+        contacts: List<ContactInfoActionDto>,
+        operationDetails: String,
     ) {
-        val existingEnablerIds =
-            requestedEnablers
-                .mapNotNull { enabler ->
-                    enabler.id
-                }
-                .toSet()
+        val duplicatedTypes = contacts
+            .mapNotNull { contact ->
+                contact.type
+            }
+            .groupingBy { type ->
+                type
+            }
+            .eachCount()
+            .filterValues { count ->
+                count > 1
+            }
 
-        val missingEnablerIds =
-            requestedEnablerIds - existingEnablerIds
-
-        if (missingEnablerIds.isNotEmpty()) {
+        if (duplicatedTypes.isNotEmpty()) {
             throw AiBadRequestException(
-                errorCode = ENABLER_WITH_ID_NOT_FOUND,
-                message = MessageFormat.format(
-                    messageProvider[ENABLER_WITH_ID_NOT_FOUND],
-                    missingEnablerIds.joinToString(),
-                ),
+                errorCode = DUPLICATE_CONTACT_TYPE,
+                message = messageProvider[DUPLICATE_CONTACT_TYPE],
+                operationDetails = operationDetails,
             )
         }
     }
 
-    private fun throwWrongEnablersValue(): Nothing {
+    private fun throwRequiredFieldsMissing(
+        operationDetails: String,
+    ): Nothing {
         throw AiBadRequestException(
-            errorCode = WRONG_ENABLERS_VALUE,
-            message = messageProvider[WRONG_ENABLERS_VALUE],
+            errorCode = REQUIRED_CONTACT_FIELDS_MISSING,
+            message = messageProvider[
+                REQUIRED_CONTACT_FIELDS_MISSING
+            ],
+            operationDetails = operationDetails,
         )
     }
 }
 
-/**
- * Обновляет связи AI-агента с энейблерами по переданному списку идентификаторов.
- *
- * Проверяет корректность значений и существование энейблеров в справочнике.
- * `null` или пустой список удаляет все текущие связи агента с энейблерами.
- */
 @Component
-open class EnablerUpdater(
-    private val enablerRepository: EnablerRepository,
+open class ContactUpdater(
+    private val contactRepository: ContactRepository,
+    private val contactValidator: ContactValidator,
     private val messageProvider: MessageProvider,
 ) {
 
-    /**
-     * Заменяет текущий набор энейблеров агента переданным набором.
-     */
     open fun update(
+        contacts: List<ContactInfoActionDto>,
         agent: AIAgentEntity,
-        rawEnablersValue: Any?,
+        operationDetails: String,
     ) {
-        // ...
+        /*
+         * Сначала полностью валидируем входные данные.
+         * Состояние агента до успешной валидации
+         * не изменяем.
+         */
+        contactValidator.validate(
+            contacts = contacts,
+            operationDetails = operationDetails,
+        )
+
+        /*
+         * По документации связи агента с контактами
+         * обновляются полной заменой.
+         */
+        agent.agentContact.clear()
+
+        contacts.forEach { contact ->
+
+            val contactType =
+                requireNotNull(contact.type)
+
+            val userId = contact.userId
+
+            if (userId != null) {
+                addUserContact(
+                    agent = agent,
+                    contactType = contactType,
+                    userId = userId,
+                )
+
+                return@forEach
+            }
+
+            val contactDto =
+                requireNotNull(contact.contact)
+
+            if (contactDto.id == null) {
+                addContactWithoutId(
+                    agent = agent,
+                    contactType = contactType,
+                    contactDto = contactDto,
+                )
+            } else {
+                addContactById(
+                    agent = agent,
+                    contactType = contactType,
+                    contactDto = contactDto,
+                    operationDetails = operationDetails,
+                )
+            }
+        }
     }
 
-    /**
-     * Преобразует входное значение в уникальный набор идентификаторов энейблеров.
-     */
-    private fun parseEnablerIds(
-        rawEnablersValue: Any?,
-    ): Set<Long> {
-        // ...
-    }
-
-    /**
-     * Проверяет существование всех запрошенных энейблеров в справочнике.
-     */
-    private fun validateRequestedEnablersExist(
-        requestedEnablerIds: Set<Long>,
-        requestedEnablers: List<EnablerEntity>,
+    private fun addUserContact(
+        agent: AIAgentEntity,
+        contactType: String,
+        userId: Long,
     ) {
-        // ...
+        agent.agentContact.add(
+            AgentContactEntity(
+                agent = agent,
+                type = contactType,
+                contact = null,
+                userId = userId,
+            )
+        )
     }
 
-    /**
-     * Выбрасывает ошибку некорректного значения поля `enablers`.
-     */
-    private fun throwWrongEnablersValue(): Nothing {
-        // ...
+    private fun addContactWithoutId(
+        agent: AIAgentEntity,
+        contactType: String,
+        contactDto: ContactDto,
+    ) {
+        val email =
+            requireNotNull(contactDto.email)
+
+        /*
+         * Если контакт с таким email уже есть,
+         * обновляем его ФИО.
+         *
+         * Если контакта нет, создаём новую запись.
+         */
+        val contactEntity =
+            contactRepository
+                .findFirstByEmail(email)
+                ?.apply {
+                    fio = contactDto.fio
+                }
+                ?: contactRepository.save(
+                    entity = ContactEntity(
+                        fio = contactDto.fio,
+                        email = email,
+                        invited = null,
+                    )
+                )
+
+        addContactRelation(
+            agent = agent,
+            contactType = contactType,
+            contactEntity = contactEntity,
+        )
+    }
+
+    private fun addContactById(
+        agent: AIAgentEntity,
+        contactType: String,
+        contactDto: ContactDto,
+        operationDetails: String,
+    ) {
+        val contactId =
+            requireNotNull(contactDto.id)
+
+        val contactEntity =
+            contactRepository.findByIdOrNull(
+                id = contactId,
+            )
+                ?: throw AiBadRequestException(
+                    errorCode =
+                        Metadata.ErrorMessages.CONTACT_NOT_FOUND,
+                    message = messageProvider[
+                        Metadata.ErrorMessages.CONTACT_NOT_FOUND
+                    ],
+                    operationDetails = operationDetails,
+                )
+
+        /*
+         * По документации email сверяется только тогда,
+         * когда он присутствует в запросе.
+         */
+        if (
+            contactDto.email != null &&
+            contactEntity.email != contactDto.email
+        ) {
+            throw AiBadRequestException(
+                errorCode =
+                    Metadata.ErrorMessages.CONTACT_NOT_DEFINED,
+                message = messageProvider[
+                    Metadata.ErrorMessages.CONTACT_NOT_DEFINED
+                ],
+                operationDetails = operationDetails,
+            )
+        }
+
+        /*
+         * Сохраняем существующее поведение:
+         * если ФИО пришло в запросе, обновляем его.
+         */
+        contactDto.fio?.let { requestedFio ->
+            contactEntity.fio = requestedFio
+        }
+
+        addContactRelation(
+            agent = agent,
+            contactType = contactType,
+            contactEntity = contactEntity,
+        )
+    }
+
+    private fun addContactRelation(
+        agent: AIAgentEntity,
+        contactType: String,
+        contactEntity: ContactEntity,
+    ) {
+        agent.agentContact.add(
+            AgentContactEntity(
+                agent = agent,
+                type = contactType,
+                contact = contactEntity,
+                userId = null,
+            )
+        )
     }
 }
 
