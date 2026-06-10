@@ -1,37 +1,38 @@
 ```java
-{
-  "agentName": "AI-агент интеграционного теста",
-  "agentDescription": "Описание для проверки PATCH",
-  "agentProblem": "Тестируем полное обновление",
-  "gigausage": [
-    "GIGAUSAGE-501",
-    "https://jira.sberbank.ru/browse/GIGAUSAGE-502"
-  ],
-  "agentEffectRevenue": 1500.50,
-  "agentEffectOptimization": 700.25,
-  "enablers": [1, 2],
-  "statusSla": [
-    {
-      "status": "pilot",
-      "plannedDate": "2026-10-01"
-    },
-    {
-      "status": "targetSolution",
-      "plannedDate": "2026-11-01"
-    }
-  ],
-  "contacts": [
-    {
-      "type": "owner",
-      "userId": 123
-    },
-    {
-      "type": "businessOwner",
-      "contact": {
-        "fio": "Иванов Иван",
-        "email": "integration.contact@example.com"
-      }
-    }
-  ]
-}
+select
+    id,
+    agent_name,
+    agent_description,
+    agent_problem,
+    agent_effect_revenue,
+    agent_effect_optimization,
+    import_status,
+    jira_status
+from ai_agent
+where id = 545;
+
+select
+    jira_key,
+    jira_url,
+    project,
+    type
+from jira_issue
+where agent_id = 545
+  and project = 'gigausage'
+  and type = 'initiative';
+
+select
+    change_type,
+    payload,
+    created
+from jira_change
+where agent_id = 545
+order by id desc
+limit 2;
+
+select *
+from agent_enabler
+where agent_id = 545;
+
+  
 ```
