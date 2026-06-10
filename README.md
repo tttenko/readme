@@ -1,11 +1,10 @@
 ```java
 select
-    ass.ai_agent_id,
-    s.code,
-    ass.planned_date,
-    ass.completed_date
-from agent_status_sla ass
-join status s
-    on s.id = ass.agent_status_id
-where ass.ai_agent_id = 545;
+    id,
+    change_type,
+    payload,
+    created
+from jira_change
+where agent_id = 545
+order by id desc;
 ```
