@@ -1,29 +1,44 @@
 ```java
 @ExtendWith(MockKExtension::class)
-class ContactValidatorTest {
+class ContactUpdaterTest {
+
+    @MockK
+    lateinit var contactRepository: ContactRepository
+
+    @MockK
+    lateinit var contactValidator: ContactValidator
 
     @MockK
     lateinit var messageProvider: MessageProvider
 
-    private lateinit var validator: ContactValidator
+    private lateinit var contactUpdater: ContactUpdater
 
     @BeforeEach
     fun setUp() {
-        validator = ContactValidator(
-            messageProvider = messageProvider
+        contactUpdater = ContactUpdater(
+            contactRepository = contactRepository,
+            contactValidator = contactValidator,
+            messageProvider = messageProvider,
         )
 
         every {
-            messageProvider[NoMandatoryField]
-        } returns "Отсутствуют обязательные поля"
+            contactValidator.validate(
+                contacts = any(),
+                operationDetails = any(),
+            )
+        } just Runs
 
         every {
-            messageProvider[DUPLICATE_CONTACT_TYPE]
-        } returns "Нельзя создать два контакта с одним типом"
+            messageProvider[CONTACT_NOT_FOUND]
+        } returns "Указанный контакт не найден"
+
+        every {
+            messageProvider[CONTACT_NOT_DEFINED]
+        } returns "Контакт не определён"
     }
 
     @Test
-    fun `validate should pass when contact has type and userId`() {
+    fun `update should validate contacts before update`() {
         val contacts = listOf(
             ContactInfoActionDto(
                 type = "owner",
@@ -32,8 +47,19 @@ class ContactValidatorTest {
             )
         )
 
-        assertDoesNotThrow {
-            validator.validate(
+        val agent = AIAgentEntity().apply {
+            id = 1L
+            agentContact = mutableListOf()
+        }
+
+        contactUpdater.update(
+            contacts = contacts,
+            agent = agent,
+            operationDetails = OPERATION_DETAILS,
+        )
+
+        verify(exactly = 1) {
+            contactValidator.validate(
                 contacts = contacts,
                 operationDetails = OPERATION_DETAILS,
             )
@@ -41,29 +67,175 @@ class ContactValidatorTest {
     }
 
     @Test
-    fun `validate should pass when contact has type and contact with email`() {
+    fun `update should replace existing contacts with user contact`() {
+        val oldContact = AgentContactEntity(
+            agent = null,
+            type = "old",
+            contact = ContactEntity(
+                fio = "Old Name",
+                email = "old@example.com",
+                invited = null,
+            ),
+            userId = null,
+        )
+
+        val agent = AIAgentEntity().apply {
+            id = 1L
+            agentContact = mutableListOf(oldContact)
+        }
+
         val contacts = listOf(
             ContactInfoActionDto(
                 type = "owner",
+                userId = 100L,
+                contact = null,
+            )
+        )
+
+        contactUpdater.update(
+            contacts = contacts,
+            agent = agent,
+            operationDetails = OPERATION_DETAILS,
+        )
+
+        assertEquals(1, agent.agentContact.size)
+
+        val actualContact = agent.agentContact.first()
+
+        assertEquals(agent, actualContact.agent)
+        assertEquals("owner", actualContact.type)
+        assertEquals(100L, actualContact.userId)
+        assertNull(actualContact.contact)
+    }
+
+    @Test
+    fun `update should reuse existing contact by email and update fio`() {
+        val existingContact = ContactEntity(
+            fio = "Old Name",
+            email = "test@example.com",
+            invited = null,
+        ).apply {
+            id = 10L
+        }
+
+        val agent = AIAgentEntity().apply {
+            id = 1L
+            agentContact = mutableListOf()
+        }
+
+        val contacts = listOf(
+            ContactInfoActionDto(
+                type = "businessOwner",
                 userId = null,
                 contact = ContactDto(
                     id = null,
-                    fio = "Ivan Ivanov",
+                    fio = "New Name",
                     email = "test@example.com",
                 ),
             )
         )
 
-        assertDoesNotThrow {
-            validator.validate(
-                contacts = contacts,
-                operationDetails = OPERATION_DETAILS,
+        every {
+            contactRepository.findFirstByEmail(
+                email = "test@example.com",
             )
+        } returns existingContact
+
+        contactUpdater.update(
+            contacts = contacts,
+            agent = agent,
+            operationDetails = OPERATION_DETAILS,
+        )
+
+        assertEquals(1, agent.agentContact.size)
+
+        val actualAgentContact = agent.agentContact.first()
+
+        assertEquals("businessOwner", actualAgentContact.type)
+        assertNull(actualAgentContact.userId)
+        assertEquals(existingContact, actualAgentContact.contact)
+        assertEquals("New Name", existingContact.fio)
+        assertEquals("test@example.com", existingContact.email)
+
+        verify(exactly = 1) {
+            contactRepository.findFirstByEmail(
+                email = "test@example.com",
+            )
+        }
+
+        verify(exactly = 0) {
+            contactRepository.save(any<ContactEntity>())
         }
     }
 
     @Test
-    fun `validate should pass when contact has type and contact with id`() {
+    fun `update should create new contact when contact with email not found`() {
+        val agent = AIAgentEntity().apply {
+            id = 1L
+            agentContact = mutableListOf()
+        }
+
+        val contacts = listOf(
+            ContactInfoActionDto(
+                type = "businessOwner",
+                userId = null,
+                contact = ContactDto(
+                    id = null,
+                    fio = "Ivan Ivanov",
+                    email = "ivan@example.com",
+                ),
+            )
+        )
+
+        every {
+            contactRepository.findFirstByEmail(
+                email = "ivan@example.com",
+            )
+        } returns null
+
+        every {
+            contactRepository.save(any<ContactEntity>())
+        } answers {
+            firstArg()
+        }
+
+        contactUpdater.update(
+            contacts = contacts,
+            agent = agent,
+            operationDetails = OPERATION_DETAILS,
+        )
+
+        assertEquals(1, agent.agentContact.size)
+
+        val actualAgentContact = agent.agentContact.first()
+        val actualContact = requireNotNull(actualAgentContact.contact)
+
+        assertEquals("businessOwner", actualAgentContact.type)
+        assertNull(actualAgentContact.userId)
+        assertEquals("Ivan Ivanov", actualContact.fio)
+        assertEquals("ivan@example.com", actualContact.email)
+        assertNull(actualContact.invited)
+
+        verify(exactly = 1) {
+            contactRepository.save(any<ContactEntity>())
+        }
+    }
+
+    @Test
+    fun `update should add contact relation by existing contact id`() {
+        val existingContact = ContactEntity(
+            fio = "Old Name",
+            email = "existing@example.com",
+            invited = null,
+        ).apply {
+            id = 10L
+        }
+
+        val agent = AIAgentEntity().apply {
+            id = 1L
+            agentContact = mutableListOf()
+        }
+
         val contacts = listOf(
             ContactInfoActionDto(
                 type = "owner",
@@ -76,196 +248,200 @@ class ContactValidatorTest {
             )
         )
 
-        assertDoesNotThrow {
-            validator.validate(
-                contacts = contacts,
-                operationDetails = OPERATION_DETAILS,
-            )
-        }
-    }
+        every {
+            contactRepository.findById(10L)
+        } returns Optional.of(existingContact)
 
-    @Test
-    fun `validate should pass when contacts list is empty`() {
-        assertDoesNotThrow {
-            validator.validate(
-                contacts = emptyList(),
-                operationDetails = OPERATION_DETAILS,
-            )
-        }
-    }
-
-    @Test
-    fun `validate should throw exception when type is null`() {
-        val contacts = listOf(
-            ContactInfoActionDto(
-                type = null,
-                userId = 1L,
-                contact = null,
-            )
+        contactUpdater.update(
+            contacts = contacts,
+            agent = agent,
+            operationDetails = OPERATION_DETAILS,
         )
 
-        val exception = assertThrows<AiBadRequestException> {
-            validator.validate(
-                contacts = contacts,
-                operationDetails = OPERATION_DETAILS,
-            )
-        }
+        assertEquals(1, agent.agentContact.size)
 
-        assertEquals(NoMandatoryField, exception.errorCode)
-        assertEquals("Отсутствуют обязательные поля", exception.message)
+        val actualAgentContact = agent.agentContact.first()
+
+        assertEquals("owner", actualAgentContact.type)
+        assertNull(actualAgentContact.userId)
+        assertEquals(existingContact, actualAgentContact.contact)
+        assertEquals("Old Name", existingContact.fio)
+        assertEquals("existing@example.com", existingContact.email)
     }
 
     @Test
-    fun `validate should throw exception when type is blank`() {
-        val contacts = listOf(
-            ContactInfoActionDto(
-                type = "   ",
-                userId = 1L,
-                contact = null,
-            )
-        )
-
-        val exception = assertThrows<AiBadRequestException> {
-            validator.validate(
-                contacts = contacts,
-                operationDetails = OPERATION_DETAILS,
-            )
+    fun `update should update fio when contact found by id and fio is passed`() {
+        val existingContact = ContactEntity(
+            fio = "Old Name",
+            email = "existing@example.com",
+            invited = null,
+        ).apply {
+            id = 10L
         }
 
-        assertEquals(NoMandatoryField, exception.errorCode)
-        assertEquals("Отсутствуют обязательные поля", exception.message)
-    }
+        val agent = AIAgentEntity().apply {
+            id = 1L
+            agentContact = mutableListOf()
+        }
 
-    @Test
-    fun `validate should throw exception when userId and contact are null`() {
         val contacts = listOf(
             ContactInfoActionDto(
                 type = "owner",
                 userId = null,
-                contact = null,
-            )
-        )
-
-        val exception = assertThrows<AiBadRequestException> {
-            validator.validate(
-                contacts = contacts,
-                operationDetails = OPERATION_DETAILS,
-            )
-        }
-
-        assertEquals(NoMandatoryField, exception.errorCode)
-        assertEquals("Отсутствуют обязательные поля", exception.message)
-    }
-
-    @Test
-    fun `validate should throw exception when userId and contact are both filled`() {
-        val contacts = listOf(
-            ContactInfoActionDto(
-                type = "owner",
-                userId = 1L,
                 contact = ContactDto(
-                    id = null,
-                    fio = "Ivan Ivanov",
-                    email = "test@example.com",
+                    id = 10L,
+                    fio = "New Name",
+                    email = "existing@example.com",
                 ),
             )
         )
 
-        val exception = assertThrows<AiBadRequestException> {
-            validator.validate(
-                contacts = contacts,
-                operationDetails = OPERATION_DETAILS,
-            )
-        }
+        every {
+            contactRepository.findById(10L)
+        } returns Optional.of(existingContact)
 
-        assertEquals(NoMandatoryField, exception.errorCode)
-        assertEquals("Отсутствуют обязательные поля", exception.message)
+        contactUpdater.update(
+            contacts = contacts,
+            agent = agent,
+            operationDetails = OPERATION_DETAILS,
+        )
+
+        assertEquals(1, agent.agentContact.size)
+        assertEquals("New Name", existingContact.fio)
+        assertEquals(existingContact, agent.agentContact.first().contact)
     }
 
     @Test
-    fun `validate should throw exception when contact has no id and no email`() {
+    fun `update should throw exception when contact by id not found`() {
+        val agent = AIAgentEntity().apply {
+            id = 1L
+            agentContact = mutableListOf()
+        }
+
         val contacts = listOf(
             ContactInfoActionDto(
                 type = "owner",
                 userId = null,
                 contact = ContactDto(
-                    id = null,
-                    fio = "Ivan Ivanov",
+                    id = 999L,
+                    fio = null,
                     email = null,
                 ),
             )
         )
 
+        every {
+            contactRepository.findById(999L)
+        } returns Optional.empty()
+
         val exception = assertThrows<AiBadRequestException> {
-            validator.validate(
+            contactUpdater.update(
                 contacts = contacts,
+                agent = agent,
                 operationDetails = OPERATION_DETAILS,
             )
         }
 
-        assertEquals(NoMandatoryField, exception.errorCode)
-        assertEquals("Отсутствуют обязательные поля", exception.message)
+        assertEquals(CONTACT_NOT_FOUND, exception.errorCode)
+        assertEquals("Указанный контакт не найден", exception.message)
     }
 
     @Test
-    fun `validate should throw exception when contact has no id and blank email`() {
+    fun `update should throw exception when contact email does not match existing contact email`() {
+        val existingContact = ContactEntity(
+            fio = "Old Name",
+            email = "existing@example.com",
+            invited = null,
+        ).apply {
+            id = 10L
+        }
+
+        val agent = AIAgentEntity().apply {
+            id = 1L
+            agentContact = mutableListOf()
+        }
+
         val contacts = listOf(
             ContactInfoActionDto(
                 type = "owner",
                 userId = null,
                 contact = ContactDto(
-                    id = null,
-                    fio = "Ivan Ivanov",
-                    email = "   ",
+                    id = 10L,
+                    fio = null,
+                    email = "wrong@example.com",
                 ),
             )
         )
 
+        every {
+            contactRepository.findById(10L)
+        } returns Optional.of(existingContact)
+
         val exception = assertThrows<AiBadRequestException> {
-            validator.validate(
+            contactUpdater.update(
                 contacts = contacts,
+                agent = agent,
                 operationDetails = OPERATION_DETAILS,
             )
         }
 
-        assertEquals(NoMandatoryField, exception.errorCode)
-        assertEquals("Отсутствуют обязательные поля", exception.message)
+        assertEquals(CONTACT_NOT_DEFINED, exception.errorCode)
+        assertEquals("Контакт не определён", exception.message)
     }
 
     @Test
-    fun `validate should throw exception when contacts have duplicate types`() {
+    fun `update should not clear contacts when validator throws exception`() {
+        val oldAgentContact = AgentContactEntity(
+            agent = null,
+            type = "old",
+            contact = ContactEntity(
+                fio = "Old Name",
+                email = "old@example.com",
+                invited = null,
+            ),
+            userId = null,
+        )
+
+        val agent = AIAgentEntity().apply {
+            id = 1L
+            agentContact = mutableListOf(oldAgentContact)
+        }
+
         val contacts = listOf(
             ContactInfoActionDto(
-                type = "owner",
-                userId = 1L,
-                contact = null,
-            ),
-            ContactInfoActionDto(
-                type = "owner",
-                userId = 2L,
+                type = null,
+                userId = null,
                 contact = null,
             )
         )
 
-        val exception = assertThrows<AiBadRequestException> {
-            validator.validate(
+        every {
+            contactValidator.validate(
                 contacts = contacts,
+                operationDetails = OPERATION_DETAILS,
+            )
+        } throws AiBadRequestException(
+            errorCode = NoMandatoryField,
+            message = "Отсутствуют обязательные поля",
+            operationDetails = OPERATION_DETAILS,
+        )
+
+        assertThrows<AiBadRequestException> {
+            contactUpdater.update(
+                contacts = contacts,
+                agent = agent,
                 operationDetails = OPERATION_DETAILS,
             )
         }
 
-        assertEquals(DUPLICATE_CONTACT_TYPE, exception.errorCode)
-        assertEquals(
-            "Нельзя создать два контакта с одним типом",
-            exception.message,
-        )
+        assertEquals(1, agent.agentContact.size)
+        assertEquals(oldAgentContact, agent.agentContact.first())
     }
 
     private companion object {
         const val OPERATION_DETAILS = "Patch agent contacts"
     }
 }
-
 
   
 ```
