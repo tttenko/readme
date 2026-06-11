@@ -1,550 +1,311 @@
 ```java
 @ExtendWith(MockKExtension::class)
-class JiraChangeCreatorTest {
+class AgentEnablerUpdaterTest {
 
     @MockK
-    lateinit var jiraIssueRepository: JiraIssueRepository
+    lateinit var enablerRepository: EnablerRepository
 
     @MockK
-    lateinit var jiraChangeRepository: JiraChangeRepository
+    lateinit var messageProvider: MessageProvider
 
-    private lateinit var objectMapper: ObjectMapper
-
-    private lateinit var jiraChangeCreator: JiraChangeCreator
+    private lateinit var agentEnablerUpdater: AgentEnablerUpdater
 
     @BeforeEach
     fun setUp() {
-        objectMapper = ObjectMapper()
-            .registerModule(JavaTimeModule())
-            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-
-        jiraChangeCreator = JiraChangeCreator(
-            jiraIssueRepository = jiraIssueRepository,
-            jiraChangeRepository = jiraChangeRepository,
-            objectMapper = objectMapper,
+        agentEnablerUpdater = AgentEnablerUpdater(
+            enablerRepository = enablerRepository,
+            messageProvider = messageProvider,
         )
+
+        every {
+            messageProvider[WRONG_ENABLERS_VALUE]
+        } returns "Некорректное значение enablers"
+
+        every {
+            messageProvider[ENABLER_NOT_FOUND]
+        } returns "Значение {0} не найдено в справочнике"
     }
 
     @Test
-    fun `createChanges should do nothing when agent has no crossgoal initiative`() {
-        val agent = agent(id = 1L)
+    fun `updateEnablers should clear enablers when raw value is null`() {
+        val existingEnabler = enabler(id = 1L)
+        val agentEnablers = mutableSetOf(existingEnabler)
+        val agent = agent(enablers = agentEnablers)
 
-        every {
-            jiraIssueRepository.existsByAgentIdAndTypeAndProject(
-                agentId = 1L,
-                type = "initiative",
-                project = "crossgoal",
-            )
-        } returns false
-
-        jiraChangeCreator.createChanges(
+        agentEnablerUpdater.updateEnablers(
             agent = agent,
-            request = mapOf(
-                "agentName" to "Test agent",
-            ),
-            changedStatusSla = emptyList(),
-            userId = 100L,
+            rawEnablersValue = null,
         )
+
+        assertTrue(agentEnablers.isEmpty())
 
         verify(exactly = 0) {
-            jiraChangeRepository.saveAll(
-                entities = any<List<JiraChangeEntity>>(),
-            )
+            enablerRepository.findAllById(any<Iterable<Long>>())
         }
+    }
+
+    @Test
+    fun `updateEnablers should clear enablers when raw value is empty list`() {
+        val existingEnabler = enabler(id = 1L)
+        val agentEnablers = mutableSetOf(existingEnabler)
+        val agent = agent(enablers = agentEnablers)
+
+        agentEnablerUpdater.updateEnablers(
+            agent = agent,
+            rawEnablersValue = emptyList<Long>(),
+        )
+
+        assertTrue(agentEnablers.isEmpty())
 
         verify(exactly = 0) {
-            agent.jiraStatus = any()
-        }
-
-        verify(exactly = 0) {
-            agent.updatedBy = any()
+            enablerRepository.findAllById(any<Iterable<Long>>())
         }
     }
 
     @Test
-    fun `createChanges should do nothing when crossgoal exists but request has no jira fields and status sla is empty`() {
-        val agent = agent(id = 1L)
+    fun `updateEnablers should replace current enablers with requested enablers`() {
+        val oldEnabler = enabler(id = 1L)
+        val requestedEnabler1 = enabler(id = 2L)
+        val requestedEnabler2 = enabler(id = 3L)
+
+        val agentEnablers = mutableSetOf(oldEnabler)
+        val agent = agent(enablers = agentEnablers)
 
         every {
-            jiraIssueRepository.existsByAgentIdAndTypeAndProject(
-                agentId = 1L,
-                type = "initiative",
-                project = "crossgoal",
+            enablerRepository.findAllById(
+                match<Iterable<Long>> { ids ->
+                    ids.toSet() == setOf(2L, 3L)
+                }
             )
-        } returns true
+        } returns listOf(
+            requestedEnabler1,
+            requestedEnabler2,
+        )
 
-        jiraChangeCreator.createChanges(
+        agentEnablerUpdater.updateEnablers(
             agent = agent,
-            request = mapOf(
-                "platforms" to emptyList<Any>(),
-                "jiraStatus" to "done",
-            ),
-            changedStatusSla = emptyList(),
-            userId = 100L,
+            rawEnablersValue = listOf(2, 3),
         )
 
-        verify(exactly = 0) {
-            jiraChangeRepository.saveAll(
-                entities = any<List<JiraChangeEntity>>(),
+        assertEquals(
+            setOf(requestedEnabler1, requestedEnabler2),
+            agentEnablers,
+        )
+
+        verify(exactly = 1) {
+            enablerRepository.findAllById(
+                match<Iterable<Long>> { ids ->
+                    ids.toSet() == setOf(2L, 3L)
+                }
             )
-        }
-
-        verify(exactly = 0) {
-            agent.jiraStatus = any()
-        }
-
-        verify(exactly = 0) {
-            agent.updatedBy = any()
         }
     }
 
     @Test
-    fun `createChanges should create initiative change when request contains jira sync fields`() {
-        val agent = agent(id = 1L)
-        val savedChangesSlot = slot<List<JiraChangeEntity>>()
+    fun `updateEnablers should convert duplicate ids to unique set`() {
+        val requestedEnabler1 = enabler(id = 1L)
+        val requestedEnabler2 = enabler(id = 2L)
 
-        val request: Map<String, Any?> = mapOf(
-            "agentName" to "AI Agent",
-            "agentDescription" to null,
-            "agentEffectRevenue" to 100,
-            "platforms" to emptyList<Any>(),
-            "jiraStatus" to "done",
+        val agentEnablers = mutableSetOf<EnablerEntity>()
+        val agent = agent(enablers = agentEnablers)
+
+        every {
+            enablerRepository.findAllById(
+                match<Iterable<Long>> { ids ->
+                    ids.toSet() == setOf(1L, 2L)
+                }
+            )
+        } returns listOf(
+            requestedEnabler1,
+            requestedEnabler2,
         )
 
-        every {
-            jiraIssueRepository.existsByAgentIdAndTypeAndProject(
-                agentId = 1L,
-                type = "initiative",
-                project = "crossgoal",
-            )
-        } returns true
-
-        every {
-            jiraChangeRepository.saveAll(
-                entities = capture(savedChangesSlot),
-            )
-        } answers {
-            savedChangesSlot.captured
-        }
-
-        every {
-            agent.jiraStatus = "pendingUpdate"
-        } just Runs
-
-        every {
-            agent.updated = any()
-        } just Runs
-
-        every {
-            agent.updatedBy = 100L
-        } just Runs
-
-        jiraChangeCreator.createChanges(
+        agentEnablerUpdater.updateEnablers(
             agent = agent,
-            request = request,
-            changedStatusSla = emptyList(),
-            userId = 100L,
+            rawEnablersValue = listOf(1, 1, 2),
         )
 
-        val savedChanges = savedChangesSlot.captured
-
-        assertEquals(1, savedChanges.size)
-
-        val initiativeChange = savedChanges.first()
-
-        assertEquals(agent, initiativeChange.agent)
-        assertEquals("initiative", initiativeChange.changeType)
-
-        assertEquals(
-            "AI Agent",
-            initiativeChange.payload["agentName"].asText(),
-        )
-
-        assertTrue(
-            initiativeChange.payload.has("agentDescription"),
-        )
-
-        assertTrue(
-            initiativeChange.payload["agentDescription"].isNull,
-        )
-
-        assertEquals(
-            100,
-            initiativeChange.payload["agentEffectRevenue"].asInt(),
-        )
-
-        assertFalse(
-            initiativeChange.payload.has("platforms"),
-        )
-
-        assertFalse(
-            initiativeChange.payload.has("jiraStatus"),
-        )
+        assertEquals(2, agentEnablers.size)
+        assertTrue(agentEnablers.contains(requestedEnabler1))
+        assertTrue(agentEnablers.contains(requestedEnabler2))
 
         verify(exactly = 1) {
-            agent.jiraStatus = "pendingUpdate"
-        }
-
-        verify(exactly = 1) {
-            agent.updatedBy = 100L
+            enablerRepository.findAllById(
+                match<Iterable<Long>> { ids ->
+                    ids.toSet() == setOf(1L, 2L)
+                }
+            )
         }
     }
 
     @Test
-    fun `createChanges should create plannedDate change when changedStatusSla is not empty`() {
-        val agent = agent(id = 1L)
-        val savedChangesSlot = slot<List<JiraChangeEntity>>()
+    fun `updateEnablers should throw exception when raw value is not list`() {
+        val existingEnabler = enabler(id = 1L)
+        val agentEnablers = mutableSetOf(existingEnabler)
+        val agent = agent(enablers = agentEnablers)
 
-        val changedStatusSla = listOf(
-            StatusSlaDto(
-                status = "pilot",
-                plannedDate = LocalDate.of(2026, 5, 3),
-            )
-        )
-
-        every {
-            jiraIssueRepository.existsByAgentIdAndTypeAndProject(
-                agentId = 1L,
-                type = "initiative",
-                project = "crossgoal",
-            )
-        } returns true
-
-        every {
-            jiraChangeRepository.saveAll(
-                entities = capture(savedChangesSlot),
-            )
-        } answers {
-            savedChangesSlot.captured
-        }
-
-        every {
-            agent.jiraStatus = "pendingUpdate"
-        } just Runs
-
-        every {
-            agent.updated = any()
-        } just Runs
-
-        every {
-            agent.updatedBy = 100L
-        } just Runs
-
-        jiraChangeCreator.createChanges(
-            agent = agent,
-            request = emptyMap(),
-            changedStatusSla = changedStatusSla,
-            userId = 100L,
-        )
-
-        val savedChanges = savedChangesSlot.captured
-
-        assertEquals(1, savedChanges.size)
-
-        val plannedDateChange = savedChanges.first()
-
-        assertEquals(agent, plannedDateChange.agent)
-        assertEquals("plannedDate", plannedDateChange.changeType)
-
-        val statusSlaNode =
-            plannedDateChange.payload["statusSla"]
-
-        assertEquals(1, statusSlaNode.size())
-
-        assertEquals(
-            "pilot",
-            statusSlaNode[0]["status"].asText(),
-        )
-
-        assertEquals(
-            "2026-05-03T00:00:00Z",
-            statusSlaNode[0]["plannedDate"].asText(),
-        )
-
-        verify(exactly = 1) {
-            agent.jiraStatus = "pendingUpdate"
-        }
-
-        verify(exactly = 1) {
-            agent.updatedBy = 100L
-        }
-    }
-
-    @Test
-    fun `createChanges should create initiative and plannedDate changes together`() {
-        val agent = agent(id = 1L)
-        val savedChangesSlot = slot<List<JiraChangeEntity>>()
-
-        val request: Map<String, Any?> = mapOf(
-            "agentName" to "AI Agent",
-            "enablers" to listOf(1, 2),
-        )
-
-        val changedStatusSla = listOf(
-            StatusSlaDto(
-                status = "pilot",
-                plannedDate = LocalDate.of(2026, 5, 3),
-            )
-        )
-
-        every {
-            jiraIssueRepository.existsByAgentIdAndTypeAndProject(
-                agentId = 1L,
-                type = "initiative",
-                project = "crossgoal",
-            )
-        } returns true
-
-        every {
-            jiraChangeRepository.saveAll(
-                entities = capture(savedChangesSlot),
-            )
-        } answers {
-            savedChangesSlot.captured
-        }
-
-        every {
-            agent.jiraStatus = "pendingUpdate"
-        } just Runs
-
-        every {
-            agent.updated = any()
-        } just Runs
-
-        every {
-            agent.updatedBy = 100L
-        } just Runs
-
-        jiraChangeCreator.createChanges(
-            agent = agent,
-            request = request,
-            changedStatusSla = changedStatusSla,
-            userId = 100L,
-        )
-
-        val savedChanges = savedChangesSlot.captured
-
-        assertEquals(2, savedChanges.size)
-
-        val initiativeChange =
-            savedChanges.first { jiraChange ->
-                jiraChange.changeType == "initiative"
-            }
-
-        val plannedDateChange =
-            savedChanges.first { jiraChange ->
-                jiraChange.changeType == "plannedDate"
-            }
-
-        assertEquals(
-            "AI Agent",
-            initiativeChange.payload["agentName"].asText(),
-        )
-
-        assertEquals(
-            1,
-            initiativeChange.payload["enablers"][0].asInt(),
-        )
-
-        assertEquals(
-            2,
-            initiativeChange.payload["enablers"][1].asInt(),
-        )
-
-        assertEquals(
-            "pilot",
-            plannedDateChange.payload["statusSla"][0]["status"].asText(),
-        )
-
-        verify(exactly = 1) {
-            jiraChangeRepository.saveAll(
-                entities = any<List<JiraChangeEntity>>(),
-            )
-        }
-
-        verify(exactly = 1) {
-            agent.jiraStatus = "pendingUpdate"
-        }
-
-        verify(exactly = 1) {
-            agent.updatedBy = 100L
-        }
-    }
-
-    @Test
-    fun `createChanges should keep only initiative sync fields in initiative payload`() {
-        val agent = agent(id = 1L)
-        val savedChangesSlot = slot<List<JiraChangeEntity>>()
-
-        val request: Map<String, Any?> = mapOf(
-            "agentName" to "AI Agent",
-            "agentDescription" to "Description",
-            "agentInitiativeType" to "agent",
-            "block" to "cib",
-            "division" to "DEVU",
-            "strategies" to listOf(1),
-            "processes" to listOf(2),
-            "enablers" to listOf(3),
-            "involvedResources" to listOf(
-                mapOf(
-                    "value" to 10,
-                    "source" to "steerco",
-                    "type" to "business",
-                )
-            ),
-            "agentEffectOptimization" to 100,
-            "agentEffectRevenue" to 200,
-            "platforms" to listOf("web"),
-            "statusSla" to emptyList<Any>(),
-            "jiraStatus" to "done",
-            "gigausage" to listOf("GIGAUSAGE-1"),
-        )
-
-        every {
-            jiraIssueRepository.existsByAgentIdAndTypeAndProject(
-                agentId = 1L,
-                type = "initiative",
-                project = "crossgoal",
-            )
-        } returns true
-
-        every {
-            jiraChangeRepository.saveAll(
-                entities = capture(savedChangesSlot),
-            )
-        } answers {
-            savedChangesSlot.captured
-        }
-
-        every {
-            agent.jiraStatus = "pendingUpdate"
-        } just Runs
-
-        every {
-            agent.updated = any()
-        } just Runs
-
-        every {
-            agent.updatedBy = 100L
-        } just Runs
-
-        jiraChangeCreator.createChanges(
-            agent = agent,
-            request = request,
-            changedStatusSla = emptyList(),
-            userId = 100L,
-        )
-
-        val payload =
-            savedChangesSlot.captured.first().payload
-
-        assertTrue(payload.has("agentName"))
-        assertTrue(payload.has("agentDescription"))
-        assertTrue(payload.has("agentInitiativeType"))
-        assertTrue(payload.has("block"))
-        assertTrue(payload.has("division"))
-        assertTrue(payload.has("strategies"))
-        assertTrue(payload.has("processes"))
-        assertTrue(payload.has("enablers"))
-        assertTrue(payload.has("involvedResources"))
-        assertTrue(payload.has("agentEffectOptimization"))
-        assertTrue(payload.has("agentEffectRevenue"))
-
-        assertFalse(payload.has("platforms"))
-        assertFalse(payload.has("statusSla"))
-        assertFalse(payload.has("jiraStatus"))
-        assertFalse(payload.has("gigausage"))
-    }
-
-    @Test
-    fun `createChanges should throw exception when changed status sla has null status`() {
-        val agent = agent(id = 1L)
-
-        val changedStatusSla = listOf(
-            StatusSlaDto(
-                status = null,
-                plannedDate = LocalDate.of(2026, 5, 3),
-            )
-        )
-
-        every {
-            jiraIssueRepository.existsByAgentIdAndTypeAndProject(
-                agentId = 1L,
-                type = "initiative",
-                project = "crossgoal",
-            )
-        } returns true
-
-        assertThrows<IllegalArgumentException> {
-            jiraChangeCreator.createChanges(
+        val exception = assertThrows<AiBadRequestException> {
+            agentEnablerUpdater.updateEnablers(
                 agent = agent,
-                request = emptyMap(),
-                changedStatusSla = changedStatusSla,
-                userId = 100L,
+                rawEnablersValue = "wrong value",
             )
         }
 
+        assertEquals(WRONG_ENABLERS_VALUE, exception.errorCode)
+        assertEquals("Некорректное значение enablers", exception.message)
+
+        assertEquals(setOf(existingEnabler), agentEnablers)
+
         verify(exactly = 0) {
-            jiraChangeRepository.saveAll(
-                entities = any<List<JiraChangeEntity>>(),
-            )
+            enablerRepository.findAllById(any<Iterable<Long>>())
         }
     }
 
     @Test
-    fun `createChanges should throw exception when changed status sla has null plannedDate`() {
-        val agent = agent(id = 1L)
+    fun `updateEnablers should throw exception when list item is not number`() {
+        val existingEnabler = enabler(id = 1L)
+        val agentEnablers = mutableSetOf(existingEnabler)
+        val agent = agent(enablers = agentEnablers)
 
-        val changedStatusSla = listOf(
-            StatusSlaDto(
-                status = "pilot",
-                plannedDate = null,
-            )
-        )
-
-        every {
-            jiraIssueRepository.existsByAgentIdAndTypeAndProject(
-                agentId = 1L,
-                type = "initiative",
-                project = "crossgoal",
-            )
-        } returns true
-
-        assertThrows<IllegalArgumentException> {
-            jiraChangeCreator.createChanges(
+        val exception = assertThrows<AiBadRequestException> {
+            agentEnablerUpdater.updateEnablers(
                 agent = agent,
-                request = emptyMap(),
-                changedStatusSla = changedStatusSla,
-                userId = 100L,
+                rawEnablersValue = listOf("1"),
             )
         }
+
+        assertEquals(WRONG_ENABLERS_VALUE, exception.errorCode)
+        assertEquals(setOf(existingEnabler), agentEnablers)
 
         verify(exactly = 0) {
-            jiraChangeRepository.saveAll(
-                entities = any<List<JiraChangeEntity>>(),
+            enablerRepository.findAllById(any<Iterable<Long>>())
+        }
+    }
+
+    @Test
+    fun `updateEnablers should throw exception when enabler id is zero`() {
+        val existingEnabler = enabler(id = 1L)
+        val agentEnablers = mutableSetOf(existingEnabler)
+        val agent = agent(enablers = agentEnablers)
+
+        val exception = assertThrows<AiBadRequestException> {
+            agentEnablerUpdater.updateEnablers(
+                agent = agent,
+                rawEnablersValue = listOf(0),
             )
         }
+
+        assertEquals(WRONG_ENABLERS_VALUE, exception.errorCode)
+        assertEquals(setOf(existingEnabler), agentEnablers)
+
+        verify(exactly = 0) {
+            enablerRepository.findAllById(any<Iterable<Long>>())
+        }
+    }
+
+    @Test
+    fun `updateEnablers should throw exception when enabler id is negative`() {
+        val existingEnabler = enabler(id = 1L)
+        val agentEnablers = mutableSetOf(existingEnabler)
+        val agent = agent(enablers = agentEnablers)
+
+        val exception = assertThrows<AiBadRequestException> {
+            agentEnablerUpdater.updateEnablers(
+                agent = agent,
+                rawEnablersValue = listOf(-1),
+            )
+        }
+
+        assertEquals(WRONG_ENABLERS_VALUE, exception.errorCode)
+        assertEquals(setOf(existingEnabler), agentEnablers)
+
+        verify(exactly = 0) {
+            enablerRepository.findAllById(any<Iterable<Long>>())
+        }
+    }
+
+    @Test
+    fun `updateEnablers should throw exception when requested enabler does not exist`() {
+        val existingAgentEnabler = enabler(id = 10L)
+        val foundEnabler = enabler(id = 1L)
+
+        val agentEnablers = mutableSetOf(existingAgentEnabler)
+        val agent = agent(enablers = agentEnablers)
+
+        every {
+            enablerRepository.findAllById(
+                match<Iterable<Long>> { ids ->
+                    ids.toSet() == setOf(1L, 999L)
+                }
+            )
+        } returns listOf(foundEnabler)
+
+        val exception = assertThrows<AiBadRequestException> {
+            agentEnablerUpdater.updateEnablers(
+                agent = agent,
+                rawEnablersValue = listOf(1, 999),
+            )
+        }
+
+        assertEquals(ENABLER_NOT_FOUND, exception.errorCode)
+        assertEquals(
+            "Значение 999 не найдено в справочнике",
+            exception.message,
+        )
+
+        /*
+         * Важно: текущие связи не должны быть очищены,
+         * потому что ошибка произошла до agent.enablers.clear().
+         */
+        assertEquals(setOf(existingAgentEnabler), agentEnablers)
+    }
+
+    @Test
+    fun `updateEnablers should accept different number types`() {
+        val enabler1 = enabler(id = 1L)
+        val enabler2 = enabler(id = 2L)
+        val enabler3 = enabler(id = 3L)
+
+        val agentEnablers = mutableSetOf<EnablerEntity>()
+        val agent = agent(enablers = agentEnablers)
+
+        every {
+            enablerRepository.findAllById(
+                match<Iterable<Long>> { ids ->
+                    ids.toSet() == setOf(1L, 2L, 3L)
+                }
+            )
+        } returns listOf(enabler1, enabler2, enabler3)
+
+        agentEnablerUpdater.updateEnablers(
+            agent = agent,
+            rawEnablersValue = listOf(
+                1,
+                2L,
+                3.toShort(),
+            ),
+        )
+
+        assertEquals(setOf(enabler1, enabler2, enabler3), agentEnablers)
     }
 
     private fun agent(
-        id: Long,
+        enablers: MutableSet<EnablerEntity>,
     ): AIAgentEntity {
         return mockk<AIAgentEntity>(relaxed = true) {
             every {
+                this@mockk.enablers
+            } returns enablers
+        }
+    }
+
+    private fun enabler(
+        id: Long,
+    ): EnablerEntity {
+        return mockk<EnablerEntity>(relaxed = true) {
+            every {
                 this@mockk.id
             } returns id
-
-            every {
-                this@mockk.jiraStatus = any()
-            } just Runs
-
-            every {
-                this@mockk.updated = any()
-            } just Runs
-
-            every {
-                this@mockk.updatedBy = any()
-            } just Runs
         }
     }
 }
