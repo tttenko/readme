@@ -1,499 +1,505 @@
 ```java
 @ExtendWith(MockKExtension::class)
-class StatusSlaUpdaterTest {
+class GigausageIssueUpdaterTest {
 
     @MockK
-    lateinit var agentStatusSlaRepository: AgentStatusSlaRepository
-
-    @MockK
-    lateinit var statusRepository: StatusRepository
+    lateinit var jiraIssueRepository: JiraIssueRepository
 
     @MockK
     lateinit var messageProvider: MessageProvider
 
-    private lateinit var statusSlaUpdater: StatusSlaUpdater
+    private lateinit var gigausageIssueUpdater: GigausageIssueUpdater
 
     @BeforeEach
     fun setUp() {
-        statusSlaUpdater = StatusSlaUpdater(
-            agentStatusSlaRepository = agentStatusSlaRepository,
-            statusRepository = statusRepository,
+        gigausageIssueUpdater = GigausageIssueUpdater(
+            jiraIssueRepository = jiraIssueRepository,
             messageProvider = messageProvider,
         )
 
         every {
-            messageProvider[WRONG_STATUS_SLA_VALUE]
-        } returns "Некорректное значение statusSla"
-
-        every {
-            messageProvider[PROCESS_WITH_ID_NOT_FOUND]
-        } returns "Значение {0} не найдено в справочнике"
+            messageProvider[WRONG_WRONG_GIGAUSAGE]
+        } returns "Некорректное значение gigausage"
     }
 
     @Test
-    fun `update should delete all persisted status sla when raw value is null`() {
+    fun `update should delete all existing issues when raw value is null`() {
         val agent = agent(id = 1L)
-        val persistedStatusSla = persistedStatusSla(
-            statusId = 10L,
-            plannedDate = LocalDateTime.of(2026, 5, 1, 10, 0),
+
+        val existingIssue = jiraIssue(
+            agent = agent,
+            jiraKey = "GIGAUSAGE-1",
+            jiraUrl = "https://jira.sberbank.ru/browse/GIGAUSAGE-1",
         )
 
         every {
-            agentStatusSlaRepository.findAllByAiAgentId(
+            jiraIssueRepository.findByAgentIdAndTypeAndProject(
                 agentId = 1L,
+                type = "initiative",
+                project = "gigausage",
             )
-        } returns listOf(persistedStatusSla)
+        } returns listOf(existingIssue)
 
         every {
-            agentStatusSlaRepository.deleteAll(
-                entities = listOf(persistedStatusSla),
+            jiraIssueRepository.deleteAll(
+                entities = listOf(existingIssue),
             )
         } just Runs
 
-        val result = statusSlaUpdater.update(
+        gigausageIssueUpdater.update(
             agent = agent,
-            rawStatusSlaValue = null,
+            rawValue = null,
         )
 
-        assertTrue(result.isEmpty())
-
         verify(exactly = 1) {
-            agentStatusSlaRepository.deleteAll(
-                entities = listOf(persistedStatusSla),
+            jiraIssueRepository.deleteAll(
+                entities = listOf(existingIssue),
             )
         }
 
         verify(exactly = 0) {
-            statusRepository.findAllByDisabledIsFalse()
+            jiraIssueRepository.save(any())
         }
     }
 
     @Test
-    fun `update should delete all persisted status sla when request list is empty`() {
+    fun `update should delete all existing issues when raw value is empty list`() {
         val agent = agent(id = 1L)
-        val persistedStatusSla = persistedStatusSla(
-            statusId = 10L,
-            plannedDate = LocalDateTime.of(2026, 5, 1, 10, 0),
+
+        val existingIssue = jiraIssue(
+            agent = agent,
+            jiraKey = "GIGAUSAGE-1",
+            jiraUrl = "https://jira.sberbank.ru/browse/GIGAUSAGE-1",
         )
 
         every {
-            agentStatusSlaRepository.findAllByAiAgentId(
+            jiraIssueRepository.findByAgentIdAndTypeAndProject(
                 agentId = 1L,
+                type = "initiative",
+                project = "gigausage",
             )
-        } returns listOf(persistedStatusSla)
+        } returns listOf(existingIssue)
 
         every {
-            agentStatusSlaRepository.deleteAll(
-                entities = listOf(persistedStatusSla),
+            jiraIssueRepository.deleteAll(
+                entities = listOf(existingIssue),
             )
         } just Runs
 
-        val result = statusSlaUpdater.update(
+        gigausageIssueUpdater.update(
             agent = agent,
-            rawStatusSlaValue = emptyList<Any>(),
+            rawValue = emptyList<String>(),
         )
 
-        assertTrue(result.isEmpty())
-
         verify(exactly = 1) {
-            agentStatusSlaRepository.deleteAll(
-                entities = listOf(persistedStatusSla),
+            jiraIssueRepository.deleteAll(
+                entities = listOf(existingIssue),
             )
+        }
+
+        verify(exactly = 0) {
+            jiraIssueRepository.save(any())
         }
     }
 
     @Test
-    fun `update should create new status sla and return changed item`() {
+    fun `update should create new issue from jira key`() {
         val agent = agent(id = 1L)
-        val pilotStatus = status(
-            id = 10L,
-            code = "pilot",
-        )
-
-        val request = listOf(
-            mapOf(
-                "status" to "pilot",
-                "plannedDate" to "2026-05-03",
-            )
-        )
-
-        val savedSlot = slot<List<AgentStatusSlaEntity>>()
+        val savedSlot = slot<JiraIssueEntity>()
 
         every {
-            agentStatusSlaRepository.findAllByAiAgentId(
+            jiraIssueRepository.findByAgentIdAndTypeAndProject(
                 agentId = 1L,
+                type = "initiative",
+                project = "gigausage",
             )
         } returns emptyList()
 
         every {
-            statusRepository.findAllByDisabledIsFalse()
-        } returns listOf(pilotStatus)
-
-        every {
-            agentStatusSlaRepository.saveAll(
-                entities = capture(savedSlot),
+            jiraIssueRepository.save(
+                entity = capture(savedSlot),
             )
         } answers {
             savedSlot.captured
         }
 
-        val result = statusSlaUpdater.update(
+        gigausageIssueUpdater.update(
             agent = agent,
-            rawStatusSlaValue = request,
+            rawValue = listOf("GIGAUSAGE-123"),
         )
 
-        assertEquals(1, result.size)
-        assertEquals("pilot", result.first().status)
-        assertEquals(LocalDate.of(2026, 5, 3), result.first().plannedDate)
+        val savedIssue = savedSlot.captured
 
-        val savedEntity = savedSlot.captured.first()
-
-        assertEquals(agent, savedEntity.aiAgent)
-        assertEquals(pilotStatus, savedEntity.agentStatus)
+        assertEquals("gigausage", savedIssue.project)
+        assertEquals("initiative", savedIssue.type)
+        assertEquals("GIGAUSAGE-123", savedIssue.jiraKey)
         assertEquals(
-            LocalDate.of(2026, 5, 3).atStartOfDay(),
-            savedEntity.plannedDate,
+            "https://jira.sberbank.ru/browse/GIGAUSAGE-123",
+            savedIssue.jiraUrl,
         )
+        assertEquals(agent, savedIssue.agent)
 
         verify(exactly = 1) {
-            agentStatusSlaRepository.saveAll(
-                entities = any<List<AgentStatusSlaEntity>>(),
-            )
-        }
-
-        verify(exactly = 0) {
-            agentStatusSlaRepository.deleteAll(
-                entities = any<List<AgentStatusSlaEntity>>(),
+            jiraIssueRepository.save(
+                entity = any(),
             )
         }
     }
 
     @Test
-    fun `update should update existing status sla when planned date changed`() {
+    fun `update should create new issue from jira url`() {
         val agent = agent(id = 1L)
-        val pilotStatus = status(
-            id = 10L,
-            code = "pilot",
-        )
+        val savedSlot = slot<JiraIssueEntity>()
 
-        val persistedStatusSla = persistedStatusSla(
-            statusId = 10L,
-            plannedDate = LocalDateTime.of(2026, 5, 1, 10, 0),
-        )
-
-        val request = listOf(
-            mapOf(
-                "status" to "pilot",
-                "plannedDate" to "2026-05-03",
-            )
-        )
+        val jiraUrl =
+            "https://jira.sberbank.ru/browse/GIGAUSAGE-456"
 
         every {
-            agentStatusSlaRepository.findAllByAiAgentId(
+            jiraIssueRepository.findByAgentIdAndTypeAndProject(
                 agentId = 1L,
-            )
-        } returns listOf(persistedStatusSla)
-
-        every {
-            statusRepository.findAllByDisabledIsFalse()
-        } returns listOf(pilotStatus)
-
-        every {
-            persistedStatusSla.plannedDate =
-                LocalDate.of(2026, 5, 3).atStartOfDay()
-        } just Runs
-
-        every {
-            agentStatusSlaRepository.saveAll(
-                entities = listOf(persistedStatusSla),
-            )
-        } returns listOf(persistedStatusSla)
-
-        val result = statusSlaUpdater.update(
-            agent = agent,
-            rawStatusSlaValue = request,
-        )
-
-        assertEquals(1, result.size)
-        assertEquals("pilot", result.first().status)
-        assertEquals(LocalDate.of(2026, 5, 3), result.first().plannedDate)
-
-        verify(exactly = 1) {
-            persistedStatusSla.plannedDate =
-                LocalDate.of(2026, 5, 3).atStartOfDay()
-        }
-
-        verify(exactly = 1) {
-            agentStatusSlaRepository.saveAll(
-                entities = listOf(persistedStatusSla),
-            )
-        }
-    }
-
-    @Test
-    fun `update should not save when planned date did not change by local date`() {
-        val agent = agent(id = 1L)
-        val pilotStatus = status(
-            id = 10L,
-            code = "pilot",
-        )
-
-        val persistedStatusSla = persistedStatusSla(
-            statusId = 10L,
-            plannedDate = LocalDateTime.of(2026, 5, 3, 17, 30),
-        )
-
-        val request = listOf(
-            mapOf(
-                "status" to "pilot",
-                "plannedDate" to "2026-05-03",
-            )
-        )
-
-        every {
-            agentStatusSlaRepository.findAllByAiAgentId(
-                agentId = 1L,
-            )
-        } returns listOf(persistedStatusSla)
-
-        every {
-            statusRepository.findAllByDisabledIsFalse()
-        } returns listOf(pilotStatus)
-
-        val result = statusSlaUpdater.update(
-            agent = agent,
-            rawStatusSlaValue = request,
-        )
-
-        assertTrue(result.isEmpty())
-
-        verify(exactly = 0) {
-            agentStatusSlaRepository.saveAll(
-                entities = any<List<AgentStatusSlaEntity>>(),
-            )
-        }
-
-        verify(exactly = 0) {
-            agentStatusSlaRepository.deleteAll(
-                entities = any<List<AgentStatusSlaEntity>>(),
-            )
-        }
-    }
-
-    @Test
-    fun `update should delete persisted status sla missing in request`() {
-        val agent = agent(id = 1L)
-
-        val pilotStatus = status(
-            id = 10L,
-            code = "pilot",
-        )
-
-        val persistedPilotSla = persistedStatusSla(
-            statusId = 10L,
-            plannedDate = LocalDateTime.of(2026, 5, 3, 10, 0),
-        )
-
-        val persistedTargetSla = persistedStatusSla(
-            statusId = 20L,
-            plannedDate = LocalDateTime.of(2026, 6, 3, 10, 0),
-        )
-
-        val request = listOf(
-            mapOf(
-                "status" to "pilot",
-                "plannedDate" to "2026-05-03",
-            )
-        )
-
-        every {
-            agentStatusSlaRepository.findAllByAiAgentId(
-                agentId = 1L,
-            )
-        } returns listOf(
-            persistedPilotSla,
-            persistedTargetSla,
-        )
-
-        every {
-            statusRepository.findAllByDisabledIsFalse()
-        } returns listOf(pilotStatus)
-
-        every {
-            agentStatusSlaRepository.deleteAll(
-                entities = listOf(persistedTargetSla),
-            )
-        } just Runs
-
-        val result = statusSlaUpdater.update(
-            agent = agent,
-            rawStatusSlaValue = request,
-        )
-
-        assertTrue(result.isEmpty())
-
-        verify(exactly = 1) {
-            agentStatusSlaRepository.deleteAll(
-                entities = listOf(persistedTargetSla),
-            )
-        }
-
-        verify(exactly = 0) {
-            agentStatusSlaRepository.saveAll(
-                entities = any<List<AgentStatusSlaEntity>>(),
-            )
-        }
-    }
-
-    @Test
-    fun `update should parse LocalDate planned date`() {
-        val agent = agent(id = 1L)
-        val pilotStatus = status(
-            id = 10L,
-            code = "pilot",
-        )
-
-        val plannedDate = LocalDate.of(2026, 5, 3)
-
-        val request = listOf(
-            mapOf(
-                "status" to "pilot",
-                "plannedDate" to plannedDate,
-            )
-        )
-
-        every {
-            agentStatusSlaRepository.findAllByAiAgentId(
-                agentId = 1L,
+                type = "initiative",
+                project = "gigausage",
             )
         } returns emptyList()
 
         every {
-            statusRepository.findAllByDisabledIsFalse()
-        } returns listOf(pilotStatus)
+            jiraIssueRepository.save(
+                entity = capture(savedSlot),
+            )
+        } answers {
+            savedSlot.captured
+        }
+
+        gigausageIssueUpdater.update(
+            agent = agent,
+            rawValue = listOf(jiraUrl),
+        )
+
+        val savedIssue = savedSlot.captured
+
+        assertEquals("gigausage", savedIssue.project)
+        assertEquals("initiative", savedIssue.type)
+        assertEquals("GIGAUSAGE-456", savedIssue.jiraKey)
+        assertEquals(jiraUrl, savedIssue.jiraUrl)
+        assertEquals(agent, savedIssue.agent)
+    }
+
+    @Test
+    fun `update should update existing issue when key already exists`() {
+        val agent = agent(id = 1L)
+
+        val existingIssue = jiraIssue(
+            agent = agent,
+            jiraKey = "GIGAUSAGE-123",
+            jiraUrl = "old-url",
+        )
 
         every {
-            agentStatusSlaRepository.saveAll(
-                entities = any<List<AgentStatusSlaEntity>>(),
+            jiraIssueRepository.findByAgentIdAndTypeAndProject(
+                agentId = 1L,
+                type = "initiative",
+                project = "gigausage",
+            )
+        } returns listOf(existingIssue)
+
+        every {
+            jiraIssueRepository.save(
+                entity = existingIssue,
+            )
+        } returns existingIssue
+
+        gigausageIssueUpdater.update(
+            agent = agent,
+            rawValue = listOf("GIGAUSAGE-123"),
+        )
+
+        assertEquals("gigausage", existingIssue.project)
+        assertEquals("initiative", existingIssue.type)
+        assertEquals("GIGAUSAGE-123", existingIssue.jiraKey)
+        assertEquals(
+            "https://jira.sberbank.ru/browse/GIGAUSAGE-123",
+            existingIssue.jiraUrl,
+        )
+
+        verify(exactly = 1) {
+            jiraIssueRepository.save(
+                entity = existingIssue,
+            )
+        }
+
+        verify(exactly = 0) {
+            jiraIssueRepository.delete(
+                entity = any(),
+            )
+        }
+    }
+
+    @Test
+    fun `update should delete issue missing in request`() {
+        val agent = agent(id = 1L)
+
+        val issueToKeep = jiraIssue(
+            agent = agent,
+            jiraKey = "GIGAUSAGE-1",
+            jiraUrl = "https://jira.sberbank.ru/browse/GIGAUSAGE-1",
+        )
+
+        val issueToDelete = jiraIssue(
+            agent = agent,
+            jiraKey = "GIGAUSAGE-2",
+            jiraUrl = "https://jira.sberbank.ru/browse/GIGAUSAGE-2",
+        )
+
+        every {
+            jiraIssueRepository.findByAgentIdAndTypeAndProject(
+                agentId = 1L,
+                type = "initiative",
+                project = "gigausage",
+            )
+        } returns listOf(
+            issueToKeep,
+            issueToDelete,
+        )
+
+        every {
+            jiraIssueRepository.delete(
+                entity = issueToDelete,
+            )
+        } just Runs
+
+        every {
+            jiraIssueRepository.save(
+                entity = issueToKeep,
+            )
+        } returns issueToKeep
+
+        gigausageIssueUpdater.update(
+            agent = agent,
+            rawValue = listOf("GIGAUSAGE-1"),
+        )
+
+        verify(exactly = 1) {
+            jiraIssueRepository.delete(
+                entity = issueToDelete,
+            )
+        }
+
+        verify(exactly = 0) {
+            jiraIssueRepository.delete(
+                entity = issueToKeep,
+            )
+        }
+
+        verify(exactly = 1) {
+            jiraIssueRepository.save(
+                entity = issueToKeep,
+            )
+        }
+    }
+
+    @Test
+    fun `update should create new issue and delete missing issue`() {
+        val agent = agent(id = 1L)
+        val savedSlot = slot<JiraIssueEntity>()
+
+        val issueToDelete = jiraIssue(
+            agent = agent,
+            jiraKey = "GIGAUSAGE-OLD",
+            jiraUrl = "https://jira.sberbank.ru/browse/GIGAUSAGE-OLD",
+        )
+
+        every {
+            jiraIssueRepository.findByAgentIdAndTypeAndProject(
+                agentId = 1L,
+                type = "initiative",
+                project = "gigausage",
+            )
+        } returns listOf(issueToDelete)
+
+        every {
+            jiraIssueRepository.delete(
+                entity = issueToDelete,
+            )
+        } just Runs
+
+        every {
+            jiraIssueRepository.save(
+                entity = capture(savedSlot),
+            )
+        } answers {
+            savedSlot.captured
+        }
+
+        gigausageIssueUpdater.update(
+            agent = agent,
+            rawValue = listOf("GIGAUSAGE-NEW"),
+        )
+
+        verify(exactly = 1) {
+            jiraIssueRepository.delete(
+                entity = issueToDelete,
+            )
+        }
+
+        val savedIssue = savedSlot.captured
+
+        assertEquals("GIGAUSAGE-NEW", savedIssue.jiraKey)
+        assertEquals(
+            "https://jira.sberbank.ru/browse/GIGAUSAGE-NEW",
+            savedIssue.jiraUrl,
+        )
+    }
+
+    @Test
+    fun `update should trim values before saving`() {
+        val agent = agent(id = 1L)
+        val savedSlot = slot<JiraIssueEntity>()
+
+        every {
+            jiraIssueRepository.findByAgentIdAndTypeAndProject(
+                agentId = 1L,
+                type = "initiative",
+                project = "gigausage",
+            )
+        } returns emptyList()
+
+        every {
+            jiraIssueRepository.save(
+                entity = capture(savedSlot),
+            )
+        } answers {
+            savedSlot.captured
+        }
+
+        gigausageIssueUpdater.update(
+            agent = agent,
+            rawValue = listOf("  GIGAUSAGE-777  "),
+        )
+
+        assertEquals("GIGAUSAGE-777", savedSlot.captured.jiraKey)
+        assertEquals(
+            "https://jira.sberbank.ru/browse/GIGAUSAGE-777",
+            savedSlot.captured.jiraUrl,
+        )
+    }
+
+    @Test
+    fun `update should process duplicate keys only once`() {
+        val agent = agent(id = 1L)
+
+        every {
+            jiraIssueRepository.findByAgentIdAndTypeAndProject(
+                agentId = 1L,
+                type = "initiative",
+                project = "gigausage",
+            )
+        } returns emptyList()
+
+        every {
+            jiraIssueRepository.save(
+                entity = any(),
             )
         } answers {
             firstArg()
         }
 
-        val result = statusSlaUpdater.update(
+        gigausageIssueUpdater.update(
             agent = agent,
-            rawStatusSlaValue = request,
+            rawValue = listOf(
+                "GIGAUSAGE-1",
+                "https://jira.sberbank.ru/browse/GIGAUSAGE-1",
+            ),
         )
 
-        assertEquals(1, result.size)
-        assertEquals("pilot", result.first().status)
-        assertEquals(plannedDate, result.first().plannedDate)
+        /*
+         * associateBy оставит одно значение на один jiraKey.
+         */
+        verify(exactly = 1) {
+            jiraIssueRepository.save(
+                entity = any(),
+            )
+        }
     }
 
     @Test
-    fun `update should throw exception when raw status sla is not list`() {
+    fun `update should throw exception when raw value is not list`() {
         val agent = agent(id = 1L)
 
         val exception = assertThrows<AiBadRequestException> {
-            statusSlaUpdater.update(
+            gigausageIssueUpdater.update(
                 agent = agent,
-                rawStatusSlaValue = "wrong value",
+                rawValue = "GIGAUSAGE-1",
             )
         }
 
-        assertEquals(WRONG_STATUS_SLA_VALUE, exception.errorCode)
-        assertEquals("Некорректное значение statusSla", exception.message)
+        assertEquals(WRONG_WRONG_GIGAUSAGE, exception.errorCode)
+        assertEquals("Некорректное значение gigausage", exception.message)
+
+        verify(exactly = 0) {
+            jiraIssueRepository.findByAgentIdAndTypeAndProject(
+                agentId = any(),
+                type = any(),
+                project = any(),
+            )
+        }
     }
 
     @Test
-    fun `update should throw exception when item is not map`() {
+    fun `update should throw exception when list item is not string`() {
         val agent = agent(id = 1L)
 
         val exception = assertThrows<AiBadRequestException> {
-            statusSlaUpdater.update(
+            gigausageIssueUpdater.update(
                 agent = agent,
-                rawStatusSlaValue = listOf("wrong item"),
+                rawValue = listOf(123),
             )
         }
 
-        assertEquals(WRONG_STATUS_SLA_VALUE, exception.errorCode)
+        assertEquals(WRONG_WRONG_GIGAUSAGE, exception.errorCode)
     }
 
     @Test
-    fun `update should throw exception when status is blank`() {
+    fun `update should throw exception when value is blank string`() {
         val agent = agent(id = 1L)
 
-        val request = listOf(
-            mapOf(
-                "status" to "   ",
-                "plannedDate" to "2026-05-03",
-            )
-        )
-
         val exception = assertThrows<AiBadRequestException> {
-            statusSlaUpdater.update(
+            gigausageIssueUpdater.update(
                 agent = agent,
-                rawStatusSlaValue = request,
+                rawValue = listOf("   "),
             )
         }
 
-        assertEquals(WRONG_STATUS_SLA_VALUE, exception.errorCode)
+        assertEquals(WRONG_WRONG_GIGAUSAGE, exception.errorCode)
     }
 
     @Test
-    fun `update should throw exception when planned date has wrong format`() {
+    fun `update should throw exception when value has wrong prefix`() {
         val agent = agent(id = 1L)
 
-        val request = listOf(
-            mapOf(
-                "status" to "pilot",
-                "plannedDate" to "03.05.2026",
-            )
-        )
-
         val exception = assertThrows<AiBadRequestException> {
-            statusSlaUpdater.update(
+            gigausageIssueUpdater.update(
                 agent = agent,
-                rawStatusSlaValue = request,
+                rawValue = listOf("ABC-123"),
             )
         }
 
-        assertEquals(WRONG_STATUS_SLA_VALUE, exception.errorCode)
+        assertEquals(WRONG_WRONG_GIGAUSAGE, exception.errorCode)
     }
 
     @Test
-    fun `update should throw exception when requested status does not exist`() {
+    fun `update should throw exception when jira url does not contain gigausage key`() {
         val agent = agent(id = 1L)
 
-        val request = listOf(
-            mapOf(
-                "status" to "unknown",
-                "plannedDate" to "2026-05-03",
-            )
-        )
-
-        every {
-            agentStatusSlaRepository.findAllByAiAgentId(
-                agentId = 1L,
-            )
-        } returns emptyList()
-
-        every {
-            statusRepository.findAllByDisabledIsFalse()
-        } returns emptyList()
-
         val exception = assertThrows<AiBadRequestException> {
-            statusSlaUpdater.update(
+            gigausageIssueUpdater.update(
                 agent = agent,
-                rawStatusSlaValue = request,
+                rawValue = listOf(
+                    "https://jira.sberbank.ru/browse/ABC-123"
+                ),
             )
         }
 
-        assertEquals(PROCESS_WITH_ID_NOT_FOUND, exception.errorCode)
-        assertEquals(
-            "Значение unknown не найдено в справочнике",
-            exception.message,
-        )
+        assertEquals(WRONG_WRONG_GIGAUSAGE, exception.errorCode)
     }
 
     private fun agent(
@@ -506,39 +512,21 @@ class StatusSlaUpdaterTest {
         }
     }
 
-    private fun status(
-        id: Long,
-        code: String,
-    ): StatusEntity {
-        return mockk<StatusEntity>(relaxed = true) {
-            every {
-                this@mockk.id
-            } returns id
-
-            every {
-                this@mockk.code
-            } returns code
-        }
-    }
-
-    private fun persistedStatusSla(
-        statusId: Long,
-        plannedDate: LocalDateTime?,
-    ): AgentStatusSlaEntity {
-        return mockk<AgentStatusSlaEntity>(relaxed = true) {
-            every {
-                this@mockk.primaryKey.agentStatusId
-            } returns statusId
-
-            every {
-                this@mockk.plannedDate
-            } returns plannedDate
-
-            every {
-                this@mockk.plannedDate = any()
-            } just Runs
+    private fun jiraIssue(
+        agent: AIAgentEntity,
+        jiraKey: String,
+        jiraUrl: String,
+    ): JiraIssueEntity {
+        return JiraIssueEntity(
+            project = "gigausage",
+            type = "initiative",
+            agent = agent,
+        ).apply {
+            this.jiraKey = jiraKey
+            this.jiraUrl = jiraUrl
         }
     }
 }
+
   
 ```
