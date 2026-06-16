@@ -1,133 +1,119 @@
 ```java
-@Transactional
-open fun updateQualityGate(
-    id: Long,
-    request: UpdateAiAgentQualityGateRequest,
-) {
-    val aiAgent = aiAgentRepository.findByIdOrNull(id)
-        ?: throw AiNotFoundException(
-            errorCode = Metadata.ErrorMessages.AGENT_NOT_FOUND,
-            message = messageProvider[Metadata.ErrorMessages.AGENT_NOT_FOUND],
-        )
-
-    val requestedQualityGateCode = request.qualityGateCode
-    val requestedQualityGateState = request.state
-
-    val agentQualityGateForUpdate =
-        aiAgent.qualityGates.find { agentQualityGate ->
-            agentQualityGate.qualityGate?.code == requestedQualityGateCode
-        } ?: throw AiBadRequestException(
-            message = messageProvider[Metadata.ErrorMessages.BAD_REQUEST],
-            errorCode = Metadata.ErrorMessages.BAD_REQUEST,
-        )
-
-    val hasJiraChangeBeenCreated =
-        createJiraChangeIfSingleLinkedQualityGateIssueExists(
-            aiAgent = aiAgent,
-            qualityGateCode = requestedQualityGateCode,
-            qualityGateState = requestedQualityGateState,
-        )
-
-    agentQualityGateService.updateQualityGateState(
-        agentQualityGate = agentQualityGateForUpdate,
-        qualityGateState = requestedQualityGateState,
+@Test
+fun `updateQualityGate should create jira change when single linked quality gate issue exists`() {
+    // Given
+    val qualityGate = QualityGateEntity(
+        code = "GATE1",
     )
 
-    lockAiAgentImportAfterQualityGateUpdate(
-        aiAgent = aiAgent,
-        hasJiraChangeBeenCreated = hasJiraChangeBeenCreated,
-    )
-}
-
-private fun createJiraChangeIfSingleLinkedQualityGateIssueExists(
-    aiAgent: AIAgentEntity,
-    qualityGateCode: String,
-    qualityGateState: QualityGateState,
-): Boolean {
-    val linkedQualityGateJiraIssues =
-        jiraIssueRepository.findQualityGateJiraIssues(
-            agentId = aiAgent.id,
-            qualityGateCode = qualityGateCode,
-        )
-
-    return when (linkedQualityGateJiraIssues.size) {
-
-        0 -> false
-
-        1 -> {
-            qualityGateJiraChangeCreator.createQualityGateChange(
-                aiAgent = aiAgent,
-                qualityGateCode = qualityGateCode,
-                qualityGateState = qualityGateState,
-                linkedQualityGateJiraIssue = linkedQualityGateJiraIssues.first(),
-            )
-
-            true
+    val agentQualityGate =
+        AIAgentQualityGateEntity().also {
+            it.qualityGate = qualityGate
         }
 
-        else -> throw AiBadRequestException(
-            message = messageProvider[Metadata.ErrorMessages.MORE_THAN_ONE_JIRA_ISSUE],
-            errorCode = Metadata.ErrorMessages.MORE_THAN_ONE_JIRA_ISSUE,
+    val aiAgent =
+        AIAgentEntity().also {
+            it.id = 1L
+            it.qualityGates = mutableSetOf(agentQualityGate)
+            it.jiraStatus = "done"
+        }
+
+    val currentUser =
+        UserDto(
+            id = 1L,
+            roles = setOf("PROJECT_OFFICE"),
+            email = null,
+            login = null,
+            firstName = null,
+            lastName = null,
+            patronymic = null,
+            phoneNumber = null,
+            position = null,
+            sberbankEmployee = null,
+            companyId = null,
+        )
+
+    val linkedQualityGateJiraIssue =
+        JiraIssueEntity().also {
+            it.jiraKey = "TEST-1"
+        }
+
+    every {
+        aiAgentRepository.findByIdOrNull(1L)
+    } returns aiAgent
+
+    every {
+        jiraIssueRepository.findByAgentIdAndTypeAndCode(
+            agentId = 1L,
+            code = "GATE1",
+            qualityGateType = QualityGateType.quality_gate,
+        )
+    } returns listOf(linkedQualityGateJiraIssue)
+
+    every {
+        jiraChangeCreator.createQualityGateChange(
+            aiAgent = aiAgent,
+            qualityGateCode = "GATE1",
+            qualityGateState = QualityGateState.checked,
+            linkedQualityGateJiraIssue = linkedQualityGateJiraIssue,
+        )
+    } just Runs
+
+    every {
+        agentQualityGateService.updateState(
+            qualityGate = agentQualityGate,
+            state = QualityGateState.checked,
+        )
+    } just Runs
+
+    every {
+        userInfoProvider.currentUser()
+    } returns currentUser
+
+    every {
+        aiAgentRepository.saveAndFlush(
+            entity = aiAgent,
+        )
+    } returns aiAgent
+
+    // When
+    service.updateQualityGate(
+        id = 1L,
+        request = UpdateAiAgentQualityGateRequest(
+            qualityGateCode = "GATE1",
+            state = QualityGateState.checked,
+        ),
+    )
+
+    // Then
+    verify(exactly = 1) {
+        jiraIssueRepository.findByAgentIdAndTypeAndCode(
+            agentId = 1L,
+            code = "GATE1",
+            qualityGateType = QualityGateType.quality_gate,
+        )
+    }
+
+    verify(exactly = 1) {
+        jiraChangeCreator.createQualityGateChange(
+            aiAgent = aiAgent,
+            qualityGateCode = "GATE1",
+            qualityGateState = QualityGateState.checked,
+            linkedQualityGateJiraIssue = linkedQualityGateJiraIssue,
+        )
+    }
+
+    verify(exactly = 1) {
+        agentQualityGateService.updateState(
+            qualityGate = agentQualityGate,
+            state = QualityGateState.checked,
+        )
+    }
+
+    verify(exactly = 1) {
+        aiAgentRepository.saveAndFlush(
+            entity = aiAgent,
         )
     }
 }
-
-open fun createQualityGateChange(
-        aiAgent: AIAgentEntity,
-        qualityGateCode: String,
-        qualityGateState: QualityGateState,
-        linkedQualityGateJiraIssue: JiraIssueEntity,
-    ) {
-        val qualityGateChangePayload =
-            objectMapper.valueToTree<JsonNode>(
-                QualityGateJiraChangePayload(
-                    qualityGateCode = qualityGateCode,
-                    status = qualityGateState.name,
-                    jiraKey = linkedQualityGateJiraIssue.jiraKey,
-                )
-            )
-
-        val qualityGateJiraChange =
-            JiraChangeEntity(
-                agent = aiAgent,
-                changeType = QUALITY_GATE_CHANGE_TYPE,
-                payload = qualityGateChangePayload,
-                created = LocalDateTime.now(),
-            )
-
-        jiraChangeRepository.save(
-            entity = qualityGateJiraChange,
-        )
-    }
-
-    private data class QualityGateJiraChangePayload(
-        val qualityGateCode: String,
-        val status: String,
-        val jiraKey: String?,
-    )
-
-    private companion object {
-
-        private const val QUALITY_GATE_CHANGE_TYPE = "quality_gate"
-    }
-
-private fun lockAiAgentImportAfterQualityGateUpdate(
-    aiAgent: AIAgentEntity,
-    hasJiraChangeBeenCreated: Boolean,
-) {
-    aiAgent.importStatus = IMPORT_STATUS_BLOCKED
-    aiAgent.updatedBy = userInfoProvider.currentUser().id
-
-    if (hasJiraChangeBeenCreated) {
-        aiAgent.jiraFromStatus = JIRA_FROM_STATUS_WAITING
-        aiAgent.jiraFromUpdated = LocalDateTime.now()
-        aiAgent.jiraErrorCount = 0
-    }
-
-    aiAgentRepository.saveAndFlush(
-        entity = aiAgent,
-    )
-}
-
-
 ```
