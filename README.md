@@ -1,10 +1,10 @@
 ```java
 SELECT
-    ai_agent_id,
-    quality_gate_code,
-    state,
-    updated
-FROM agent_quality_gate
-WHERE ai_agent_id = <agent_id>
-  AND quality_gate_code = '<qualityGateCode>';
+    import_status,
+    updated_by,
+    jira_from_status,
+    jira_from_updated,
+    jira_error_count
+FROM ai_agent
+WHERE id = <agent_id>;
 ```
