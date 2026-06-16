@@ -1,51 +1,19 @@
 ```java
-@Test
-fun `updateQualityGate should throw bad request when more than one linked quality gate jira issue exists`() {
+Test
+fun `updateQualityGate should throw bad request when quality gate not found`() {
     // Given
-    val qualityGate =
-        QualityGateEntity(
-            code = "GATE1",
-        )
-
-    val agentQualityGate =
-        AIAgentQualityGateEntity().also {
-            it.qualityGate = qualityGate
-        }
-
     val aiAgent =
         AIAgentEntity().also {
             it.id = 1L
-            it.qualityGates = mutableSetOf(agentQualityGate)
-        }
-
-    val firstLinkedQualityGateJiraIssue =
-        JiraIssueEntity().also {
-            it.jiraKey = "TEST-1"
-        }
-
-    val secondLinkedQualityGateJiraIssue =
-        JiraIssueEntity().also {
-            it.jiraKey = "TEST-2"
         }
 
     every {
-        aiAgentRepository.findByIdOrNull(1L)
+        aiAgentRepository.findByIdOrNull(id = 1L)
     } returns aiAgent
 
     every {
-        jiraIssueRepository.findByAgentIdAndTypeAndCode(
-            agentId = 1L,
-            code = "GATE1",
-            qualityGateType = QualityGateType.quality_gate,
-        )
-    } returns listOf(
-        firstLinkedQualityGateJiraIssue,
-        secondLinkedQualityGateJiraIssue,
-    )
-
-    every {
-        messageProvider[Metadata.ErrorMessages.MORE_THAN_ONE_JIRA_ISSUE]
-    } returns "Не удалось синхронизировать статус с JIRA. Найдено несколько тикетов в JIRA"
+        messageProvider[Metadata.ErrorMessages.BAD_REQUEST]
+    } returns "bad request"
 
     // When
     val exception =
@@ -61,37 +29,37 @@ fun `updateQualityGate should throw bad request when more than one linked qualit
 
     // Then
     assertEquals(
-        Metadata.ErrorMessages.MORE_THAN_ONE_JIRA_ISSUE,
+        Metadata.ErrorMessages.BAD_REQUEST,
         exception.errorCode,
     )
 
-    verify(exactly = 1) {
+    verify(exactly = 0) {
         jiraIssueRepository.findByAgentIdAndTypeAndCode(
-            agentId = 1L,
-            code = "GATE1",
-            qualityGateType = QualityGateType.quality_gate,
+            agentId = any(),
+            code = any(),
+            qualityGateType = any(),
         )
     }
 
     verify(exactly = 0) {
         jiraChangeCreator.createQualityGateChange(
-            any(),
-            any(),
-            any(),
-            any(),
+            aiAgent = any(),
+            qualityGateCode = any(),
+            qualityGateState = any(),
+            linkedQualityGateJiraIssue = any(),
         )
     }
 
     verify(exactly = 0) {
         agentQualityGateService.updateState(
-            any(),
-            any(),
+            qualityGate = any(),
+            state = any(),
         )
     }
 
     verify(exactly = 0) {
         aiAgentRepository.saveAndFlush(
-            any<AIAgentEntity>(),
+            entity = any<AIAgentEntity>(),
         )
     }
 }
