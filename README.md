@@ -1,52 +1,82 @@
 ```java
-@Test
-fun `updateQualityGate should throw not found when agent not found`() {
-    // Given
-    every {
-        aiAgentRepository.findByIdOrNull(id = 1L)
-    } returns null
+/**
+ * Создает запись в jira_change для последующей асинхронной синхронизации
+ * изменения состояния вехи агента с Jira.
+ *
+ * Метод не выполняет синхронный вызов Jira. Он только формирует payload
+ * с кодом вехи, новым статусом и ключом связанной Jira-задачи,
+ * после чего сохраняет запись для обработки шедулером.
+ */
 
-    every {
-        messageProvider[Metadata.ErrorMessages.AGENT_NOT_FOUND]
-    } returns "agent not found"
+ @Test
+    fun `createQualityGateChange should save quality gate jira change with payload`() {
+        // Given
+        val aiAgent =
+            AIAgentEntity().also {
+                it.id = 1L
+            }
 
-    // When
-    val exception =
-        assertThrows<AiNotFoundException> {
-            service.updateQualityGate(
-                id = 1L,
-                request = UpdateAiAgentQualityGateRequest(
-                    qualityGateCode = "GATE1",
-                    state = QualityGateState.checked,
-                ),
+        val linkedQualityGateJiraIssue =
+            JiraIssueEntity().also {
+                it.jiraKey = "TEST-1"
+            }
+
+        val savedJiraChangeSlot =
+            slot<JiraChangeEntity>()
+
+        every {
+            jiraChangeRepository.save(
+                capture(savedJiraChangeSlot),
+            )
+        } answers {
+            firstArg()
+        }
+
+        // When
+        jiraChangeCreator.createQualityGateChange(
+            aiAgent = aiAgent,
+            qualityGateCode = "GATE1",
+            qualityGateState = QualityGateState.checked,
+            linkedQualityGateJiraIssue = linkedQualityGateJiraIssue,
+        )
+
+        // Then
+        verify(exactly = 1) {
+            jiraChangeRepository.save(
+                any<JiraChangeEntity>(),
             )
         }
 
-    // Then
-    assertEquals(
-        Metadata.ErrorMessages.AGENT_NOT_FOUND,
-        exception.errorCode,
-    )
+        val savedJiraChange =
+            savedJiraChangeSlot.captured
 
-    verify(exactly = 0) {
-        jiraIssueRepository.findByAgentIdAndTypeAndCode(
-            agentId = any(),
-            code = any(),
-            qualityGateType = any(),
+        assertEquals(
+            aiAgent,
+            savedJiraChange.agent,
+        )
+
+        assertEquals(
+            "quality_gate",
+            savedJiraChange.changeType,
+        )
+
+        assertNotNull(
+            savedJiraChange.created,
+        )
+
+        assertEquals(
+            "GATE1",
+            savedJiraChange.payload?.get("qualityGateCode")?.asText(),
+        )
+
+        assertEquals(
+            QualityGateState.checked.name,
+            savedJiraChange.payload?.get("status")?.asText(),
+        )
+
+        assertEquals(
+            "TEST-1",
+            savedJiraChange.payload?.get("jiraKey")?.asText(),
         )
     }
-
-    verify(exactly = 0) {
-        agentQualityGateService.updateState(
-            qualityGate = any(),
-            state = any(),
-        )
-    }
-
-    verify(exactly = 0) {
-        aiAgentRepository.saveAndFlush(
-            entity = any<AIAgentEntity>(),
-        )
-    }
-}
 ```
