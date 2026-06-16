@@ -1,10 +1,14 @@
 ```java
 SELECT
-    import_status,
-    updated_by,
-    jira_from_status,
-    jira_from_updated,
-    jira_error_count
-FROM ai_agent
-WHERE id = <agent_id>;
+    ji.id,
+    ji.agent_id,
+    ji.quality_gate_code,
+    ji.jira_key
+FROM jira_issue ji
+JOIN quality_gate qg
+    ON ji.quality_gate_code = qg.code
+WHERE qg.type = 'quality_gate'
+  AND qg.code = '<qualityGateCode>'
+  AND ji.agent_id = <agent_id>
+  AND ji.jira_key IS NOT NULL;
 ```
