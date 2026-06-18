@@ -1,16 +1,10 @@
 ```java
-fun UserAccountDto.toFullName(): String {
-    return listOf(
-        lastName,
-        firstName,
-        patronymic,
-    )
-        .mapNotNull { value ->
-            value?.trim()
-        }
-        .filter { value ->
-            value.isNotBlank()
-        }
-        .joinToString(separator = " ")
+{
+  "name": "Количество обращений",
+  "unit": "шт",
+  "direction": "increase",
+  "agentTypes": ["autonomous", "copilot"],
+  "description": "Количество обработанных обращений",
+  "frequency": "monthly"
 }
 ```
