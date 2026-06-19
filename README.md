@@ -1,29 +1,79 @@
 ```java
-@Test
-fun `update should throw exception when planned date is blank`() {
-    val agent = agent(id = 1L)
+data class UpdateMetricActivityRequest(
 
-    val request = listOf(
-        mapOf(
-            "status" to "pilot",
-            "plannedDate" to "   ",
-        )
+    @JsonProperty("isActive")
+    @Schema(
+        description = "Признак активности метрики",
+        example = "true",
+        requiredMode = Schema.RequiredMode.REQUIRED,
     )
+    val active: Boolean,
+)
 
-    every {
-        messageProvider[WRONG_STATUS_SLA_PLANNED_DATE_VALUE]
-    } returns "Wrong statusSla plannedDate value"
-
-    val exception = assertThrows<AiBadRequestException> {
-        statusSlaUpdater.update(
-            agent = agent,
-            rawStatusSlaValue = request,
-        )
-    }
-
-    assertEquals(
-        WRONG_STATUS_SLA_PLANNED_DATE_VALUE,
-        exception.errorCode,
+@PatchMapping("/{metricId}")
+@Operation(
+    summary = "Изменение активности метрики",
+    responses = [ApiResponse(
+        responseCode = "200",
+        content = [Content(
+            mediaType = "application/json",
+            schema = Schema(implementation = CreateMetricResponse::class),
+        )],
+    )],
+)
+@ExceptionApiResponses
+@PreAuthorize(value = "hasAuthority('TRANSFORMATION_OFFICE')")
+open fun updateMetricActivity(
+    @PathVariable metricId: UUID,
+    @Valid @RequestBody request: UpdateMetricActivityRequest,
+): CreateMetricResponse {
+    return metricsService.updateMetricActivity(
+        metricId = metricId,
+        request = request,
     )
 }
+
+@Query(
+        """
+        select count(metricValue.id)
+        from InitiativeMetricValueEntity metricValue
+        where metricValue.metricDirectory.id = :metricDirectoryId
+        """
+    )
+    fun countByMetricDirectoryId(
+        @Param("metricDirectoryId") metricDirectoryId: UUID,
+    ): Long
+
+    @Transactional
+open fun updateMetricActivity(
+    metricId: UUID,
+    request: UpdateMetricActivityRequest,
+): CreateMetricResponse {
+    val operationDetails = "Изменение активности метрики"
+
+    val currentUser = userInfoProvider.currentUser()
+
+    val metric = metricsDirectoryRepository.findByIdOrNull(id = metricId)
+        ?: throwMetricNotFound(
+            metricId = metricId,
+            operationDetails = operationDetails,
+        )
+
+    metric.active = request.active
+    metric.updatedBy = currentUser.id
+    metric.updatedAt = dateTimeProvider.currentDateTime()
+
+    val savedMetric = metricsDirectoryRepository.save(metric)
+
+    val canBeDeleted =
+        initiativeMetricValueRepository.countByMetricDirectoryId(
+            metricDirectoryId = metricId,
+        ) == 0L
+
+    return savedMetric.toCreateMetricResponse(
+        canBeDeleted = canBeDeleted,
+        lastModifiedBy = currentUser.toFullName(),
+    )
+}
+
 ```
