@@ -1,153 +1,42 @@
 ```java
-@Import(value = [MetricsController::class])
-@ContextConfiguration(classes = [MetricsControllerTest.Config::class])
-internal class MetricsControllerTest : ControllerTestBase() {
+@ExtendWith(MockKExtension::class)
+internal class MetricsServiceTest {
 
-    @Autowired
-    private lateinit var metricsService: MetricsService
+    @MockK
+    private lateinit var metricsDirectoryRepository: MetricsDirectoryRepository
 
-    @Autowired
-    private lateinit var mapper: ObjectMapper
+    @MockK
+    private lateinit var initiativeMetricValueRepository: InitiativeMetricValueRepository
 
-    @TestConfiguration
-    internal class Config {
+    @MockK
+    private lateinit var messageProvider: MessageProvider
 
-        @Bean
-        open fun metricsService() = mockk<MetricsService>()
-    }
+    @MockK
+    private lateinit var userInfoProvider: UserInfoProvider
+
+    @MockK
+    private lateinit var authFeignClient: PrmAuthFeignClient
+
+    @MockK
+    private lateinit var dateTimeProvider: DateTimeProvider
+
+    private lateinit var service: MetricsService
 
     @BeforeEach
-    fun setup() {
-        clearMocks(firstMock = metricsService)
+    fun setUp() {
+        service = MetricsService(
+            metricsDirectoryRepository = metricsDirectoryRepository,
+            initiativeMetricValueRepository = initiativeMetricValueRepository,
+            messageProvider = messageProvider,
+            userInfoProvider = userInfoProvider,
+            authFeignClient = authFeignClient,
+            dateTimeProvider = dateTimeProvider,
+        )
     }
 
     @Test
-    fun `should get metrics with success`() {
+    fun `createMetric should create metric with success`() {
         // given
-        val metricId = UUID.randomUUID()
-        val lastModifiedAt = LocalDateTime.of(2026, 6, 19, 12, 30)
-
-        val expectedResult = listOf(
-            CreateMetricResponse(
-                id = metricId,
-                name = "Количество обращений",
-                unit = "шт.",
-                direction = "Рост",
-                agentTypes = setOf(
-                    MetricAgentType.AUTONOMOUS,
-                    MetricAgentType.COPILOT,
-                ),
-                isActive = true,
-                description = "Описание метрики",
-                frequency = "Ежемесячно",
-                canBeDeleted = true,
-                lastModifiedAt = lastModifiedAt,
-                lastModifiedBy = "Иванов Иван Иванович",
-            )
-        )
-
-        every {
-            metricsService.getMetrics()
-        } returns expectedResult
-
-        // when / then
-        mockMvc.perform(
-            MockMvcRequestBuilders.get(API_URL)
-        )
-            .andExpect(MockMvcResultMatchers.status().isOk)
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$[0].id",
-                    equalTo(metricId.toString())
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$[0].name",
-                    equalTo("Количество обращений")
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$[0].unit",
-                    equalTo("шт.")
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$[0].direction",
-                    equalTo("Рост")
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$[0].agentTypes[0]",
-                    equalTo(MetricAgentType.AUTONOMOUS)
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$[0].isActive",
-                    equalTo(true)
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$[0].description",
-                    equalTo("Описание метрики")
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$[0].frequency",
-                    equalTo("Ежемесячно")
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$[0].canBeDeleted",
-                    equalTo(true)
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$[0].lastModifiedBy",
-                    equalTo("Иванов Иван Иванович")
-                )
-            )
-
-        verify(exactly = 1) {
-            metricsService.getMetrics()
-        }
-    }
-
-    @Test
-    fun `should get empty metrics with success`() {
-        // given
-        every {
-            metricsService.getMetrics()
-        } returns emptyList()
-
-        // when / then
-        mockMvc.perform(
-            MockMvcRequestBuilders.get(API_URL)
-        )
-            .andExpect(MockMvcResultMatchers.status().isOk)
-            .andExpect(
-                MockMvcResultMatchers.content().json("[]")
-            )
-
-        verify(exactly = 1) {
-            metricsService.getMetrics()
-        }
-    }
-
-    @Test
-    fun `should create metric with success`() {
-        // given
-        val metricId = UUID.randomUUID()
-        val lastModifiedAt = LocalDateTime.of(2026, 6, 19, 12, 30)
-
         val request = CreateMetricRequest(
             name = "Количество обращений",
             unit = "шт.",
@@ -160,241 +49,504 @@ internal class MetricsControllerTest : ControllerTestBase() {
             frequency = "Ежемесячно",
         )
 
-        val expectedResult = CreateMetricResponse(
-            id = metricId,
-            name = "Количество обращений",
-            unit = "шт.",
-            direction = "Рост",
-            agentTypes = setOf(
-                MetricAgentType.AUTONOMOUS,
-                MetricAgentType.COPILOT,
-            ),
-            isActive = true,
-            description = "Описание метрики",
-            frequency = "Ежемесячно",
-            canBeDeleted = true,
-            lastModifiedAt = lastModifiedAt,
-            lastModifiedBy = "Иванов Иван Иванович",
-        )
+        mockCurrentUser()
+        every {
+            dateTimeProvider.currentDateTime()
+        } returns CURRENT_DATE_TIME
 
         every {
-            metricsService.createMetric(request = request)
-        } returns expectedResult
+            metricsDirectoryRepository.save(any())
+        } answers {
+            firstArg<MetricsDirectoryEntity>().apply {
+                id = METRIC_ID
+            }
+        }
 
-        // when / then
-        mockMvc.perform(
-            MockMvcRequestBuilders.post(API_URL)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(
-                    mapper.writeValueAsString(request)
-                )
-        )
-            .andExpect(MockMvcResultMatchers.status().isCreated)
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.id",
-                    equalTo(metricId.toString())
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.name",
-                    equalTo("Количество обращений")
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.isActive",
-                    equalTo(true)
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.canBeDeleted",
-                    equalTo(true)
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.lastModifiedBy",
-                    equalTo("Иванов Иван Иванович")
-                )
-            )
+        // when
+        val result = service.createMetric(request = request)
+
+        // then
+        assertEquals(METRIC_ID, result.id)
+        assertEquals("Количество обращений", result.name)
+        assertEquals("шт.", result.unit)
+        assertEquals("Рост", result.direction)
+        assertEquals(true, result.isActive)
+        assertEquals("Описание метрики", result.description)
+        assertEquals("Ежемесячно", result.frequency)
+        assertEquals(true, result.canBeDeleted)
+        assertEquals(CURRENT_DATE_TIME, result.lastModifiedAt)
 
         verify(exactly = 1) {
-            metricsService.createMetric(request = request)
+            metricsDirectoryRepository.save(
+                match { metric ->
+                    metric.name == request.name &&
+                        metric.unit == request.unit &&
+                        metric.direction == request.direction &&
+                        metric.description == request.description &&
+                        metric.frequency == request.frequency &&
+                        metric.autonomousApplicability == true &&
+                        metric.copilotApplicability == true &&
+                        metric.requiresAppealsWork == false &&
+                        metric.active == true &&
+                        metric.updatedBy == USER_ID &&
+                        metric.updatedAt == CURRENT_DATE_TIME
+                },
+            )
         }
     }
 
     @Test
-    fun `should update metric activity with success`() {
+    fun `createMetric should throw bad request when agent types are wrong`() {
         // given
-        val metricId = UUID.randomUUID()
-        val lastModifiedAt = LocalDateTime.of(2026, 6, 19, 12, 30)
+        val request = CreateMetricRequest(
+            name = "Количество обращений",
+            unit = "шт.",
+            direction = "Рост",
+            agentTypes = setOf("wrong_type"),
+            description = "Описание метрики",
+            frequency = "Ежемесячно",
+        )
+
+        every {
+            messageProvider[WRONG_METRIC_AGENT_TYPES]
+        } returns "Некорректные режимы работы метрики: {0}"
+
+        // when / then
+        val exception = assertThrows<AiBadRequestException> {
+            service.createMetric(request = request)
+        }
+
+        assertEquals(WRONG_METRIC_AGENT_TYPES, exception.errorCode)
+
+        verify(exactly = 0) {
+            userInfoProvider.currentUser()
+        }
+
+        verify(exactly = 0) {
+            metricsDirectoryRepository.save(any())
+        }
+    }
+
+    @Test
+    fun `getMetrics should return empty list when metrics not found`() {
+        // given
+        every {
+            metricsDirectoryRepository.findAll()
+        } returns emptyList()
+
+        // when
+        val result = service.getMetrics()
+
+        // then
+        assertTrue(result.isEmpty())
+
+        verify(exactly = 1) {
+            metricsDirectoryRepository.findAll()
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository.findUsedMetricDirectoryIds(any())
+        }
+
+        verify(exactly = 0) {
+            authFeignClient.getUsers(any(), any())
+        }
+    }
+
+    @Test
+    fun `getMetrics should return metrics with canBeDeleted values`() {
+        // given
+        val usedMetricId = UUID.randomUUID()
+        val unusedMetricId = UUID.randomUUID()
+
+        val usedMetric = metricEntity(
+            id = usedMetricId,
+            name = "Используемая метрика",
+            updatedBy = USER_ID,
+        )
+
+        val unusedMetric = metricEntity(
+            id = unusedMetricId,
+            name = "Неиспользуемая метрика",
+            updatedBy = USER_ID,
+        )
+
+        every {
+            metricsDirectoryRepository.findAll()
+        } returns listOf(usedMetric, unusedMetric)
+
+        every {
+            initiativeMetricValueRepository.findUsedMetricDirectoryIds(
+                metricDirectoryIds = setOf(usedMetricId, unusedMetricId),
+            )
+        } returns setOf(usedMetricId)
+
+        mockAuthUsers(userIds = setOf(USER_ID))
+
+        // when
+        val result = service.getMetrics()
+
+        // then
+        assertEquals(2, result.size)
+
+        assertEquals(usedMetricId, result[0].id)
+        assertEquals("Используемая метрика", result[0].name)
+        assertEquals(false, result[0].canBeDeleted)
+
+        assertEquals(unusedMetricId, result[1].id)
+        assertEquals("Неиспользуемая метрика", result[1].name)
+        assertEquals(true, result[1].canBeDeleted)
+
+        verify(exactly = 1) {
+            metricsDirectoryRepository.findAll()
+        }
+
+        verify(exactly = 1) {
+            initiativeMetricValueRepository.findUsedMetricDirectoryIds(
+                metricDirectoryIds = setOf(usedMetricId, unusedMetricId),
+            )
+        }
+
+        verify(exactly = 1) {
+            authFeignClient.getUsers(
+                ids = setOf(USER_ID),
+                companyId = null,
+            )
+        }
+    }
+
+    @Test
+    fun `updateMetricActivity should update active flag with success`() {
+        // given
+        val metric = metricEntity(
+            id = METRIC_ID,
+            active = true,
+        )
 
         val request = UpdateMetricActivityRequest(
             active = false,
         )
 
-        val expectedResult = CreateMetricResponse(
-            id = metricId,
-            name = "Количество обращений",
-            unit = "шт.",
-            direction = "Рост",
-            agentTypes = setOf(
-                MetricAgentType.AUTONOMOUS,
-            ),
-            isActive = false,
-            description = "Описание метрики",
-            frequency = "Ежемесячно",
-            canBeDeleted = false,
-            lastModifiedAt = lastModifiedAt,
-            lastModifiedBy = "Иванов Иван Иванович",
-        )
+        mockCurrentUser()
 
         every {
-            metricsService.updateMetricActivity(
-                metricId = metricId,
-                request = request,
-            )
-        } returns expectedResult
+            metricsDirectoryRepository.findById(METRIC_ID)
+        } returns Optional.of(metric)
 
-        // when / then
-        mockMvc.perform(
-            MockMvcRequestBuilders.patch("$API_URL/$metricId")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(
-                    mapper.writeValueAsString(request)
-                )
+        every {
+            dateTimeProvider.currentDateTime()
+        } returns CURRENT_DATE_TIME
+
+        every {
+            metricsDirectoryRepository.save(any())
+        } answers {
+            firstArg()
+        }
+
+        every {
+            initiativeMetricValueRepository.countByMetricDirectoryId(
+                metricDirectoryId = METRIC_ID,
+            )
+        } returns 1L
+
+        // when
+        val result = service.updateMetricActivity(
+            metricId = METRIC_ID,
+            request = request,
         )
-            .andExpect(MockMvcResultMatchers.status().isOk)
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.id",
-                    equalTo(metricId.toString())
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.isActive",
-                    equalTo(false)
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.canBeDeleted",
-                    equalTo(false)
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.lastModifiedBy",
-                    equalTo("Иванов Иван Иванович")
-                )
-            )
+
+        // then
+        assertEquals(METRIC_ID, result.id)
+        assertEquals(false, result.isActive)
+        assertEquals(false, result.canBeDeleted)
+        assertEquals(CURRENT_DATE_TIME, result.lastModifiedAt)
 
         verify(exactly = 1) {
-            metricsService.updateMetricActivity(
-                metricId = metricId,
-                request = request,
+            metricsDirectoryRepository.save(
+                match { savedMetric ->
+                    savedMetric.id == METRIC_ID &&
+                        savedMetric.active == false &&
+                        savedMetric.updatedBy == USER_ID &&
+                        savedMetric.updatedAt == CURRENT_DATE_TIME
+                },
             )
         }
     }
 
     @Test
-    fun `should update metric with success`() {
+    fun `updateMetricActivity should throw not found when metric not found`() {
         // given
-        val metricId = UUID.randomUUID()
-        val lastModifiedAt = LocalDateTime.of(2026, 6, 19, 12, 30)
-
-        val request = UpdateMetricRequest(
-            name = "Количество успешных обращений",
-            unit = "шт.",
-            direction = "Рост",
-            agentTypes = setOf(
-                MetricAgentType.AUTONOMOUS,
-                MetricAgentType.COPILOT,
-                MetricAgentType.APPEALS,
-            ),
-            description = "Новое описание метрики",
-            frequency = "Ежемесячно",
+        val request = UpdateMetricActivityRequest(
+            active = false,
         )
 
-        val expectedResult = CreateMetricResponse(
-            id = metricId,
-            name = "Количество успешных обращений",
-            unit = "шт.",
-            direction = "Рост",
-            agentTypes = setOf(
-                MetricAgentType.AUTONOMOUS,
-                MetricAgentType.COPILOT,
-                MetricAgentType.APPEALS,
-            ),
-            isActive = true,
-            description = "Новое описание метрики",
-            frequency = "Ежемесячно",
-            canBeDeleted = true,
-            lastModifiedAt = lastModifiedAt,
-            lastModifiedBy = "Иванов Иван Иванович",
-        )
+        mockCurrentUser()
 
         every {
-            metricsService.updateMetric(
-                metricId = metricId,
-                request = request,
-            )
-        } returns expectedResult
+            metricsDirectoryRepository.findById(METRIC_ID)
+        } returns Optional.empty()
+
+        every {
+            messageProvider[METRIC_NOT_FOUND]
+        } returns "Метрика с id {0} не найдена"
 
         // when / then
-        mockMvc.perform(
-            MockMvcRequestBuilders.put("$API_URL/$metricId")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(
-                    mapper.writeValueAsString(request)
-                )
+        val exception = assertThrows<AiNotFoundException> {
+            service.updateMetricActivity(
+                metricId = METRIC_ID,
+                request = request,
+            )
+        }
+
+        assertEquals(METRIC_NOT_FOUND, exception.errorCode)
+
+        verify(exactly = 0) {
+            metricsDirectoryRepository.save(any())
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository.countByMetricDirectoryId(any())
+        }
+    }
+
+    @Test
+    fun `updateMetric should update metric with success`() {
+        // given
+        val metric = metricEntity(
+            id = METRIC_ID,
+            name = "Старое название",
+            active = true,
         )
-            .andExpect(MockMvcResultMatchers.status().isOk)
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.id",
-                    equalTo(metricId.toString())
-                )
+
+        val request = UpdateMetricRequest(
+            name = "Новое название",
+            unit = "шт.",
+            direction = "Рост",
+            agentTypes = setOf(
+                MetricAgentType.AUTONOMOUS,
+                MetricAgentType.COPILOT,
+                MetricAgentType.APPEALS,
+            ),
+            description = "Новое описание",
+            frequency = "Ежемесячно",
+        )
+
+        mockCurrentUser()
+
+        every {
+            metricsDirectoryRepository.findById(METRIC_ID)
+        } returns Optional.of(metric)
+
+        every {
+            dateTimeProvider.currentDateTime()
+        } returns CURRENT_DATE_TIME
+
+        every {
+            metricsDirectoryRepository.save(any())
+        } answers {
+            firstArg()
+        }
+
+        every {
+            initiativeMetricValueRepository.countByMetricDirectoryId(
+                metricDirectoryId = METRIC_ID,
             )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.name",
-                    equalTo("Количество успешных обращений")
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.agentTypes.length()",
-                    equalTo(3)
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.isActive",
-                    equalTo(true)
-                )
-            )
-            .andExpect(
-                MockMvcResultMatchers.jsonPath(
-                    "$.canBeDeleted",
-                    equalTo(true)
-                )
-            )
+        } returns 0L
+
+        // when
+        val result = service.updateMetric(
+            metricId = METRIC_ID,
+            request = request,
+        )
+
+        // then
+        assertEquals(METRIC_ID, result.id)
+        assertEquals("Новое название", result.name)
+        assertEquals("шт.", result.unit)
+        assertEquals("Рост", result.direction)
+        assertEquals("Новое описание", result.description)
+        assertEquals("Ежемесячно", result.frequency)
+        assertEquals(true, result.isActive)
+        assertEquals(true, result.canBeDeleted)
 
         verify(exactly = 1) {
-            metricsService.updateMetric(
-                metricId = metricId,
-                request = request,
+            metricsDirectoryRepository.save(
+                match { savedMetric ->
+                    savedMetric.name == request.name &&
+                        savedMetric.unit == request.unit &&
+                        savedMetric.direction == request.direction &&
+                        savedMetric.description == request.description &&
+                        savedMetric.frequency == request.frequency &&
+                        savedMetric.autonomousApplicability == true &&
+                        savedMetric.copilotApplicability == true &&
+                        savedMetric.requiresAppealsWork == true &&
+                        savedMetric.active == true &&
+                        savedMetric.updatedBy == USER_ID &&
+                        savedMetric.updatedAt == CURRENT_DATE_TIME
+                },
             )
         }
     }
 
+    @Test
+    fun `updateMetric should throw not found when metric not found`() {
+        // given
+        val request = UpdateMetricRequest(
+            name = "Новое название",
+            unit = "шт.",
+            direction = "Рост",
+            agentTypes = setOf(MetricAgentType.AUTONOMOUS),
+            description = "Новое описание",
+            frequency = "Ежемесячно",
+        )
+
+        mockCurrentUser()
+
+        every {
+            metricsDirectoryRepository.findById(METRIC_ID)
+        } returns Optional.empty()
+
+        every {
+            messageProvider[METRIC_NOT_FOUND]
+        } returns "Метрика с id {0} не найдена"
+
+        // when / then
+        val exception = assertThrows<AiNotFoundException> {
+            service.updateMetric(
+                metricId = METRIC_ID,
+                request = request,
+            )
+        }
+
+        assertEquals(METRIC_NOT_FOUND, exception.errorCode)
+
+        verify(exactly = 0) {
+            metricsDirectoryRepository.save(any())
+        }
+    }
+
+    @Test
+    fun `deleteMetric should delete metric when metric values not found`() {
+        // given
+        every {
+            initiativeMetricValueRepository.countByMetricDirectoryId(
+                metricDirectoryId = METRIC_ID,
+            )
+        } returns 0L
+
+        every {
+            metricsDirectoryRepository.deleteByMetricId(
+                metricId = METRIC_ID,
+            )
+        } just runs
+
+        // when
+        service.deleteMetric(metricId = METRIC_ID)
+
+        // then
+        verify(exactly = 1) {
+            initiativeMetricValueRepository.countByMetricDirectoryId(
+                metricDirectoryId = METRIC_ID,
+            )
+        }
+
+        verify(exactly = 1) {
+            metricsDirectoryRepository.deleteByMetricId(
+                metricId = METRIC_ID,
+            )
+        }
+    }
+
+    @Test
+    fun `deleteMetric should throw conflict when metric has values`() {
+        // given
+        every {
+            initiativeMetricValueRepository.countByMetricDirectoryId(
+                metricDirectoryId = METRIC_ID,
+            )
+        } returns 1L
+
+        every {
+            messageProvider[METRIC_HAS_VALUES]
+        } returns "Метрика не может быть удалена, так как по ней уже сданы значения"
+
+        // when / then
+        val exception = assertThrows<ResponseStatusException> {
+            service.deleteMetric(metricId = METRIC_ID)
+        }
+
+        assertEquals(HttpStatus.CONFLICT, exception.statusCode)
+
+        verify(exactly = 0) {
+            metricsDirectoryRepository.deleteByMetricId(any())
+        }
+    }
+
+    private fun metricEntity(
+        id: UUID,
+        name: String = "Количество обращений",
+        unit: String = "шт.",
+        direction: String = "Рост",
+        description: String = "Описание метрики",
+        frequency: String = "Ежемесячно",
+        active: Boolean = true,
+        updatedBy: Long = USER_ID,
+        updatedAt: LocalDateTime = CURRENT_DATE_TIME,
+    ): MetricsDirectoryEntity {
+        return MetricsDirectoryEntity().apply {
+            this.id = id
+            this.name = name
+            this.unit = unit
+            this.direction = direction
+            this.description = description
+            this.frequency = frequency
+            this.active = active
+            this.updatedBy = updatedBy
+            this.updatedAt = updatedAt
+
+            this.autonomousApplicability = true
+            this.copilotApplicability = false
+            this.requiresAppealsWork = false
+        }
+    }
+
+    private fun mockCurrentUser() {
+        every {
+            userInfoProvider.currentUser()
+        } returns mockk(relaxed = true) {
+            every {
+                id
+            } returns USER_ID
+        }
+    }
+
+    private fun mockAuthUsers(
+        userIds: Set<Long>,
+    ) {
+        every {
+            authFeignClient.getUsers(
+                ids = userIds,
+                companyId = null,
+            )
+        } returns ResponseEntity.ok(
+            userIds.map { userId ->
+                mockk(relaxed = true) {
+                    every {
+                        id
+                    } returns userId
+                }
+            },
+        )
+    }
+
     private companion object {
-        private const val API_URL = "/api/v1/reference/metrics"
+        private val METRIC_ID: UUID =
+            UUID.fromString("11111111-1111-1111-1111-111111111111")
+
+        private const val USER_ID: Long = 100L
+
+        private val CURRENT_DATE_TIME: LocalDateTime =
+            LocalDateTime.of(2026, 6, 19, 12, 30)
     }
 }
 ```
