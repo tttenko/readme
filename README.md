@@ -1,183 +1,48 @@
 ```java
-data class SaveInitiativeMetricValueRequest(
-
-    @field:NotBlank
-    @Schema(
-        description = "Режим работы инициативы, для которого сдано значение метрики",
-        example = "copilot",
-        allowableValues = ["autonomous", "copilot", "appeals"],
-    )
-    val agentType: String?,
-
-    @field:NotNull
-    @JsonProperty("id")
-    @Schema(
-        description = "Идентификатор метрики, для которой сдано значение",
-        example = "550e8400-e29b-41d4-a716-446655440000",
-    )
-    val metricId: UUID?,
-
-    @Schema(
-        description = "Фактическое значение метрики",
-        example = "10",
-    )
-    val metricValue: BigDecimal? = null,
-
-    @Schema(
-        description = "Плановое значение метрики",
-        example = "20",
-    )
-    val targetValue: BigDecimal? = null,
+open class AiConflictException(
+    errorCode: String,
+    message: String? = null,
+    fieldErrors: List<FieldError>? = null,
+    operationDetails: String? = "",
+    formErrors: List<String>? = null,
+) : AiResponseException(
+    operationDetails = operationDetails,
+    status = HttpStatus.CONFLICT,
+    errorCode = errorCode,
+    message = message,
+    fieldErrors = fieldErrors,
+    formErrors = formErrors,
 )
 
-data class SaveInitiativeMetricValueResponse(
-    val code: Int,
-    val message: String,
-) {
-    companion object {
+const val REQUIRED_INITIATIVE_METRIC_AGENT_TYPE =
+            "required.initiative.metric.agent.type"
 
-        fun success() =
-            SaveInitiativeMetricValueResponse(
-                code = 0,
-                message = "Metrics saved",
-            )
-    }
-}
+        const val REQUIRED_INITIATIVE_METRIC_ID =
+            "required.initiative.metric.id"
 
-@Repository
-interface InitiativeMetricTypeRepository :
-    JpaRepository<InitiativeMetricTypeEntity, Long> {
+        const val WRONG_INITIATIVE_METRIC_AGENT_TYPE =
+            "wrong.initiative.metric.agent.type"
 
-    fun existsByAiAgentId(
-        initiativeId: Long,
-    ): Boolean
+        const val INITIATIVE_METRIC_NOT_FOUND =
+            "initiative.metric.not.found"
 
-    fun findByAiAgentIdAndAgentType(
-        initiativeId: Long,
-        agentType: String,
-    ): InitiativeMetricTypeEntity?
-}
+        const val INITIATIVE_METRIC_TYPES_NOT_FOUND =
+            "initiative.metric.types.not.found"
 
-fun findByInitiativeMetricTypeIdAndMetricDirectoryId(
-        initiativeMetricTypeId: Long,
-        metricDirectoryId: UUID,
-    ): InitiativeMetricValueEntity?
+        const val INITIATIVE_METRIC_AGENT_TYPE_NOT_FOUND =
+            "initiative.metric.agent.type.not.found"
 
-@PostMapping("/initiatives/{initiativeId}/metrics/value")
-@PreAuthorize("hasAnyAuthority('PROJECT_OFFICE', 'CMS_ADMIN', 'TRANSFORMATION_OFFICE')")
-@Operation(
-    summary = "Сдача метрик по инициативе",
-)
-fun saveInitiativeMetricValue(
-    @PathVariable("initiativeId")
-    initiativeId: Long,
+required.initiative.metric.agent.type=Не передан обязательный параметр agentType
+required.initiative.metric.id=Не передан обязательный параметр id метрики
+wrong.initiative.metric.agent.type=Недопустимый режим работы инициативы: {0}
+initiative.metric.not.found=Метрика с идентификатором {0} не найдена
+initiative.metric.types.not.found=Для инициативы с идентификатором {0} не найдены режимы работы
+initiative.metric.agent.type.not.found=Для инициативы с идентификатором {0} не найден режим работы: {1}
 
-    @RequestBody
-    @Valid
-    request: SaveInitiativeMetricValueRequest,
-) = aiAgentService.saveInitiativeMetricValue(
-    initiativeId = initiativeId,
-    request = request,
-)
-
-@Service
-class AIAgentService(
-    private val aiAgentRepository: AIAgentRepository,
-    private val initiativeMetricTypeRepository: InitiativeMetricTypeRepository,
-    private val initiativeMetricValueRepository: InitiativeMetricValueRepository,
-    private val metricsDirectoryRepository: MetricsDirectoryRepository,
-    private val messageProvider: MessageProvider,
-) {
-
-    @Transactional
-    fun saveInitiativeMetricValue(
-        initiativeId: Long,
-        request: SaveInitiativeMetricValueRequest,
-    ): SaveInitiativeMetricValueResponse {
-
-        val agentType = request.agentType?.trim()
-        val metricId = request.metricId
-
-        if (agentType.isNullOrBlank() || metricId == null) {
-            throw ResponseStatusException(
-                HttpStatus.BAD_REQUEST,
-                "agentType and metricId are required",
-            )
-        }
-
-        validateAgentType(
-            agentType = agentType,
-        )
-
-        val metricDirectory =
-            metricsDirectoryRepository.findByIdOrNull(
-                id = metricId,
-            ) ?: throw ResponseStatusException(
-                HttpStatus.BAD_REQUEST,
-                "Metric not found",
-            )
-
-        val initiativeHasMetricTypes =
-            initiativeMetricTypeRepository.existsByAiAgentId(
-                initiativeId = initiativeId,
-            )
-
-        if (!initiativeHasMetricTypes) {
-            throw ResponseStatusException(
-                HttpStatus.CONFLICT,
-                "Initiative has no metric agent types",
-            )
-        }
-
-        val initiativeMetricType =
-            initiativeMetricTypeRepository.findByAiAgentIdAndAgentType(
-                initiativeId = initiativeId,
-                agentType = agentType,
-            ) ?: throw ResponseStatusException(
-                HttpStatus.CONFLICT,
-                "Agent type is not available for initiative",
-            )
-
-        val initiativeMetricTypeId =
-            requireNotNull(initiativeMetricType.id) {
-                "initiativeMetricType.id must not be null"
-            }
-
-        val metricValueEntity =
-            initiativeMetricValueRepository.findByInitiativeMetricTypeIdAndMetricDirectoryId(
-                initiativeMetricTypeId = initiativeMetricTypeId,
-                metricDirectoryId = metricId,
-            ) ?: InitiativeMetricValueEntity(
-                initiativeMetricType = initiativeMetricType,
-                metricDirectory = metricDirectory,
-            )
-
-        metricValueEntity.metricValue = request.metricValue
-        metricValueEntity.targetValue = request.targetValue
-
-        initiativeMetricValueRepository.save(
-            metricValueEntity,
-        )
-
-        return SaveInitiativeMetricValueResponse.success()
-    }
-
-    private fun validateAgentType(
-        agentType: String,
-    ) {
-        val allowedAgentTypes =
-            setOf(
-                "autonomous",
-                "copilot",
-                "appeals",
-            )
-
-        if (agentType !in allowedAgentTypes) {
-            throw ResponseStatusException(
-                HttpStatus.BAD_REQUEST,
-                "Wrong agentType",
-            )
-        }
-    }
-}
+required.initiative.metric.agent.type=Required parameter agentType is missing
+required.initiative.metric.id=Required metric id parameter is missing
+wrong.initiative.metric.agent.type=Unsupported initiative agent type: {0}
+initiative.metric.not.found=Metric with id {0} was not found
+initiative.metric.types.not.found=No metric agent types were found for initiative with id {0}
+initiative.metric.agent.type.not.found=Agent type {1} was not found for initiative with id {0}
 ```
