@@ -1,20 +1,29 @@
 ```java
-@WebMvcTest(AIAgentInitiativeController::class)
-internal class AIAgentInitiativeControllerTest {
+@Import(value = [AIAgentInitiativeController::class])
+@ContextConfiguration(classes = [AIAgentInitiativeControllerTest.Config::class])
+internal class AIAgentInitiativeControllerTest : ControllerTestBase() {
 
     @Autowired
-    private lateinit var mockMvc: MockMvc
+    private lateinit var service: AIAgentInitiativeService
 
     @Autowired
-    private lateinit var objectMapper: ObjectMapper
+    private lateinit var mapper: ObjectMapper
 
-    @MockkBean
-    private lateinit var aiAgentInitiativeService: AIAgentInitiativeService
+    @TestConfiguration
+    internal class Config {
+
+        @Bean
+        open fun service() = mockk<AIAgentInitiativeService>()
+    }
+
+    @BeforeEach
+    fun setUp() {
+        clearMocks(service)
+    }
 
     @Test
-    @WithMockUser(authorities = ["PROJECT_OFFICE"])
-    fun `saveInitiativeMetricValue should return success response`() {
-        // Given
+    fun `should save initiative metric value with success`() {
+        // given
         val initiativeId = 1L
         val metricId = UUID.randomUUID()
 
@@ -25,32 +34,98 @@ internal class AIAgentInitiativeControllerTest {
             targetValue = BigDecimal("20"),
         )
 
+        val expectedResult = SaveInitiativeMetricValueResponse(
+            code = 0,
+            message = "Metrics saved",
+        )
+
         every {
-            aiAgentInitiativeService.saveInitiativeMetricValue(
+            service.saveInitiativeMetricValue(
                 initiativeId = initiativeId,
                 request = request,
             )
-        } returns SaveInitiativeMetricValueResponse.success()
+        } returns expectedResult
 
-        // When & Then
-        mockMvc.post("/api/v1/ai-agent/initiatives/{initiativeId}/metrics/value", initiativeId) {
-            contentType = MediaType.APPLICATION_JSON
-            content = objectMapper.writeValueAsString(request)
-        }
-            .andExpect {
-                status { isOk() }
-                jsonPath("$.code") { value(0) }
-                jsonPath("$.message") { value("Metrics saved") }
-            }
+        // when / then
+        mockMvc.perform(
+            MockMvcRequestBuilders.post(API_URL, initiativeId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(request))
+        )
+            .andExpect(MockMvcResultMatchers.status().isOk)
+            .andExpect(MockMvcResultMatchers.jsonPath("$.code", equalTo(0)))
+            .andExpect(MockMvcResultMatchers.jsonPath("$.message", equalTo("Metrics saved")))
 
         verify(exactly = 1) {
-            aiAgentInitiativeService.saveInitiativeMetricValue(
+            service.saveInitiativeMetricValue(
                 initiativeId = initiativeId,
                 request = request,
             )
         }
     }
-}
 
+    @Test
+    fun `should return bad request when agent type is missing`() {
+        // given
+        val initiativeId = 1L
+        val metricId = UUID.randomUUID()
+
+        val request = """
+            {
+              "id": "$metricId",
+              "metricValue": 10,
+              "targetValue": 20
+            }
+        """.trimIndent()
+
+        // when / then
+        mockMvc.perform(
+            MockMvcRequestBuilders.post(API_URL, initiativeId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(request)
+        )
+            .andExpect(MockMvcResultMatchers.status().isBadRequest)
+
+        verify(exactly = 0) {
+            service.saveInitiativeMetricValue(
+                initiativeId = any(),
+                request = any(),
+            )
+        }
+    }
+
+    @Test
+    fun `should return bad request when metric id is missing`() {
+        // given
+        val initiativeId = 1L
+
+        val request = """
+            {
+              "agentType": "copilot",
+              "metricValue": 10,
+              "targetValue": 20
+            }
+        """.trimIndent()
+
+        // when / then
+        mockMvc.perform(
+            MockMvcRequestBuilders.post(API_URL, initiativeId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(request)
+        )
+            .andExpect(MockMvcResultMatchers.status().isBadRequest)
+
+        verify(exactly = 0) {
+            service.saveInitiativeMetricValue(
+                initiativeId = any(),
+                request = any(),
+            )
+        }
+    }
+
+    companion object {
+        private const val API_URL = "/api/v1/ai-agent/initiatives/{initiativeId}/metrics/value"
+    }
+}
 
 ```
