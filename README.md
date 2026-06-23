@@ -1,48 +1,95 @@
 ```java
-open class AiConflictException(
-    errorCode: String,
-    message: String? = null,
-    fieldErrors: List<FieldError>? = null,
-    operationDetails: String? = "",
-    formErrors: List<String>? = null,
-) : AiResponseException(
-    operationDetails = operationDetails,
-    status = HttpStatus.CONFLICT,
-    errorCode = errorCode,
-    message = message,
-    fieldErrors = fieldErrors,
-    formErrors = formErrors,
-)
+@Transactional
+fun saveInitiativeMetricValue(
+    initiativeId: Long,
+    request: SaveInitiativeMetricValueRequest,
+): SaveInitiativeMetricValueResponse {
 
-const val REQUIRED_INITIATIVE_METRIC_AGENT_TYPE =
-            "required.initiative.metric.agent.type"
+    val agentType = request.agentType?.trim()
+    val metricId = request.metricId
 
-        const val REQUIRED_INITIATIVE_METRIC_ID =
-            "required.initiative.metric.id"
+    if (agentType.isNullOrBlank()) {
+        throw AiBadRequestException(
+            errorCode = Metadata.ErrorMessages.REQUIRED_INITIATIVE_METRIC_AGENT_TYPE,
+            message = messageProvider[
+                Metadata.ErrorMessages.REQUIRED_INITIATIVE_METRIC_AGENT_TYPE
+            ],
+        )
+    }
 
-        const val WRONG_INITIATIVE_METRIC_AGENT_TYPE =
-            "wrong.initiative.metric.agent.type"
+    if (metricId == null) {
+        throw AiBadRequestException(
+            errorCode = Metadata.ErrorMessages.REQUIRED_INITIATIVE_METRIC_ID,
+            message = messageProvider[
+                Metadata.ErrorMessages.REQUIRED_INITIATIVE_METRIC_ID
+            ],
+        )
+    }
 
-        const val INITIATIVE_METRIC_NOT_FOUND =
-            "initiative.metric.not.found"
+    validateInitiativeMetricAgentType(
+        agentType = agentType,
+    )
 
-        const val INITIATIVE_METRIC_TYPES_NOT_FOUND =
-            "initiative.metric.types.not.found"
+    val metricDirectory =
+        metricsDirectoryRepository.findByIdOrNull(
+            id = metricId,
+        ) ?: throw AiBadRequestException(
+            errorCode = Metadata.ErrorMessages.INITIATIVE_METRIC_NOT_FOUND,
+            message = MessageFormat.format(
+                messageProvider[Metadata.ErrorMessages.INITIATIVE_METRIC_NOT_FOUND],
+                metricId,
+            ),
+        )
 
-        const val INITIATIVE_METRIC_AGENT_TYPE_NOT_FOUND =
-            "initiative.metric.agent.type.not.found"
+    val initiativeHasMetricTypes =
+        initiativeMetricTypeRepository.existsByAiAgentId(
+            initiativeId = initiativeId,
+        )
 
-required.initiative.metric.agent.type=Не передан обязательный параметр agentType
-required.initiative.metric.id=Не передан обязательный параметр id метрики
-wrong.initiative.metric.agent.type=Недопустимый режим работы инициативы: {0}
-initiative.metric.not.found=Метрика с идентификатором {0} не найдена
-initiative.metric.types.not.found=Для инициативы с идентификатором {0} не найдены режимы работы
-initiative.metric.agent.type.not.found=Для инициативы с идентификатором {0} не найден режим работы: {1}
+    if (!initiativeHasMetricTypes) {
+        throw AiConflictException(
+            errorCode = Metadata.ErrorMessages.INITIATIVE_METRIC_TYPES_NOT_FOUND,
+            message = MessageFormat.format(
+                messageProvider[Metadata.ErrorMessages.INITIATIVE_METRIC_TYPES_NOT_FOUND],
+                initiativeId,
+            ),
+        )
+    }
 
-required.initiative.metric.agent.type=Required parameter agentType is missing
-required.initiative.metric.id=Required metric id parameter is missing
-wrong.initiative.metric.agent.type=Unsupported initiative agent type: {0}
-initiative.metric.not.found=Metric with id {0} was not found
-initiative.metric.types.not.found=No metric agent types were found for initiative with id {0}
-initiative.metric.agent.type.not.found=Agent type {1} was not found for initiative with id {0}
+    val initiativeMetricType =
+        initiativeMetricTypeRepository.findByAiAgentIdAndAgentType(
+            initiativeId = initiativeId,
+            agentType = agentType,
+        ) ?: throw AiConflictException(
+            errorCode = Metadata.ErrorMessages.INITIATIVE_METRIC_AGENT_TYPE_NOT_FOUND,
+            message = MessageFormat.format(
+                messageProvider[Metadata.ErrorMessages.INITIATIVE_METRIC_AGENT_TYPE_NOT_FOUND],
+                initiativeId,
+                agentType,
+            ),
+        )
+
+    val initiativeMetricTypeId =
+        requireNotNull(initiativeMetricType.id) {
+            "initiativeMetricType.id must not be null"
+        }
+
+    val metricValueEntity =
+        initiativeMetricValueRepository.findByInitiativeMetricType_IdAndMetricDirectory_Id(
+            initiativeMetricTypeId = initiativeMetricTypeId,
+            metricDirectoryId = metricId,
+        ) ?: InitiativeMetricValueEntity(
+            initiativeMetricType = initiativeMetricType,
+            metricDirectory = metricDirectory,
+        )
+
+    metricValueEntity.metricValue = request.metricValue
+    metricValueEntity.targetValue = request.targetValue
+
+    initiativeMetricValueRepository.save(
+        metricValueEntity,
+    )
+
+    return SaveInitiativeMetricValueResponse.success()
+}
 ```
