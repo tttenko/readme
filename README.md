@@ -1,232 +1,132 @@
 ```java
 @ExtendWith(MockKExtension::class)
-class InitiativeAgentTypesPermissionValidatorTest {
+class AIAgentInitiativeServiceTest {
 
     @MockK
-    private lateinit var userInfoProvider: UserInfoProvider
+    private lateinit var initiativeMetricValueSaver: InitiativeMetricValueSaver
 
     @MockK
-    private lateinit var statusRepository: StatusRepository
+    private lateinit var initiativeAgentTypesUpdater: InitiativeAgentTypesUpdater
 
-    private lateinit var validator: InitiativeAgentTypesPermissionValidator
+    private lateinit var service: AIAgentInitiativeService
 
     @BeforeEach
     fun setUp() {
-        validator = InitiativeAgentTypesPermissionValidator(
-            userInfoProvider = userInfoProvider,
-            statusRepository = statusRepository,
+        service = AIAgentInitiativeService(
+            initiativeMetricValueSaver = initiativeMetricValueSaver,
+            initiativeAgentTypesUpdater = initiativeAgentTypesUpdater,
         )
     }
 
     @Test
-    fun `validate should not throw when initiative status is before MVP`() {
+    fun `saveInitiativeMetricValue should delegate to initiativeMetricValueSaver and return response`() {
         // Given
-        val initiative =
-            createInitiative(
-                statusOrdering = 30L
+        val initiativeId = 1L
+
+        val request =
+            SaveInitiativeMetricValueRequest(
+                agentType = "copilot",
+                metricId = UUID.randomUUID(),
+                metricValue = BigDecimal.TEN,
+                targetValue = BigDecimal.valueOf(20),
             )
 
-        every {
-            statusRepository.findFirstByCode(code = "pilot")
-        } returns createStatus(
-            code = "pilot",
-            ordering = 40L,
-        )
+        val expectedResponse =
+            SaveInitiativeMetricValueResponse.success()
 
-        // When & Then
-        assertDoesNotThrow {
-            validator.validate(initiative = initiative)
+        every {
+            initiativeMetricValueSaver.saveInitiativeMetricValue(
+                initiativeId = initiativeId,
+                request = request,
+            )
+        } returns expectedResponse
+
+        // When
+        val actualResponse =
+            service.saveInitiativeMetricValue(
+                initiativeId = initiativeId,
+                request = request,
+            )
+
+        // Then
+        assertEquals(expectedResponse, actualResponse)
+
+        verify(exactly = 1) {
+            initiativeMetricValueSaver.saveInitiativeMetricValue(
+                initiativeId = initiativeId,
+                request = request,
+            )
         }
 
         verify(exactly = 0) {
-            userInfoProvider.currentUser()
+            initiativeAgentTypesUpdater.update(any(), any())
         }
+
+        confirmVerified(
+            initiativeMetricValueSaver,
+            initiativeAgentTypesUpdater,
+        )
     }
 
     @Test
-    fun `validate should not throw when initiative status is MVP and user has transformation office role`() {
+    fun `updateInitiativeAgentTypes should delegate to initiativeAgentTypesUpdater and return response`() {
         // Given
-        val initiative =
-            createInitiative(
-                statusOrdering = 40L
+        val initiativeId = 1L
+
+        val request =
+            UpdateInitiativeAgentTypesRequest(
+                agentTypes = setOf("copilot", "autonomous")
+            )
+
+        val expectedResponse =
+            listOf(
+                InitiativeMetricResponse(
+                    id = UUID.randomUUID(),
+                    name = "Метрика",
+                    unit = "шт",
+                    direction = "growth",
+                    agentTypes = setOf("copilot"),
+                    isActive = true,
+                    description = "Описание",
+                    frequency = "monthly",
+                    metricValue = BigDecimal.TEN,
+                    targetValue = BigDecimal.valueOf(20),
+                    periods = emptyList(),
+                )
             )
 
         every {
-            statusRepository.findFirstByCode(code = "pilot")
-        } returns createStatus(
-            code = "pilot",
-            ordering = 40L,
-        )
+            initiativeAgentTypesUpdater.update(
+                initiativeId = initiativeId,
+                request = request,
+            )
+        } returns expectedResponse
 
-        every {
-            userInfoProvider.currentUser().roles
-        } returns setOf("TRANSFORMATION_OFFICE")
-
-        // When & Then
-        assertDoesNotThrow {
-            validator.validate(initiative = initiative)
-        }
-
-        verify(exactly = 1) {
-            userInfoProvider.currentUser()
-        }
-    }
-
-    @Test
-    fun `validate should not throw when initiative status is after MVP and user has transformation office role`() {
-        // Given
-        val initiative =
-            createInitiative(
-                statusOrdering = 50L
+        // When
+        val actualResponse =
+            service.updateInitiativeAgentTypes(
+                initiativeId = initiativeId,
+                request = request,
             )
 
-        every {
-            statusRepository.findFirstByCode(code = "pilot")
-        } returns createStatus(
-            code = "pilot",
-            ordering = 40L,
-        )
-
-        every {
-            userInfoProvider.currentUser().roles
-        } returns setOf("TRANSFORMATION_OFFICE")
-
-        // When & Then
-        assertDoesNotThrow {
-            validator.validate(initiative = initiative)
-        }
+        // Then
+        assertEquals(expectedResponse, actualResponse)
 
         verify(exactly = 1) {
-            userInfoProvider.currentUser()
-        }
-    }
-
-    @Test
-    fun `validate should throw forbidden when initiative status is MVP and user has no transformation office role`() {
-        // Given
-        val initiative =
-            createInitiative(
-                statusOrdering = 40L
+            initiativeAgentTypesUpdater.update(
+                initiativeId = initiativeId,
+                request = request,
             )
-
-        every {
-            statusRepository.findFirstByCode(code = "pilot")
-        } returns createStatus(
-            code = "pilot",
-            ordering = 40L,
-        )
-
-        every {
-            userInfoProvider.currentUser().roles
-        } returns setOf("PROJECT_OFFICE")
-
-        // When & Then
-        assertThrows<AiForbiddenException> {
-            validator.validate(initiative = initiative)
-        }
-
-        verify(exactly = 1) {
-            userInfoProvider.currentUser()
-        }
-    }
-
-    @Test
-    fun `validate should throw forbidden when initiative status is after MVP and user has no transformation office role`() {
-        // Given
-        val initiative =
-            createInitiative(
-                statusOrdering = 60L
-            )
-
-        every {
-            statusRepository.findFirstByCode(code = "pilot")
-        } returns createStatus(
-            code = "pilot",
-            ordering = 40L,
-        )
-
-        every {
-            userInfoProvider.currentUser().roles
-        } returns setOf("CMS_ADMIN")
-
-        // When & Then
-        assertThrows<AiForbiddenException> {
-            validator.validate(initiative = initiative)
-        }
-
-        verify(exactly = 1) {
-            userInfoProvider.currentUser()
-        }
-    }
-
-    @Test
-    fun `validate should not throw when initiative has no status`() {
-        // Given
-        val initiative =
-            AIAgentEntity().apply {
-                id = 1L
-                agentStatus = null
-            }
-
-        // When & Then
-        assertDoesNotThrow {
-            validator.validate(initiative = initiative)
         }
 
         verify(exactly = 0) {
-            statusRepository.findFirstByCode(any())
+            initiativeMetricValueSaver.saveInitiativeMetricValue(any(), any())
         }
 
-        verify(exactly = 0) {
-            userInfoProvider.currentUser()
-        }
-    }
-
-    @Test
-    fun `validate should not throw when mvp status not found`() {
-        // Given
-        val initiative =
-            createInitiative(
-                statusOrdering = 50L
-            )
-
-        every {
-            statusRepository.findFirstByCode(code = "pilot")
-        } returns null
-
-        // When & Then
-        assertDoesNotThrow {
-            validator.validate(initiative = initiative)
-        }
-
-        verify(exactly = 0) {
-            userInfoProvider.currentUser()
-        }
-    }
-
-    private fun createInitiative(
-        statusOrdering: Long,
-    ): AIAgentEntity {
-        return AIAgentEntity().apply {
-            id = 1L
-            agentStatus = createStatus(
-                code = "development",
-                ordering = statusOrdering,
-            )
-        }
-    }
-
-    private fun createStatus(
-        code: String,
-        ordering: Long,
-    ): StatusEntity {
-        return StatusEntity().apply {
-            id = ordering
-            name = code
-            this.code = code
-            this.ordering = ordering
-            disabled = false
-        }
+        confirmVerified(
+            initiativeMetricValueSaver,
+            initiativeAgentTypesUpdater,
+        )
     }
 }
 ```
