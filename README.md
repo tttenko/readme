@@ -1,11 +1,10 @@
 ```java
- select
-    id,
-    author,
-    filename,
-    dateexecuted,
-    exectype
-from databasechangelog
-where id = 'add autoincrement to enabler.id';
+select
+    column_name,
+    column_default,
+    is_identity
+from information_schema.columns
+where table_name = 'enabler'
+  and column_name = 'id';
 
 ```
