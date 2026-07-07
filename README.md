@@ -1,192 +1,56 @@
 ```java
-@Test
-fun `getAIAgentList should return hasMetricsValue true when agent has initiative metric type`() {
-    val user = UserDto(
-        id = 10L,
-        roles = setOf("CMS_ADMIN"),
-        email = null,
-        login = null,
-        firstName = null,
-        lastName = null,
-        patronymic = null,
-        phoneNumber = null,
-        position = null,
-        sberbankEmployee = null,
-        companyId = null
-    )
+создай скилл, который будет проводить ревью кода
+скил должен оценивать код как senior backend developer перед merge request.
+Проводить код-ревью, но не переписывать код самостоятельно. Оставлять только комментарии, замечания и рекомендации по улучшению. Если нужен рефакторинг, описывать, что именно стоит изменить и почему, но не заменять исходный код полностью.
 
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
+Проверять:
 
-    val agent = AIAgentEntity(
-        agentId = "agent-1",
-        agentName = "Agent 1",
-        disabled = false
-    ).apply {
-        id = 1L
-    }
+Архитектурную чистоту:
+нет ли нарушения слоёв приложения;
+не смешана ли бизнес-логика с контроллерами, DTO, репозиториями или мапперами;
+правильно ли распределена ответственность между классами;
+нет ли чрезмерно больших сервисов, методов или классов.
+Соответствие принципам SOLID:
+не нарушен ли Single Responsibility Principle;
+не приходится ли менять существующий код там, где лучше было бы расширять поведение;
+нет ли жёстких зависимостей, которые лучше вынести через абстракции;
+не нарушена ли читаемость из-за лишней универсальности.
+Дублирование кода:
+есть ли повторяющиеся проверки, условия, маппинг или бизнес-правила;
+что стоит вынести в отдельные методы, валидаторы, мапперы или сервисы;
+нет ли одинаковой логики в разных местах проекта.
+Покрытие тестами:
+покрыт ли новый код unit-тестами;
+какие позитивные и негативные сценарии нужно добавить;
+проверены ли ошибки, null, пустые значения, некорректные входные данные и пограничные случаи;
+нужны ли mock-тесты, интеграционные тесты или проверка через API.
+Безопасность:
+корректно ли проверяются роли и права доступа;
+нет ли риска несанкционированного доступа к данным;
+нет ли утечки чувствительных данных в ответах, логах или сообщениях ошибок;
+безопасно ли обрабатываются пользовательские входные данные.
+Нейминг:
+понятны ли названия переменных, методов, классов и DTO;
+отражают ли названия реальное назначение;
+нет ли слишком общих, misleading или неочевидных названий;
+какие названия стоит улучшить.
+Читаемость и поддерживаемость:
+нет ли слишком сложных условий;
+нет ли лишней вложенности;
+можно ли упростить код без изменения поведения;
+легко ли будет поддерживать этот код другому разработчику.
 
-    every { userInfoProvider.currentUser() } returns user
+Формат ответа:
 
-    every {
-        aiAgentRepository.findAll(
-            search = any(),
-            terbankIds = any(),
-            programCodes = any(),
-            agentStatusCodes = any(),
-            blockCodes = any(),
-            divisionCodes = any(),
-            platformCodes = any(),
-            initiativeTypes = any(),
-            userAudiences = any(),
-            disabled = any(),
-            deadlineExpiredIds = any(),
-            userId = any(),
-            sortField = any(),
-            sortDirection = any(),
-            pageRequest = any()
-        )
-    } returns PageImpl(listOf(agent))
+Критичные замечания
+Архитектурные замечания
+Нарушения SOLID
+Дублирование
+Замечания по тестам
+Возможные проблемы безопасности
+Замечания по неймингу
+Что можно оставить как есть
+Итоговая оценка готовности к merge request
 
-    every {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L)
-        )
-    } returns setOf(1L)
-
-    val result = service.getAIAgentList(request)
-
-    Assertions.assertThat(result.content).hasSize(1)
-    Assertions.assertThat(result.content[0].hasMetricsValue).isTrue()
-
-    verify(exactly = 1) {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L)
-        )
-    }
-}
-
-@Test
-fun `getAIAgentList should return hasMetricsValue false when agent has no initiative metric type`() {
-    val user = UserDto(
-        id = 10L,
-        roles = setOf("CMS_ADMIN"),
-        email = null,
-        login = null,
-        firstName = null,
-        lastName = null,
-        patronymic = null,
-        phoneNumber = null,
-        position = null,
-        sberbankEmployee = null,
-        companyId = null
-    )
-
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
-
-    val agent = AIAgentEntity(
-        agentId = "agent-1",
-        agentName = "Agent 1",
-        disabled = false
-    ).apply {
-        id = 1L
-    }
-
-    every { userInfoProvider.currentUser() } returns user
-
-    every {
-        aiAgentRepository.findAll(
-            search = any(),
-            terbankIds = any(),
-            programCodes = any(),
-            agentStatusCodes = any(),
-            blockCodes = any(),
-            divisionCodes = any(),
-            platformCodes = any(),
-            initiativeTypes = any(),
-            userAudiences = any(),
-            disabled = any(),
-            deadlineExpiredIds = any(),
-            userId = any(),
-            sortField = any(),
-            sortDirection = any(),
-            pageRequest = any()
-        )
-    } returns PageImpl(listOf(agent))
-
-    every {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L)
-        )
-    } returns emptySet()
-
-    val result = service.getAIAgentList(request)
-
-    Assertions.assertThat(result.content).hasSize(1)
-    Assertions.assertThat(result.content[0].hasMetricsValue).isFalse()
-
-    verify(exactly = 1) {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L)
-        )
-    }
-}
-
-@Test
-fun `getAIAgentList should not call initiative metric type repository when agents page is empty`() {
-    val user = UserDto(
-        id = 10L,
-        roles = setOf("CMS_ADMIN"),
-        email = null,
-        login = null,
-        firstName = null,
-        lastName = null,
-        patronymic = null,
-        phoneNumber = null,
-        position = null,
-        sberbankEmployee = null,
-        companyId = null
-    )
-
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
-
-    every { userInfoProvider.currentUser() } returns user
-
-    every {
-        aiAgentRepository.findAll(
-            search = any(),
-            terbankIds = any(),
-            programCodes = any(),
-            agentStatusCodes = any(),
-            blockCodes = any(),
-            divisionCodes = any(),
-            platformCodes = any(),
-            initiativeTypes = any(),
-            userAudiences = any(),
-            disabled = any(),
-            deadlineExpiredIds = any(),
-            userId = any(),
-            sortField = any(),
-            sortDirection = any(),
-            pageRequest = any()
-        )
-    } returns PageImpl(emptyList())
-
-    val result = service.getAIAgentList(request)
-
-    Assertions.assertThat(result.content).isEmpty()
-
-    verify(exactly = 0) {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(any())
-    }
-}
-
+Важно: скилл не дллжен переписывать код целиком.Не должен вносить изменения сам. Должен только оставлять комментарии и объяснять, что именно стоит исправить, почему это проблема и как лучше подойти к исправлению.
 ```
