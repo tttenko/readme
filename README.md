@@ -1,56 +1,157 @@
 ```java
-создай скилл, который будет проводить ревью кода
-скил должен оценивать код как senior backend developer перед merge request.
-Проводить код-ревью, но не переписывать код самостоятельно. Оставлять только комментарии, замечания и рекомендации по улучшению. Если нужен рефакторинг, описывать, что именно стоит изменить и почему, но не заменять исходный код полностью.
+@Service
+class InitiativeMetricValueCreator(
+    private val messageProvider: MessageProvider,
+    private val initiativeMetricTypeRepository: InitiativeMetricTypeRepository,
+    private val initiativeMetricValueRepository: InitiativeMetricValueRepository,
+    private val metricsDirectoryRepository: MetricsDirectoryRepository,
+) {
 
-Проверять:
+    @Transactional
+    fun saveInitiativeMetricValue(
+        initiativeId: Long,
+        request: SaveInitiativeMetricValuesRequest,
+    ): SaveInitiativeMetricValueResponse {
+        validateDuplicates(request.metricsValues)
 
-Архитектурную чистоту:
-нет ли нарушения слоёв приложения;
-не смешана ли бизнес-логика с контроллерами, DTO, репозиториями или мапперами;
-правильно ли распределена ответственность между классами;
-нет ли чрезмерно больших сервисов, методов или классов.
-Соответствие принципам SOLID:
-не нарушен ли Single Responsibility Principle;
-не приходится ли менять существующий код там, где лучше было бы расширять поведение;
-нет ли жёстких зависимостей, которые лучше вынести через абстракции;
-не нарушена ли читаемость из-за лишней универсальности.
-Дублирование кода:
-есть ли повторяющиеся проверки, условия, маппинг или бизнес-правила;
-что стоит вынести в отдельные методы, валидаторы, мапперы или сервисы;
-нет ли одинаковой логики в разных местах проекта.
-Покрытие тестами:
-покрыт ли новый код unit-тестами;
-какие позитивные и негативные сценарии нужно добавить;
-проверены ли ошибки, null, пустые значения, некорректные входные данные и пограничные случаи;
-нужны ли mock-тесты, интеграционные тесты или проверка через API.
-Безопасность:
-корректно ли проверяются роли и права доступа;
-нет ли риска несанкционированного доступа к данным;
-нет ли утечки чувствительных данных в ответах, логах или сообщениях ошибок;
-безопасно ли обрабатываются пользовательские входные данные.
-Нейминг:
-понятны ли названия переменных, методов, классов и DTO;
-отражают ли названия реальное назначение;
-нет ли слишком общих, misleading или неочевидных названий;
-какие названия стоит улучшить.
-Читаемость и поддерживаемость:
-нет ли слишком сложных условий;
-нет ли лишней вложенности;
-можно ли упростить код без изменения поведения;
-легко ли будет поддерживать этот код другому разработчику.
+        if (!initiativeMetricTypeRepository.existsByAiAgentId(initiativeId)) {
+            throw AiConflictException(
+                errorCode = INITIATIVE_METRIC_TYPES_NOT_FOUND,
+                message = MessageFormat.format(
+                    messageProvider[INITIATIVE_METRIC_TYPES_NOT_FOUND],
+                    initiativeId
+                )
+            )
+        }
 
-Формат ответа:
+        val periodMonth = YearMonth.now().atDay(1)
 
-Критичные замечания
-Архитектурные замечания
-Нарушения SOLID
-Дублирование
-Замечания по тестам
-Возможные проблемы безопасности
-Замечания по неймингу
-Что можно оставить как есть
-Итоговая оценка готовности к merge request
+        val metricValuesToSave = request.metricsValues.map { metricValueRequest ->
+            val agentType = validateInitiativeMetricAgentType(
+                agentType = metricValueRequest.agentType.trim()
+            )
 
-Важно: скилл не дллжен переписывать код целиком.Не должен вносить изменения сам. Должен только оставлять комментарии и объяснять, что именно стоит исправить, почему это проблема и как лучше подойти к исправлению.
+            val metricDirectory = metricsDirectoryRepository.findByIdOrNull(
+                id = metricValueRequest.metricId
+            ) ?: throw AiBadRequestException(
+                errorCode = INITIATIVE_METRIC_NOT_FOUND,
+                message = MessageFormat.format(
+                    messageProvider[INITIATIVE_METRIC_NOT_FOUND],
+                    metricValueRequest.metricId
+                )
+            )
+
+            val initiativeMetricType = initiativeMetricTypeRepository.findByAiAgentIdAndAgentType(
+                initiativeId = initiativeId,
+                agentType = agentType.value
+            ) ?: throw AiConflictException(
+                errorCode = INITIATIVE_METRIC_AGENT_TYPE_NOT_FOUND,
+                message = MessageFormat.format(
+                    messageProvider[INITIATIVE_METRIC_AGENT_TYPE_NOT_FOUND],
+                    initiativeId,
+                    agentType.value
+                )
+            )
+
+            val initiativeMetricTypeId = requireNotNull(initiativeMetricType.id) {
+                "initiativeMetricType.id must not be null"
+            }
+
+            val metricValueEntity = initiativeMetricValueRepository
+                .findByInitiativeMetricTypeIdAndMetricDirectoryIdAndPeriodMonth(
+                    initiativeMetricTypeId = initiativeMetricTypeId,
+                    metricDirectoryId = metricValueRequest.metricId,
+                    periodMonth = periodMonth,
+                )
+                ?: InitiativeMetricValueEntity(
+                    initiativeMetricType = initiativeMetricType,
+                    metricDirectory = metricDirectory,
+                )
+
+            metricValueEntity.periodMonth = periodMonth
+            metricValueEntity.metricValue = metricValueRequest.metricValue
+            metricValueEntity.targetValue = metricValueRequest.targetValue
+
+            metricValueEntity
+        }
+
+        initiativeMetricValueRepository.saveAll(metricValuesToSave)
+
+        return SaveInitiativeMetricValueResponse.success()
+    }
+
+    private fun validateInitiativeMetricAgentType(
+        agentType: String,
+    ): InitiativeMetricAgentType {
+        return InitiativeMetricAgentType.fromValue(agentType)
+            ?: throw AiBadRequestException(
+                errorCode = WRONG_INITIATIVE_METRIC_AGENT_TYPE,
+                message = MessageFormat.format(
+                    messageProvider[WRONG_INITIATIVE_METRIC_AGENT_TYPE]
+                )
+            )
+    }
+
+    private fun validateDuplicates(
+        metricsValues: List<SaveInitiativeMetricValueRequest>,
+    ) {
+        val duplicate = metricsValues
+            .groupBy { metricValueRequest ->
+                metricValueRequest.agentType.trim() to metricValueRequest.metricId
+            }
+            .filterValues { groupedValues -> groupedValues.size > 1 }
+            .keys
+            .firstOrNull()
+
+        if (duplicate != null) {
+            throw AiBadRequestException(
+                errorCode = INITIATIVE_METRIC_VALUE_DUPLICATE,
+                message = MessageFormat.format(
+                    messageProvider[INITIATIVE_METRIC_VALUE_DUPLICATE],
+                    duplicate.second,
+                    duplicate.first,
+                )
+            )
+        }
+    }
+}
+
+@Query(
+        value = """
+            select metricValue
+            from InitiativeMetricValueEntity metricValue
+                join fetch metricValue.metricDirectory metricDirectory
+                join fetch metricValue.initiativeMetricType initiativeMetricType
+            where initiativeMetricType.id in :initiativeMetricTypeIds
+              and metricDirectory.id in :metricDirectoryIds
+              and metricValue.periodMonth = :periodMonth
+        """
+    )
+    fun findAllByMetricTypesAndMetricsAndPeriodMonth(
+        @Param("initiativeMetricTypeIds")
+        initiativeMetricTypeIds: Set<Long>,
+
+        @Param("metricDirectoryIds")
+        metricDirectoryIds: Set<UUID>,
+
+        @Param("periodMonth")
+        periodMonth: LocalDate,
+    ): List<InitiativeMetricValueEntity>
+
+    fun findAllByAiAgentIdAndAgentTypeIn(
+        initiativeId: Long,
+        agentTypes: Set<String>,
+    ): List<InitiativeMetricTypeEntity>
+
+    data class SaveInitiativeMetricValuesRequest(
+
+    @field:NotEmpty
+    @field:Valid
+    @Schema(description = "Список значений метрик")
+    val metricsValues: List<SaveInitiativeMetricValueRequest>
+)
+
+const val INITIATIVE_METRIC_VALUE_DUPLICATE = "INITIATIVE_METRIC_VALUE_DUPLICATE"
+
+INITIATIVE_METRIC_VALUE_DUPLICATE=Для метрики {0} и режима работы {1} значение передано несколько раз
 ```
