@@ -1,446 +1,200 @@
 ```java
-@ExtendWith(MockKExtension::class)
-class InitiativeMetricValueSaverTest {
+@Service
+class InitiativeMetricValueCreator(
+    private val messageProvider: MessageProvider,
+    private val initiativeMetricTypeRepository: InitiativeMetricTypeRepository,
+    private val initiativeMetricValueRepository: InitiativeMetricValueRepository,
+    private val metricsDirectoryRepository: MetricsDirectoryRepository,
+) {
 
-    @MockK
-    private lateinit var messageProvider: MessageProvider
+    @Transactional
+    fun saveInitiativeMetricValue(
+        initiativeId: Long,
+        request: SaveInitiativeMetricValuesRequest,
+    ): SaveInitiativeMetricValueResponse {
+        validateDuplicates(request.metricsValues)
 
-    @MockK
-    private lateinit var initiativeMetricTypeRepository: InitiativeMetricTypeRepository
-
-    @MockK
-    private lateinit var initiativeMetricValueRepository: InitiativeMetricValueRepository
-
-    @MockK
-    private lateinit var metricsDirectoryRepository: MetricsDirectoryRepository
-
-    @InjectMockKs
-    private lateinit var service: InitiativeMetricValueCreator
-
-    @Test
-    fun `saveInitiativeMetricValue should create metric value when value does not exist`() {
-        // Given
-        val initiativeId = 1L
-        val initiativeMetricTypeId = 10L
-        val metricId = UUID.randomUUID()
-        val periodMonth = YearMonth.now().atDay(1)
-
-        val request = SaveInitiativeMetricValuesRequest(
-            metricsValues = listOf(
-                SaveInitiativeMetricValueRequest(
-                    agentType = "copilot",
-                    metricId = metricId,
-                    metricValue = BigDecimal("10"),
-                    targetValue = BigDecimal("20"),
+        if (!initiativeMetricTypeRepository.existsByAiAgentId(initiativeId)) {
+            throw AiConflictException(
+                errorCode = INITIATIVE_METRIC_TYPES_NOT_FOUND,
+                message = MessageFormat.format(
+                    messageProvider[INITIATIVE_METRIC_TYPES_NOT_FOUND],
+                    initiativeId
                 )
             )
-        )
-
-        val metricDirectory = MetricsDirectoryEntity().also {
-            it.id = metricId
         }
 
-        val initiativeMetricType = InitiativeMetricTypeEntity(
-            aiAgent = AIAgentEntity().also {
-                it.id = initiativeId
-            },
-            agentType = "copilot",
-        ).also {
-            it.id = initiativeMetricTypeId
-        }
+        val periodMonth = YearMonth.now().atDay(1)
 
-        val savedMetricValues = mutableListOf<InitiativeMetricValueEntity>()
+        val metricIds = request.metricsValues
+            .map { metricValueRequest -> metricValueRequest.metricId }
+            .toSet()
 
-        every {
-            initiativeMetricTypeRepository.existsByAiAgentId(initiativeId)
-        } returns true
+        val agentTypes = request.metricsValues
+            .map { metricValueRequest ->
+                validateInitiativeMetricAgentType(
+                    agentType = metricValueRequest.agentType.trim()
+                ).value
+            }
+            .toSet()
 
-        every {
-            metricsDirectoryRepository.findAllById(setOf(metricId))
-        } returns listOf(metricDirectory)
-
-        every {
-            initiativeMetricTypeRepository.findAllByAiAgentIdAndAgentTypeIn(
-                initiativeId = initiativeId,
-                agentTypes = setOf("copilot"),
-            )
-        } returns listOf(initiativeMetricType)
-
-        every {
-            initiativeMetricValueRepository.findAllByInitiativeMetricTypeIdsAndMetricDirectoryIdsAndPeriodMonth(
-                initiativeMetricTypeIds = setOf(initiativeMetricTypeId),
-                metricDirectoryIds = setOf(metricId),
-                periodMonth = periodMonth,
-            )
-        } returns emptyList()
-
-        every {
-            initiativeMetricValueRepository.saveAll(any<Iterable<InitiativeMetricValueEntity>>())
-        } answers {
-            firstArg<Iterable<InitiativeMetricValueEntity>>()
-                .toList()
-                .also {
-                    savedMetricValues.clear()
-                    savedMetricValues.addAll(it)
+        val metricDirectoriesMap = metricsDirectoryRepository.findAllById(metricIds)
+            .associateBy { metricDirectory ->
+                requireNotNull(metricDirectory.id) {
+                    "metricDirectory.id must not be null"
                 }
-        }
+            }
 
-        // When
-        val response = service.saveInitiativeMetricValue(
+        validateRequestedMetricsExists(
+            requestedMetricIds = metricIds,
+            existingMetricIds = metricDirectoriesMap.keys,
+        )
+
+        val initiativeMetricTypes = initiativeMetricTypeRepository.findAllByAiAgentIdAndAgentTypeIn(
             initiativeId = initiativeId,
-            request = request,
+            agentTypes = agentTypes,
         )
 
-        // Then
-        assertEquals(0, response.code)
-        assertEquals("Metrics saved", response.message)
-
-        val savedMetricValue = savedMetricValues.single()
-
-        Assertions.assertSame(
-            initiativeMetricType,
-            savedMetricValue.initiativeMetricType,
-        )
-        Assertions.assertSame(
-            metricDirectory,
-            savedMetricValue.metricDirectory,
-        )
-        assertEquals(periodMonth, savedMetricValue.periodMonth)
-        assertEquals(BigDecimal("10"), savedMetricValue.metricValue)
-        assertEquals(BigDecimal("20"), savedMetricValue.targetValue)
-
-        verify(exactly = 1) {
-            metricsDirectoryRepository.findAllById(setOf(metricId))
-        }
-
-        verify(exactly = 1) {
-            initiativeMetricTypeRepository.findAllByAiAgentIdAndAgentTypeIn(
-                initiativeId = initiativeId,
-                agentTypes = setOf("copilot"),
-            )
-        }
-
-        verify(exactly = 1) {
-            initiativeMetricValueRepository.findAllByInitiativeMetricTypeIdsAndMetricDirectoryIdsAndPeriodMonth(
-                initiativeMetricTypeIds = setOf(initiativeMetricTypeId),
-                metricDirectoryIds = setOf(metricId),
-                periodMonth = periodMonth,
-            )
-        }
-
-        verify(exactly = 1) {
-            initiativeMetricValueRepository.saveAll(any<Iterable<InitiativeMetricValueEntity>>())
-        }
-    }
-
-    @Test
-    fun `saveInitiativeMetricValue should update metric value when value already exists`() {
-        // Given
-        val initiativeId = 1L
-        val initiativeMetricTypeId = 10L
-        val metricId = UUID.randomUUID()
-        val periodMonth = YearMonth.now().atDay(1)
-
-        val request = SaveInitiativeMetricValuesRequest(
-            metricsValues = listOf(
-                SaveInitiativeMetricValueRequest(
-                    agentType = "copilot",
-                    metricId = metricId,
-                    metricValue = BigDecimal("15"),
-                    targetValue = BigDecimal("25"),
-                )
-            )
-        )
-
-        val metricDirectory = MetricsDirectoryEntity().also {
-            it.id = metricId
-        }
-
-        val initiativeMetricType = InitiativeMetricTypeEntity(
-            aiAgent = AIAgentEntity().also {
-                it.id = initiativeId
-            },
-            agentType = "copilot",
-        ).also {
-            it.id = initiativeMetricTypeId
-        }
-
-        val existingMetricValue = InitiativeMetricValueEntity(
-            initiativeMetricType = initiativeMetricType,
-            metricDirectory = metricDirectory,
-            metricValue = BigDecimal("10"),
-            targetValue = BigDecimal("20"),
-        ).also {
-            it.id = 100L
-            it.periodMonth = periodMonth
-        }
-
-        val savedMetricValues = mutableListOf<InitiativeMetricValueEntity>()
-
-        every {
-            initiativeMetricTypeRepository.existsByAiAgentId(initiativeId)
-        } returns true
-
-        every {
-            metricsDirectoryRepository.findAllById(setOf(metricId))
-        } returns listOf(metricDirectory)
-
-        every {
-            initiativeMetricTypeRepository.findAllByAiAgentIdAndAgentTypeIn(
-                initiativeId = initiativeId,
-                agentTypes = setOf("copilot"),
-            )
-        } returns listOf(initiativeMetricType)
-
-        every {
-            initiativeMetricValueRepository.findAllByInitiativeMetricTypeIdsAndMetricDirectoryIdsAndPeriodMonth(
-                initiativeMetricTypeIds = setOf(initiativeMetricTypeId),
-                metricDirectoryIds = setOf(metricId),
-                periodMonth = periodMonth,
-            )
-        } returns listOf(existingMetricValue)
-
-        every {
-            initiativeMetricValueRepository.saveAll(any<Iterable<InitiativeMetricValueEntity>>())
-        } answers {
-            firstArg<Iterable<InitiativeMetricValueEntity>>()
-                .toList()
-                .also {
-                    savedMetricValues.clear()
-                    savedMetricValues.addAll(it)
+        val initiativeMetricTypesMap = initiativeMetricTypes
+            .associateBy { initiativeMetricType ->
+                requireNotNull(initiativeMetricType.agentType) {
+                    "initiativeMetricType.agentType must not be null"
                 }
-        }
+            }
 
-        // When
-        val response = service.saveInitiativeMetricValue(
+        validateRequestedAgentTypesExists(
             initiativeId = initiativeId,
-            request = request,
+            requestedAgentTypes = agentTypes,
+            existingAgentTypes = initiativeMetricTypesMap.keys,
         )
 
-        // Then
-        assertEquals(0, response.code)
-        assertEquals("Metrics saved", response.message)
+        val initiativeMetricTypeIds = initiativeMetricTypes
+            .map { initiativeMetricType ->
+                requireNotNull(initiativeMetricType.id) {
+                    "initiativeMetricType.id must not be null"
+                }
+            }
+            .toSet()
 
-        val savedMetricValue = savedMetricValues.single()
-
-        Assertions.assertSame(existingMetricValue, savedMetricValue)
-        assertEquals(periodMonth, existingMetricValue.periodMonth)
-        assertEquals(BigDecimal("15"), existingMetricValue.metricValue)
-        assertEquals(BigDecimal("25"), existingMetricValue.targetValue)
-
-        verify(exactly = 1) {
-            initiativeMetricValueRepository.saveAll(any<Iterable<InitiativeMetricValueEntity>>())
-        }
-    }
-
-    @Test
-    fun `saveInitiativeMetricValue should throw bad request when agent type is wrong`() {
-        // Given
-        val initiativeId = 1L
-
-        val request = SaveInitiativeMetricValuesRequest(
-            metricsValues = listOf(
-                SaveInitiativeMetricValueRequest(
-                    agentType = "wrong",
-                    metricId = UUID.randomUUID(),
-                    metricValue = BigDecimal("10"),
-                    targetValue = BigDecimal("20"),
-                )
-            )
-        )
-
-        every {
-            initiativeMetricTypeRepository.existsByAiAgentId(initiativeId)
-        } returns true
-
-        every {
-            messageProvider[Metadata.ErrorMessages.WRONG_INITIATIVE_METRIC_AGENT_TYPE]
-        } returns "Недопустимый режим работы инициативы: {0}"
-
-        // When & Then
-        assertThrows<AiBadRequestException> {
-            service.saveInitiativeMetricValue(
-                initiativeId = initiativeId,
-                request = request,
-            )
-        }
-
-        verify(exactly = 0) {
-            metricsDirectoryRepository.findAllById(any<Iterable<UUID>>())
-        }
-
-        verify(exactly = 0) {
-            initiativeMetricValueRepository.saveAll(any<Iterable<InitiativeMetricValueEntity>>())
-        }
-    }
-
-    @Test
-    fun `saveInitiativeMetricValue should throw bad request when metric not found`() {
-        // Given
-        val initiativeId = 1L
-        val initiativeMetricTypeId = 10L
-        val metricId = UUID.randomUUID()
-        val periodMonth = YearMonth.now().atDay(1)
-
-        val request = SaveInitiativeMetricValuesRequest(
-            metricsValues = listOf(
-                SaveInitiativeMetricValueRequest(
-                    agentType = "copilot",
-                    metricId = metricId,
-                    metricValue = BigDecimal("10"),
-                    targetValue = BigDecimal("20"),
-                )
-            )
-        )
-
-        val initiativeMetricType = InitiativeMetricTypeEntity(
-            aiAgent = AIAgentEntity().also {
-                it.id = initiativeId
-            },
-            agentType = "copilot",
-        ).also {
-            it.id = initiativeMetricTypeId
-        }
-
-        every {
-            initiativeMetricTypeRepository.existsByAiAgentId(initiativeId)
-        } returns true
-
-        every {
-            metricsDirectoryRepository.findAllById(setOf(metricId))
-        } returns emptyList()
-
-        every {
-            initiativeMetricTypeRepository.findAllByAiAgentIdAndAgentTypeIn(
-                initiativeId = initiativeId,
-                agentTypes = setOf("copilot"),
-            )
-        } returns listOf(initiativeMetricType)
-
-        every {
-            initiativeMetricValueRepository.findAllByInitiativeMetricTypeIdsAndMetricDirectoryIdsAndPeriodMonth(
-                initiativeMetricTypeIds = setOf(initiativeMetricTypeId),
-                metricDirectoryIds = setOf(metricId),
+        val existingValuesMap = initiativeMetricValueRepository
+            .findAllByInitiativeMetricTypeIdsAndMetricDirectoryIdsAndPeriodMonth(
+                initiativeMetricTypeIds = initiativeMetricTypeIds,
+                metricDirectoryIds = metricIds,
                 periodMonth = periodMonth,
             )
-        } returns emptyList()
+            .associateBy { metricValue ->
+                val initiativeMetricTypeId = requireNotNull(metricValue.initiativeMetricType?.id) {
+                    "initiativeMetricType.id must not be null"
+                }
 
-        every {
-            messageProvider[Metadata.ErrorMessages.INITIATIVE_METRIC_NOT_FOUND]
-        } returns "Метрика с идентификатором {0} не найдена"
+                val metricDirectoryId = requireNotNull(metricValue.metricDirectory?.id) {
+                    "metricDirectory.id must not be null"
+                }
 
-        // When & Then
-        assertThrows<AiBadRequestException> {
-            service.saveInitiativeMetricValue(
-                initiativeId = initiativeId,
-                request = request,
+                initiativeMetricTypeId to metricDirectoryId
+            }
+
+        val metricValuesToSave = request.metricsValues.map { metricValueRequest ->
+            val agentType = validateInitiativeMetricAgentType(
+                agentType = metricValueRequest.agentType.trim()
             )
+
+            val metricDirectory = metricDirectoriesMap.getValue(metricValueRequest.metricId)
+
+            val initiativeMetricType = initiativeMetricTypesMap.getValue(agentType.value)
+
+            val initiativeMetricTypeId = requireNotNull(initiativeMetricType.id) {
+                "initiativeMetricType.id must not be null"
+            }
+
+            val metricValueEntity = existingValuesMap[
+                initiativeMetricTypeId to metricValueRequest.metricId
+            ] ?: InitiativeMetricValueEntity(
+                initiativeMetricType = initiativeMetricType,
+                metricDirectory = metricDirectory,
+            )
+
+            metricValueEntity.periodMonth = periodMonth
+            metricValueEntity.metricValue = metricValueRequest.metricValue
+            metricValueEntity.targetValue = metricValueRequest.targetValue
+
+            metricValueEntity
         }
 
-        verify(exactly = 0) {
-            initiativeMetricValueRepository.saveAll(any<Iterable<InitiativeMetricValueEntity>>())
+        initiativeMetricValueRepository.saveAll(metricValuesToSave)
+
+        return SaveInitiativeMetricValueResponse.success()
+    }
+
+    private fun validateInitiativeMetricAgentType(
+        agentType: String,
+    ): InitiativeMetricAgentType {
+        return InitiativeMetricAgentType.fromValue(agentType)
+            ?: throw AiBadRequestException(
+                errorCode = WRONG_INITIATIVE_METRIC_AGENT_TYPE,
+                message = MessageFormat.format(
+                    messageProvider[WRONG_INITIATIVE_METRIC_AGENT_TYPE],
+                    agentType,
+                )
+            )
+    }
+
+    private fun validateRequestedMetricsExists(
+        requestedMetricIds: Set<UUID>,
+        existingMetricIds: Set<UUID>,
+    ) {
+        val missingMetricIds = requestedMetricIds - existingMetricIds
+
+        if (missingMetricIds.isNotEmpty()) {
+            throw AiBadRequestException(
+                errorCode = INITIATIVE_METRIC_NOT_FOUND,
+                message = MessageFormat.format(
+                    messageProvider[INITIATIVE_METRIC_NOT_FOUND],
+                    missingMetricIds.joinToString()
+                )
+            )
         }
     }
 
-    @Test
-    fun `saveInitiativeMetricValue should throw conflict when initiative has no metric types`() {
-        // Given
-        val initiativeId = 1L
-        val metricId = UUID.randomUUID()
+    private fun validateRequestedAgentTypesExists(
+        initiativeId: Long,
+        requestedAgentTypes: Set<String>,
+        existingAgentTypes: Set<String>,
+    ) {
+        val missingAgentTypes = requestedAgentTypes - existingAgentTypes
 
-        val request = SaveInitiativeMetricValuesRequest(
-            metricsValues = listOf(
-                SaveInitiativeMetricValueRequest(
-                    agentType = "copilot",
-                    metricId = metricId,
-                    metricValue = BigDecimal("10"),
-                    targetValue = BigDecimal("20"),
+        if (missingAgentTypes.isNotEmpty()) {
+            throw AiConflictException(
+                errorCode = INITIATIVE_METRIC_AGENT_TYPE_NOT_FOUND,
+                message = MessageFormat.format(
+                    messageProvider[INITIATIVE_METRIC_AGENT_TYPE_NOT_FOUND],
+                    initiativeId,
+                    missingAgentTypes.joinToString()
                 )
             )
-        )
-
-        every {
-            initiativeMetricTypeRepository.existsByAiAgentId(initiativeId)
-        } returns false
-
-        every {
-            messageProvider[Metadata.ErrorMessages.INITIATIVE_METRIC_TYPES_NOT_FOUND]
-        } returns "Для инициативы с идентификатором {0} не найдены режимы работы"
-
-        // When & Then
-        assertThrows<AiConflictException> {
-            service.saveInitiativeMetricValue(
-                initiativeId = initiativeId,
-                request = request,
-            )
-        }
-
-        verify(exactly = 0) {
-            metricsDirectoryRepository.findAllById(any<Iterable<UUID>>())
-        }
-
-        verify(exactly = 0) {
-            initiativeMetricTypeRepository.findAllByAiAgentIdAndAgentTypeIn(
-                initiativeId = any(),
-                agentTypes = any(),
-            )
-        }
-
-        verify(exactly = 0) {
-            initiativeMetricValueRepository.saveAll(any<Iterable<InitiativeMetricValueEntity>>())
         }
     }
 
-    @Test
-    fun `saveInitiativeMetricValue should throw conflict when initiative agent type not found`() {
-        // Given
-        val initiativeId = 1L
-        val metricId = UUID.randomUUID()
+    private fun validateDuplicates(
+        metricsValues: List<SaveInitiativeMetricValueRequest>,
+    ) {
+        val duplicate = metricsValues
+            .groupBy { metricValueRequest ->
+                metricValueRequest.agentType.trim() to metricValueRequest.metricId
+            }
+            .filterValues { groupedValues -> groupedValues.size > 1 }
+            .keys
+            .firstOrNull()
 
-        val request = SaveInitiativeMetricValuesRequest(
-            metricsValues = listOf(
-                SaveInitiativeMetricValueRequest(
-                    agentType = "copilot",
-                    metricId = metricId,
-                    metricValue = BigDecimal("10"),
-                    targetValue = BigDecimal("20"),
+        if (duplicate != null) {
+            throw AiBadRequestException(
+                errorCode = INITIATIVE_METRIC_VALUE_DUPLICATE,
+                message = MessageFormat.format(
+                    messageProvider[INITIATIVE_METRIC_VALUE_DUPLICATE],
+                    duplicate.second,
+                    duplicate.first,
                 )
             )
-        )
-
-        val metricDirectory = MetricsDirectoryEntity().also {
-            it.id = metricId
-        }
-
-        every {
-            initiativeMetricTypeRepository.existsByAiAgentId(initiativeId)
-        } returns true
-
-        every {
-            metricsDirectoryRepository.findAllById(setOf(metricId))
-        } returns listOf(metricDirectory)
-
-        every {
-            initiativeMetricTypeRepository.findAllByAiAgentIdAndAgentTypeIn(
-                initiativeId = initiativeId,
-                agentTypes = setOf("copilot"),
-            )
-        } returns emptyList()
-
-        every {
-            messageProvider[Metadata.ErrorMessages.INITIATIVE_METRIC_AGENT_TYPE_NOT_FOUND]
-        } returns "Для инициативы с идентификатором {0} не найден режим работы: {1}"
-
-        // When & Then
-        assertThrows<AiConflictException> {
-            service.saveInitiativeMetricValue(
-                initiativeId = initiativeId,
-                request = request,
-            )
-        }
-
-        verify(exactly = 0) {
-            initiativeMetricValueRepository.saveAll(any<Iterable<InitiativeMetricValueEntity>>())
         }
     }
 }
