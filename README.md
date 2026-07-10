@@ -1,35 +1,22 @@
 ```java
-try {
-    initiativeMetricValueRepository.saveAllAndFlush(metricValuesToSave)
-} catch (exception: DataIntegrityViolationException) {
-    if (exception.isUniqueMetricValueByPeriodViolation()) {
-        throw AiBadRequestException(
-            errorCode = INITIATIVE_METRIC_VALUE_DUPLICATE,
-            message = MessageFormat.format(
-                messageProvider[INITIATIVE_METRIC_VALUE_DUPLICATE],
-                metricIds.joinToString(),
-                agentTypes.joinToString(),
-            )
-        )
-    }
+const val WRONG_INITIATIVE_METRIC_VALUE = "wrong.initiative.metric.value"
 
-    throw exception
-}
+wrong.initiative.metric.value=Некорректное значение метрики: {0}
 
-return SaveInitiativeMetricValueResponse.success()
+private fun parseMetricValue(value: String?): BigDecimal? {
+        val normalizedValue = value?.trim()
 
-private fun DataIntegrityViolationException.isUniqueMetricValueByPeriodViolation(): Boolean {
-    val causes = generateSequence(this as Throwable?) { throwable -> throwable.cause }
-        .toList()
-
-    return causes
-        .filterIsInstance<ConstraintViolationException>()
-        .any { constraintViolation ->
-            constraintViolation.constraintName == UNIQUE_METRIC_VALUE_BY_PERIOD_CONSTRAINT
-        } || causes.any { throwable ->
-            throwable.message?.contains(UNIQUE_METRIC_VALUE_BY_PERIOD_CONSTRAINT) == true
+        if (normalizedValue.isNullOrEmpty()) {
+            return null
         }
-}
 
-INITIATIVE_METRIC_VALUE_ALREADY_EXISTS Значение метрики для указанного режима работы за текущий месяц уже существует
+        return normalizedValue.toBigDecimalOrNull()
+            ?: throw AiBadRequestException(
+                errorCode = WRONG_INITIATIVE_METRIC_VALUE,
+                message = MessageFormat.format(
+                    messageProvider[WRONG_INITIATIVE_METRIC_VALUE],
+                    value,
+                ),
+            )
+    }
 ```
