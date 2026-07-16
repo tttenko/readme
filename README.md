@@ -31,20 +31,18 @@ class InitiativeMetricValueReaderTest {
 
         every {
             initiativeMetricTypeRepository.findAllByAiAgentId(
-                initiativeId = initiativeId
+                initiativeId = initiativeId,
             )
         } returns emptyList()
 
         every {
-            messageProvider[
-                Metadata.ErrorMessages.INITIATIVE_METRIC_TYPES_NOT_FOUND
-            ]
+            messageProvider[INITIATIVE_METRIC_TYPES_NOT_FOUND]
         } returns "Для инициативы с идентификатором {0} не найдены режимы работы"
 
         // When
         val exception = assertThrows<AiConflictException> {
             service.getInitiativeMetricValues(
-                initiativeId = initiativeId
+                initiativeId = initiativeId,
             )
         }
 
@@ -72,6 +70,15 @@ class InitiativeMetricValueReaderTest {
         }
 
         verify(exactly = 0) {
+            initiativeMetricValueRepository.findValuesForInitiativeMetrics(
+                initiativeId = any(),
+                agentTypes = any(),
+                metricDirectoryIds = any(),
+                periodFrom = any(),
+            )
+        }
+
+        verify(exactly = 0) {
             metricResponseBuilder.build(
                 metrics = any(),
                 requestedAgentTypes = any(),
@@ -87,26 +94,25 @@ class InitiativeMetricValueReaderTest {
     fun `getInitiativeMetricValues should throw bad request when agent type is unknown`() {
         // Given
         val initiativeId = 1L
+
         val metricType = createMetricType(
-            agentType = "wrong"
+            agentType = "wrong",
         )
 
         every {
             initiativeMetricTypeRepository.findAllByAiAgentId(
-                initiativeId = initiativeId
+                initiativeId = initiativeId,
             )
         } returns listOf(metricType)
 
         every {
-            messageProvider[
-                Metadata.ErrorMessages.WRONG_INITIATIVE_METRIC_AGENT_TYPE
-            ]
+            messageProvider[WRONG_INITIATIVE_METRIC_AGENT_TYPE]
         } returns "Недопустимый режим работы инициативы: {0}"
 
         // When
         val exception = assertThrows<AiBadRequestException> {
             service.getInitiativeMetricValues(
-                initiativeId = initiativeId
+                initiativeId = initiativeId,
             )
         }
 
@@ -131,32 +137,40 @@ class InitiativeMetricValueReaderTest {
                     periodMonth = any(),
                 )
         }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository.findValuesForInitiativeMetrics(
+                initiativeId = any(),
+                agentTypes = any(),
+                metricDirectoryIds = any(),
+                periodFrom = any(),
+            )
+        }
     }
 
     @Test
     fun `getInitiativeMetricValues should throw bad request when agent type is null`() {
         // Given
         val initiativeId = 1L
+
         val metricType = createMetricType(
-            agentType = null
+            agentType = null,
         )
 
         every {
             initiativeMetricTypeRepository.findAllByAiAgentId(
-                initiativeId = initiativeId
+                initiativeId = initiativeId,
             )
         } returns listOf(metricType)
 
         every {
-            messageProvider[
-                Metadata.ErrorMessages.WRONG_INITIATIVE_METRIC_AGENT_TYPE
-            ]
+            messageProvider[WRONG_INITIATIVE_METRIC_AGENT_TYPE]
         } returns "Недопустимый режим работы инициативы: {0}"
 
         // When
         val exception = assertThrows<AiBadRequestException> {
             service.getInitiativeMetricValues(
-                initiativeId = initiativeId
+                initiativeId = initiativeId,
             )
         }
 
@@ -173,6 +187,23 @@ class InitiativeMetricValueReaderTest {
                 appealsSelected = any(),
             )
         }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .existsByInitiativeMetricTypeAiAgentIdAndPeriodMonth(
+                    initiativeId = any(),
+                    periodMonth = any(),
+                )
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository.findValuesForInitiativeMetrics(
+                initiativeId = any(),
+                agentTypes = any(),
+                metricDirectoryIds = any(),
+                periodFrom = any(),
+            )
+        }
     }
 
     @Test
@@ -182,19 +213,19 @@ class InitiativeMetricValueReaderTest {
 
         val metricTypes = listOf(
             createMetricType(
-                InitiativeMetricAgentType.AUTONOMOUS.value
+                agentType = InitiativeMetricAgentType.AUTONOMOUS.value,
             ),
             createMetricType(
-                InitiativeMetricAgentType.COPILOT.value
+                agentType = InitiativeMetricAgentType.COPILOT.value,
             ),
             createMetricType(
-                InitiativeMetricAgentType.APPEALS.value
+                agentType = InitiativeMetricAgentType.APPEALS.value,
             ),
         )
 
         every {
             initiativeMetricTypeRepository.findAllByAiAgentId(
-                initiativeId = initiativeId
+                initiativeId = initiativeId,
             )
         } returns metricTypes
 
@@ -208,11 +239,14 @@ class InitiativeMetricValueReaderTest {
 
         // When
         val result = service.getInitiativeMetricValues(
-            initiativeId = initiativeId
+            initiativeId = initiativeId,
         )
 
         // Then
-        assertEquals(emptyList<InitiativeMetricResponse>(), result)
+        assertEquals(
+            emptyList<InitiativeMetricResponse>(),
+            result,
+        )
 
         verify(exactly = 1) {
             metricsDirectoryRepository.findApplicableMetrics(
@@ -231,13 +265,12 @@ class InitiativeMetricValueReaderTest {
         }
 
         verify(exactly = 0) {
-            initiativeMetricValueRepository
-                .findValuesForInitiativeMetrics(
-                    initiativeId = any(),
-                    agentTypes = any(),
-                    metricDirectoryIds = any(),
-                    periodFrom = any(),
-                )
+            initiativeMetricValueRepository.findValuesForInitiativeMetrics(
+                initiativeId = any(),
+                agentTypes = any(),
+                metricDirectoryIds = any(),
+                periodFrom = any(),
+            )
         }
 
         verify(exactly = 0) {
@@ -264,18 +297,17 @@ class InitiativeMetricValueReaderTest {
         val periodFrom = LocalDate.of(2025, 1, 1)
 
         val metricType = createMetricType(
-            InitiativeMetricAgentType.AUTONOMOUS.value
+            agentType = InitiativeMetricAgentType.AUTONOMOUS.value,
         )
 
         val metric = createMetric(
-            metricId = metricId
+            metricId = metricId,
         )
 
-        val metricValue =
-            mockkMetricValue()
+        val metricValue = mockkMetricValue()
 
         val expectedResponse = listOf(
-            mockkInitiativeMetricResponse()
+            mockkInitiativeMetricResponse(),
         )
 
         val periodMonthSlot = slot<LocalDate>()
@@ -284,7 +316,7 @@ class InitiativeMetricValueReaderTest {
 
         every {
             initiativeMetricTypeRepository.findAllByAiAgentId(
-                initiativeId = initiativeId
+                initiativeId = initiativeId,
             )
         } returns listOf(metricType)
 
@@ -306,27 +338,26 @@ class InitiativeMetricValueReaderTest {
 
         every {
             metricResponseBuilder.historyPeriodFrom(
-                capture(historyMonthSlot)
+                responseMonth = capture(historyMonthSlot),
             )
         } returns periodFrom
 
         every {
-            initiativeMetricValueRepository
-                .findValuesForInitiativeMetrics(
-                    initiativeId = initiativeId,
-                    agentTypes = setOf(
-                        InitiativeMetricAgentType.AUTONOMOUS.value
-                    ),
-                    metricDirectoryIds = setOf(metricId),
-                    periodFrom = periodFrom,
-                )
+            initiativeMetricValueRepository.findValuesForInitiativeMetrics(
+                initiativeId = initiativeId,
+                agentTypes = setOf(
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+                ),
+                metricDirectoryIds = setOf(metricId),
+                periodFrom = periodFrom,
+            )
         } returns listOf(metricValue)
 
         every {
             metricResponseBuilder.build(
                 metrics = listOf(metric),
                 requestedAgentTypes = setOf(
-                    InitiativeMetricAgentType.AUTONOMOUS
+                    InitiativeMetricAgentType.AUTONOMOUS,
                 ),
                 metricValues = listOf(metricValue),
                 responseMonth = capture(responseMonthSlot),
@@ -337,11 +368,14 @@ class InitiativeMetricValueReaderTest {
 
         // When
         val result = service.getInitiativeMetricValues(
-            initiativeId = initiativeId
+            initiativeId = initiativeId,
         )
 
         // Then
-        assertSame(expectedResponse, result)
+        assertSame(
+            expectedResponse,
+            result,
+        )
 
         val repositoryMonth =
             YearMonth.from(periodMonthSlot.captured)
@@ -357,7 +391,7 @@ class InitiativeMetricValueReaderTest {
         )
 
         assertEquals(
-            responseMonthSlot.captured,
+            repositoryMonth,
             historyMonthSlot.captured,
         )
 
@@ -365,7 +399,7 @@ class InitiativeMetricValueReaderTest {
             metricResponseBuilder.build(
                 metrics = listOf(metric),
                 requestedAgentTypes = setOf(
-                    InitiativeMetricAgentType.AUTONOMOUS
+                    InitiativeMetricAgentType.AUTONOMOUS,
                 ),
                 metricValues = listOf(metricValue),
                 responseMonth = responseMonthSlot.captured,
@@ -376,25 +410,24 @@ class InitiativeMetricValueReaderTest {
     }
 
     @Test
-    fun `getInitiativeMetricValues should use previous month when current month values do not exist`() {
+    fun `getInitiativeMetricValues should use current month when current month values do not exist`() {
         // Given
         val initiativeId = 1L
         val metricId = UUID.randomUUID()
         val periodFrom = LocalDate.of(2025, 1, 1)
 
         val metricType = createMetricType(
-            InitiativeMetricAgentType.APPEALS.value
+            agentType = InitiativeMetricAgentType.APPEALS.value,
         )
 
         val metric = createMetric(
-            metricId = metricId
+            metricId = metricId,
         )
 
-        val metricValue =
-            mockkMetricValue()
+        val metricValue = mockkMetricValue()
 
         val expectedResponse = listOf(
-            mockkInitiativeMetricResponse()
+            mockkInitiativeMetricResponse(),
         )
 
         val periodMonthSlot = slot<LocalDate>()
@@ -403,7 +436,7 @@ class InitiativeMetricValueReaderTest {
 
         every {
             initiativeMetricTypeRepository.findAllByAiAgentId(
-                initiativeId = initiativeId
+                initiativeId = initiativeId,
             )
         } returns listOf(metricType)
 
@@ -425,27 +458,26 @@ class InitiativeMetricValueReaderTest {
 
         every {
             metricResponseBuilder.historyPeriodFrom(
-                capture(historyMonthSlot)
+                responseMonth = capture(historyMonthSlot),
             )
         } returns periodFrom
 
         every {
-            initiativeMetricValueRepository
-                .findValuesForInitiativeMetrics(
-                    initiativeId = initiativeId,
-                    agentTypes = setOf(
-                        InitiativeMetricAgentType.APPEALS.value
-                    ),
-                    metricDirectoryIds = setOf(metricId),
-                    periodFrom = periodFrom,
-                )
+            initiativeMetricValueRepository.findValuesForInitiativeMetrics(
+                initiativeId = initiativeId,
+                agentTypes = setOf(
+                    InitiativeMetricAgentType.APPEALS.value,
+                ),
+                metricDirectoryIds = setOf(metricId),
+                periodFrom = periodFrom,
+            )
         } returns listOf(metricValue)
 
         every {
             metricResponseBuilder.build(
                 metrics = listOf(metric),
                 requestedAgentTypes = setOf(
-                    InitiativeMetricAgentType.APPEALS
+                    InitiativeMetricAgentType.APPEALS,
                 ),
                 metricValues = listOf(metricValue),
                 responseMonth = capture(responseMonthSlot),
@@ -456,22 +488,37 @@ class InitiativeMetricValueReaderTest {
 
         // When
         val result = service.getInitiativeMetricValues(
-            initiativeId = initiativeId
+            initiativeId = initiativeId,
         )
 
         // Then
-        assertSame(expectedResponse, result)
+        assertSame(
+            expectedResponse,
+            result,
+        )
 
         val repositoryMonth =
             YearMonth.from(periodMonthSlot.captured)
 
         assertEquals(
-            repositoryMonth.minusMonths(1),
+            1,
+            periodMonthSlot.captured.dayOfMonth,
+        )
+
+        /*
+         * Даже при отсутствии значений за текущий месяц
+         * responseMonth должен оставаться текущим.
+         *
+         * Иначе предыдущий месяц получит индекс текущего периода
+         * и будет удалён из periods при includeCurrentPeriod = false.
+         */
+        assertEquals(
+            repositoryMonth,
             responseMonthSlot.captured,
         )
 
         assertEquals(
-            responseMonthSlot.captured,
+            repositoryMonth,
             historyMonthSlot.captured,
         )
 
@@ -479,7 +526,7 @@ class InitiativeMetricValueReaderTest {
             metricResponseBuilder.build(
                 metrics = listOf(metric),
                 requestedAgentTypes = setOf(
-                    InitiativeMetricAgentType.APPEALS
+                    InitiativeMetricAgentType.APPEALS,
                 ),
                 metricValues = listOf(metricValue),
                 responseMonth = responseMonthSlot.captured,
@@ -495,12 +542,12 @@ class InitiativeMetricValueReaderTest {
         val initiativeId = 1L
 
         val metricType = createMetricType(
-            InitiativeMetricAgentType.COPILOT.value
+            agentType = InitiativeMetricAgentType.COPILOT.value,
         )
 
         every {
             initiativeMetricTypeRepository.findAllByAiAgentId(
-                initiativeId = initiativeId
+                initiativeId = initiativeId,
             )
         } returns listOf(metricType)
 
@@ -514,11 +561,14 @@ class InitiativeMetricValueReaderTest {
 
         // When
         val result = service.getInitiativeMetricValues(
-            initiativeId = initiativeId
+            initiativeId = initiativeId,
         )
 
         // Then
-        assertEquals(emptyList<InitiativeMetricResponse>(), result)
+        assertEquals(
+            emptyList<InitiativeMetricResponse>(),
+            result,
+        )
 
         verify(exactly = 1) {
             metricsDirectoryRepository.findApplicableMetrics(
@@ -537,19 +587,23 @@ class InitiativeMetricValueReaderTest {
         val periodFrom = LocalDate.of(2025, 1, 1)
 
         val firstMetricType = createMetricType(
-            InitiativeMetricAgentType.COPILOT.value
+            agentType = InitiativeMetricAgentType.COPILOT.value,
         )
 
         val secondMetricType = createMetricType(
-            InitiativeMetricAgentType.COPILOT.value
+            agentType = InitiativeMetricAgentType.COPILOT.value,
         )
 
-        val metric = createMetric(metricId)
-        val expectedResponse = emptyList<InitiativeMetricResponse>()
+        val metric = createMetric(
+            metricId = metricId,
+        )
+
+        val expectedResponse =
+            emptyList<InitiativeMetricResponse>()
 
         every {
             initiativeMetricTypeRepository.findAllByAiAgentId(
-                initiativeId = initiativeId
+                initiativeId = initiativeId,
             )
         } returns listOf(
             firstMetricType,
@@ -577,22 +631,21 @@ class InitiativeMetricValueReaderTest {
         } returns periodFrom
 
         every {
-            initiativeMetricValueRepository
-                .findValuesForInitiativeMetrics(
-                    initiativeId = initiativeId,
-                    agentTypes = setOf(
-                        InitiativeMetricAgentType.COPILOT.value
-                    ),
-                    metricDirectoryIds = setOf(metricId),
-                    periodFrom = periodFrom,
-                )
+            initiativeMetricValueRepository.findValuesForInitiativeMetrics(
+                initiativeId = initiativeId,
+                agentTypes = setOf(
+                    InitiativeMetricAgentType.COPILOT.value,
+                ),
+                metricDirectoryIds = setOf(metricId),
+                periodFrom = periodFrom,
+            )
         } returns emptyList()
 
         every {
             metricResponseBuilder.build(
                 metrics = listOf(metric),
                 requestedAgentTypes = setOf(
-                    InitiativeMetricAgentType.COPILOT
+                    InitiativeMetricAgentType.COPILOT,
                 ),
                 metricValues = emptyList(),
                 responseMonth = any(),
@@ -603,22 +656,45 @@ class InitiativeMetricValueReaderTest {
 
         // When
         val result = service.getInitiativeMetricValues(
-            initiativeId = initiativeId
+            initiativeId = initiativeId,
         )
 
         // Then
-        assertSame(expectedResponse, result)
+        assertSame(
+            expectedResponse,
+            result,
+        )
 
         verify(exactly = 1) {
-            initiativeMetricValueRepository
-                .findValuesForInitiativeMetrics(
-                    initiativeId = initiativeId,
-                    agentTypes = setOf(
-                        InitiativeMetricAgentType.COPILOT.value
-                    ),
-                    metricDirectoryIds = setOf(metricId),
-                    periodFrom = periodFrom,
-                )
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = false,
+                copilotSelected = true,
+                appealsSelected = false,
+            )
+        }
+
+        verify(exactly = 1) {
+            initiativeMetricValueRepository.findValuesForInitiativeMetrics(
+                initiativeId = initiativeId,
+                agentTypes = setOf(
+                    InitiativeMetricAgentType.COPILOT.value,
+                ),
+                metricDirectoryIds = setOf(metricId),
+                periodFrom = periodFrom,
+            )
+        }
+
+        verify(exactly = 1) {
+            metricResponseBuilder.build(
+                metrics = listOf(metric),
+                requestedAgentTypes = setOf(
+                    InitiativeMetricAgentType.COPILOT,
+                ),
+                metricValues = emptyList(),
+                responseMonth = any(),
+                clearRegularMetricValue = false,
+                includeCurrentPeriod = false,
+            )
         }
     }
 
@@ -626,7 +702,7 @@ class InitiativeMetricValueReaderTest {
         agentType: String?,
     ): InitiativeMetricTypeEntity {
         val metricType =
-            io.mockk.mockk<InitiativeMetricTypeEntity>()
+            mockk<InitiativeMetricTypeEntity>()
 
         every {
             metricType.agentType
@@ -639,7 +715,7 @@ class InitiativeMetricValueReaderTest {
         metricId: UUID,
     ): MetricsDirectoryEntity {
         val metric =
-            io.mockk.mockk<MetricsDirectoryEntity>()
+            mockk<MetricsDirectoryEntity>()
 
         every {
             metric.id
@@ -650,12 +726,12 @@ class InitiativeMetricValueReaderTest {
 
     private fun mockkMetricValue():
         InitiativeMetricValueEntity {
-        return io.mockk.mockk()
+        return mockk()
     }
 
     private fun mockkInitiativeMetricResponse():
         InitiativeMetricResponse {
-        return io.mockk.mockk()
+        return mockk()
     }
 }
 ```
