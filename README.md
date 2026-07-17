@@ -1,392 +1,108 @@
 ```java
-@Service
-class InitiativeMetricPreAnalyticsReader(
-    private val messageProvider: MessageProvider,
-    private val preAnalyticsProperties: PreAnalyticsProperties,
-    private val initiativeMetricTypeRepository:
-        InitiativeMetricTypeRepository,
-    private val initiativeMetricValueRepository:
-        InitiativeMetricValueRepository,
-    private val metricsDirectoryRepository:
-        MetricsDirectoryRepository,
-    private val responseBuilder:
-        InitiativeMetricPreAnalyticsResponseBuilder,
-) {
+1. Найдём инициативу и её режимы
+SELECT
+    imt.id,
+    imt.ai_agent_id,
+    imt.agent_type
+FROM initiative_metric_type imt
+ORDER BY imt.ai_agent_id, imt.agent_type;
 
-    @Transactional(readOnly = true)
-    fun getPreAnalytics(
-        initiativeId: Long,
-        now: Instant = Instant.now(),
-    ): InitiativeMetricPreAnalyticsResponse {
-        val metricTypes =
-            initiativeMetricTypeRepository
-                .findAllByAiAgentIdAndAgentTypeIn(
-                    initiativeId = initiativeId,
-                    agentTypes = SUPPORTED_AGENT_TYPES,
-                )
+Желательно выбрать инициативу, у которой есть:
 
-        if (metricTypes.isEmpty()) {
-            throw AiConflictException(
-                errorCode =
-                    INITIATIVE_METRIC_TYPES_NOT_FOUND,
-                message = MessageFormat.format(
-                    messageProvider[
-                        INITIATIVE_METRIC_TYPES_NOT_FOUND
-                    ],
-                    initiativeId,
-                ),
-            )
-        }
+autonomous
+copilot
 
-        val configuredMetricNames =
-            preAnalyticsProperties.metricNames
+Если записей много:
 
-        check(
-            configuredMetricNames.size ==
-                EXPECTED_METRICS_COUNT &&
-                configuredMetricNames.toSet().size ==
-                EXPECTED_METRICS_COUNT
-        ) {
-            "Exactly $EXPECTED_METRICS_COUNT unique " +
-                "pre-analytics metric names must be configured"
-        }
+SELECT
+    imt.ai_agent_id,
+    array_agg(imt.agent_type ORDER BY imt.agent_type) AS agent_types
+FROM initiative_metric_type imt
+WHERE imt.agent_type IN ('autonomous', 'copilot')
+GROUP BY imt.ai_agent_id
+ORDER BY imt.ai_agent_id;
+2. Посмотрим доступные метрики
+SELECT
+    md.id,
+    md.name,
+    md.unit,
+    md.direction,
+    md.frequency,
+    md.is_active,
+    md.autonomous_applicability,
+    md.copilot_applicability
+FROM metrics_directory md
+ORDER BY md.name;
 
-        val metricsByName =
-            metricsDirectoryRepository
-                .findAllByNameIn(configuredMetricNames)
-                .groupBy { metric -> metric.name }
+Нужно найти четыре метрики, перечисленные в конфигурации:
 
-        val missingMetricNames =
-            configuredMetricNames.filterNot(
-                metricsByName::containsKey
-            )
+pre-analytics:
+  metric-names:
 
-        val duplicateMetricNames =
-            metricsByName
-                .filterValues { metrics ->
-                    metrics.size > 1
-                }
-                .keys
+Пришли также сами четыре значения из application.yml или application-local.yml, потому что ручка ищет метрики строго по name.
 
-        check(
-            missingMetricNames.isEmpty() &&
-                duplicateMetricNames.isEmpty()
-        ) {
-            "Invalid pre-analytics metrics configuration: " +
-                "missing=$missingMetricNames, " +
-                "duplicated=$duplicateMetricNames"
-        }
+3. Посмотрим существующие значения
 
-        val metrics =
-            configuredMetricNames.map { metricName ->
-                metricsByName
-                    .getValue(metricName)
-                    .single()
-            }
+После выбора initiativeId подставь его вместо 123:
 
-        val configuredMetricIds =
-            metrics
-                .map { metric -> metric.id }
-                .toSet()
+SELECT
+    imv.id,
+    imt.ai_agent_id,
+    imt.id AS initiative_metric_type_id,
+    imt.agent_type,
+    imv.metric_directory_id,
+    md.name AS metric_name,
+    md.direction,
+    imv.period_month,
+    imv.metric_value,
+    imv.target_value
+FROM initiative_metric_value imv
+JOIN initiative_metric_type imt
+    ON imt.id = imv.initiative_agent_type_id
+JOIN metrics_directory md
+    ON md.id = imv.metric_directory_id
+WHERE imt.ai_agent_id = 123
+ORDER BY
+    imt.agent_type,
+    md.name,
+    imv.period_month;
+4. Проверим структуру таблиц
 
-        val currentMonth =
-            YearMonth.from(
-                now.atZone(ZoneOffset.UTC)
-            )
+Это необходимо из-за наследования от BasicLongEntity и BasicUUIDEntity: на изображениях не видны все физические колонки.
 
-        val previousMonth =
-            currentMonth.minusMonths(1)
-
-        val beforePreviousMonth =
-            currentMonth.minusMonths(2)
-
-        val metricValues =
-            initiativeMetricValueRepository
-                .findValuesForInitiativeMetrics(
-                    initiativeId = initiativeId,
-                    agentTypes = SUPPORTED_AGENT_TYPES,
-                    metricDirectoryIds =
-                        configuredMetricIds,
-                    periodFrom =
-                        beforePreviousMonth.atDay(1),
-                )
-
-        val valuesByKey =
-            metricValues
-                .filter { metricValue ->
-                    metricValue.periodMonth ==
-                        previousMonth.atDay(1) ||
-                        metricValue.periodMonth ==
-                        beforePreviousMonth.atDay(1)
-                }
-                .associateBy { metricValue ->
-                    InitiativeMetricPreAnalyticsResponseBuilder
-                        .MetricValueKey(
-                            agentType =
-                                metricValue
-                                    .initiativeMetricType
-                                    ?.agentType
-                                    .orEmpty(),
-                            metricId = requireNotNull(
-                                metricValue
-                                    .metricDirectory
-                                    ?.id
-                            ),
-                            periodMonth =
-                                YearMonth.from(
-                                    requireNotNull(
-                                        metricValue.periodMonth
-                                    )
-                                ),
-                        )
-                }
-
-        val metricsAutonomous =
-            responseBuilder.buildMetricsForAgentType(
-                agentType = AUTONOMOUS.value,
-                metricTypes = metricTypes,
-                metrics = metrics,
-                valuesByKey = valuesByKey,
-                previousMonth = previousMonth,
-                beforePreviousMonth =
-                    beforePreviousMonth,
-            )
-
-        val metricsCopilot =
-            responseBuilder.buildMetricsForAgentType(
-                agentType = COPILOT.value,
-                metricTypes = metricTypes,
-                metrics = metrics,
-                valuesByKey = valuesByKey,
-                previousMonth = previousMonth,
-                beforePreviousMonth =
-                    beforePreviousMonth,
-            )
-
-        val hasSubmittedValues =
-            (metricsAutonomous + metricsCopilot)
-                .any { metric ->
-                    metric.value != null
-                }
-
-        return InitiativeMetricPreAnalyticsResponse(
-            initiativeId = initiativeId,
-            errorCode =
-                METRIC_VALUES_NOT_SUBMITTED
-                    .takeUnless {
-                        hasSubmittedValues
-                    },
-            periodDisplayText =
-                PERIOD_DISPLAY_TEXT_PREFIX +
-                    currentMonth
-                        .atDay(1)
-                        .format(
-                            PERIOD_DISPLAY_DATE_FORMATTER
-                        ),
-            metricsAutonomous = metricsAutonomous,
-            metricsCopilot = metricsCopilot,
-        )
-    }
-
-    private companion object {
-
-        const val EXPECTED_METRICS_COUNT = 4
-
-        const val METRIC_VALUES_NOT_SUBMITTED =
-            "Metric values have not been submitted"
-
-        const val PERIOD_DISPLAY_TEXT_PREFIX =
-            "Значения на "
-
-        val PERIOD_DISPLAY_DATE_FORMATTER:
-            DateTimeFormatter =
-            DateTimeFormatter.ofPattern(
-                "dd.MM.yyyy"
-            )
-
-        val SUPPORTED_AGENT_TYPES =
-            setOf(
-                AUTONOMOUS.value,
-                COPILOT.value,
-            )
-    }
-}
-
-@Component
-class InitiativeMetricPreAnalyticsResponseBuilder {
-
-    fun buildMetricsForAgentType(
-        agentType: String,
-        metricTypes:
-            List<InitiativeMetricTypeEntity>,
-        metrics:
-            List<MetricsDirectoryEntity>,
-        valuesByKey:
-            Map<
-                MetricValueKey,
-                InitiativeMetricValueEntity
-            >,
-        previousMonth: YearMonth,
-        beforePreviousMonth: YearMonth,
-    ): List<InitiativeMetricPreAnalyticsItemResponse> {
-        val agentTypeExists =
-            metricTypes.any { metricType ->
-                metricType.agentType == agentType
-            }
-
-        if (!agentTypeExists) {
-            return emptyList()
-        }
-
-        return metrics.map { metric ->
-            val previousValue =
-                valuesByKey[
-                    MetricValueKey(
-                        agentType = agentType,
-                        metricId = metric.id,
-                        periodMonth = previousMonth,
-                    )
-                ]
-
-            val beforePreviousValue =
-                valuesByKey[
-                    MetricValueKey(
-                        agentType = agentType,
-                        metricId = metric.id,
-                        periodMonth =
-                            beforePreviousMonth,
-                    )
-                ]
-
-            buildMetricResponse(
-                metric = metric,
-                previousValue = previousValue,
-                beforePreviousValue =
-                    beforePreviousValue,
-            )
-        }
-    }
-
-    private fun buildMetricResponse(
-        metric: MetricsDirectoryEntity,
-        previousValue:
-            InitiativeMetricValueEntity?,
-        beforePreviousValue:
-            InitiativeMetricValueEntity?,
-    ): InitiativeMetricPreAnalyticsItemResponse {
-        val submittedMetricValue =
-            previousValue?.metricValue
-
-        if (
-            previousValue == null ||
-            submittedMetricValue == null
-        ) {
-            return emptyMetricResponse(metric)
-        }
-
-        val comparisonValue =
-            beforePreviousValue
-                ?.metricValue
-                ?.takeIf { value ->
-                    submittedMetricValue.compareTo(
-                        BigDecimal.ZERO
-                    ) != 0 &&
-                        value.compareTo(
-                            BigDecimal.ZERO
-                        ) != 0
-                }
-
-        val deltaValue =
-            comparisonValue?.let { value ->
-                val absoluteDeltaValue =
-                    submittedMetricValue
-                        .subtract(value)
-                        .multiply(HUNDRED)
-                        .divide(
-                            value.abs(),
-                            DELTA_SCALE,
-                            RoundingMode.HALF_UP,
-                        )
-                        .abs()
-
-                applyDeltaSign(
-                    deltaValue = absoluteDeltaValue,
-                    direction = metric.direction,
-                    previousValue =
-                        submittedMetricValue,
-                    beforePreviousValue = value,
-                )
-            }
-
-        return InitiativeMetricPreAnalyticsItemResponse(
-            metricId = metric.id,
-            name = metric.name,
-            unit = metric.unit,
-            value = submittedMetricValue,
-            targetValue = previousValue.targetValue,
-            deltaValue = deltaValue,
-        )
-    }
-
-    private fun emptyMetricResponse(
-        metric: MetricsDirectoryEntity,
-    ): InitiativeMetricPreAnalyticsItemResponse {
-        return InitiativeMetricPreAnalyticsItemResponse(
-            metricId = metric.id,
-            name = metric.name,
-            unit = metric.unit,
-            value = null,
-            targetValue = null,
-            deltaValue = null,
-        )
-    }
-
-    private fun applyDeltaSign(
-        deltaValue: BigDecimal,
-        direction: String?,
-        previousValue: BigDecimal,
-        beforePreviousValue: BigDecimal,
-    ): BigDecimal {
-        val comparison =
-            previousValue.compareTo(
-                beforePreviousValue
-            )
-
-        val improved = when (direction) {
-            MORE_IS_BETTER -> comparison >= 0
-            LESS_IS_BETTER -> comparison < 0
-
-            else -> throw IllegalStateException(
-                "Unsupported metric direction: " +
-                    direction
-            )
-        }
-
-        return if (improved) {
-            deltaValue
-        } else {
-            deltaValue.negate()
-        }
-    }
-
-    data class MetricValueKey(
-        val agentType: String,
-        val metricId: UUID,
-        val periodMonth: YearMonth,
-    )
-
-    private companion object {
-
-        const val MORE_IS_BETTER =
-            "more_is_better"
-
-        const val LESS_IS_BETTER =
-            "less_is_better"
-
-        const val DELTA_SCALE = 2
-
-        val HUNDRED: BigDecimal =
-            BigDecimal.valueOf(100)
-    }
-}
+SELECT
+    c.table_name,
+    c.ordinal_position,
+    c.column_name,
+    c.data_type,
+    c.is_nullable,
+    c.column_default
+FROM information_schema.columns c
+WHERE c.table_schema = 'public'
+  AND c.table_name IN (
+      'initiative_metric_type',
+      'initiative_metric_value',
+      'metrics_directory'
+  )
+ORDER BY c.table_name, c.ordinal_position;
+5. Проверим ограничения и уникальные индексы
+SELECT
+    tc.table_name,
+    tc.constraint_name,
+    tc.constraint_type,
+    kcu.column_name
+FROM information_schema.table_constraints tc
+LEFT JOIN information_schema.key_column_usage kcu
+    ON kcu.constraint_schema = tc.constraint_schema
+   AND kcu.constraint_name = tc.constraint_name
+WHERE tc.table_schema = 'public'
+  AND tc.table_name IN (
+      'initiative_metric_type',
+      'initiative_metric_value',
+      'metrics_directory'
+  )
+ORDER BY
+    tc.table_name,
+    tc.constraint_name,
+    kcu.ordinal_position;
 ```
