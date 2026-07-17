@@ -1,140 +1,165 @@
 ```java
+2. Добавление тестовых значений
+
+Сейчас июль 2026 года, поэтому ручка читает:
+
+предыдущий период — 2026-06-01;
+позапрошлый период — 2026-05-01.
+
+Скрипт создаст значения для обоих режимов и всех четырёх метрик:
+
 BEGIN;
 
-INSERT INTO metrics_directory (
+WITH test_values AS (
+    SELECT
+        imt.id AS initiative_metric_type_id,
+        md.id AS metric_directory_id,
+        md.name AS metric_name,
+        md.direction,
+        test_period.period_month,
+        CASE md.name
+            /*
+             * Улучшение на обычных положительных числах.
+             */
+            WHEN 'Точность' THEN
+                CASE
+                    WHEN test_period.period_month = DATE '2026-05-01'
+                        THEN 100
+                    WHEN md.direction = 'more_is_better'
+                        THEN 120
+                    ELSE 80
+                END
+
+            /*
+             * Ухудшение на обычных положительных числах.
+             */
+            WHEN 'CSI' THEN
+                CASE
+                    WHEN test_period.period_month = DATE '2026-05-01'
+                        THEN 100
+                    WHEN md.direction = 'more_is_better'
+                        THEN 80
+                    ELSE 120
+                END
+
+            /*
+             * Улучшение на отрицательных числах.
+             */
+            WHEN 'Охват' THEN
+                CASE
+                    WHEN md.direction = 'more_is_better'
+                         AND test_period.period_month = DATE '2026-05-01'
+                        THEN -3
+                    WHEN md.direction = 'more_is_better'
+                        THEN -2
+                    WHEN test_period.period_month = DATE '2026-05-01'
+                        THEN -2
+                    ELSE -3
+                END
+
+            /*
+             * Ухудшение на отрицательных числах.
+             */
+            WHEN 'Скорость' THEN
+                CASE
+                    WHEN md.direction = 'more_is_better'
+                         AND test_period.period_month = DATE '2026-05-01'
+                        THEN -2
+                    WHEN md.direction = 'more_is_better'
+                        THEN -3
+                    WHEN test_period.period_month = DATE '2026-05-01'
+                        THEN -3
+                    ELSE -2
+                END
+        END::numeric AS metric_value,
+        150::numeric AS target_value
+    FROM initiative_metric_type imt
+    CROSS JOIN metrics_directory md
+    CROSS JOIN (
+        VALUES
+            (DATE '2026-05-01'),
+            (DATE '2026-06-01')
+    ) AS test_period(period_month)
+    WHERE imt.ai_agent_id = 109
+      AND imt.agent_type IN ('autonomous', 'copilot')
+      AND md.name IN (
+          'Точность',
+          'CSI',
+          'Охват',
+          'Скорость'
+      )
+),
+numbered_values AS (
+    SELECT
+        (
+            SELECT COALESCE(MAX(id), 0)
+            FROM initiative_metric_value
+        ) + ROW_NUMBER() OVER (
+            ORDER BY
+                initiative_metric_type_id,
+                metric_directory_id,
+                period_month
+        ) AS id,
+        initiative_metric_type_id,
+        metric_directory_id,
+        period_month,
+        metric_value,
+        target_value
+    FROM test_values
+)
+INSERT INTO initiative_metric_value (
     id,
-    name,
-    unit,
-    direction,
-    description,
-    frequency,
-    copilot_applicability,
-    autonomous_applicability,
-    requires_appeals_work,
-    is_active,
-    updated_by,
-    updated_at
+    initiative_agent_type_id,
+    metric_directory_id,
+    period_month,
+    metric_value,
+    target_value
 )
 SELECT
-    test_metric.id::uuid,
-    test_metric.name,
-    test_metric.unit,
-    test_metric.direction,
-    test_metric.description,
-    test_metric.frequency,
-    test_metric.copilot_applicability,
-    test_metric.autonomous_applicability,
-    test_metric.requires_appeals_work,
-    test_metric.is_active,
-    COALESCE(
-        (
-            SELECT md.updated_by
-            FROM metrics_directory md
-            WHERE md.updated_by IS NOT NULL
-            LIMIT 1
-        ),
-        1
-    ),
-    CURRENT_TIMESTAMP
-FROM (
-    VALUES
-        (
-            '10000000-0000-0000-0000-000000000001',
-            'Точность',
-            'percent',
-            'more_is_better',
-            'Точность работы агента',
-            'regular',
-            TRUE,
-            TRUE,
-            FALSE,
-            TRUE
-        ),
-        (
-            '10000000-0000-0000-0000-000000000002',
-            'CSI',
-            'percent',
-            'more_is_better',
-            'Индекс удовлетворенности CSI',
-            'regular',
-            TRUE,
-            TRUE,
-            FALSE,
-            TRUE
-        ),
-        (
-            '10000000-0000-0000-0000-000000000003',
-            'Охват',
-            'percent',
-            'more_is_better',
-            'Охват процессов',
-            'regular',
-            TRUE,
-            TRUE,
-            FALSE,
-            TRUE
-        ),
-        (
-            '10000000-0000-0000-0000-000000000004',
-            'Скорость',
-            'percent',
-            'less_is_better',
-            'Скорость выполнения операций',
-            'regular',
-            TRUE,
-            TRUE,
-            FALSE,
-            TRUE
-        )
-) AS test_metric(
     id,
-    name,
-    unit,
-    direction,
-    description,
-    frequency,
-    copilot_applicability,
-    autonomous_applicability,
-    requires_appeals_work,
-    is_active
-)
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM metrics_directory existing_metric
-    WHERE existing_metric.name = test_metric.name
-);
+    initiative_metric_type_id,
+    metric_directory_id,
+    period_month,
+    metric_value,
+    target_value
+FROM numbered_values;
 
 COMMIT;
 
-Скрипт:
+Должно добавиться:
 
-добавляет только отсутствующие метрики;
-делает их доступными для autonomous и copilot;
-устанавливает is_active = true;
-не требует функции gen_random_uuid(), поскольку UUID заданы явно;
-при повторном запуске не создаёт дубликаты по названию.
-
-Проверь результат:
-
+2 режима × 4 метрики × 2 периода = 16 строк
+3. Проверка добавленных данных
 SELECT
-    id,
-    name,
-    unit,
-    direction,
-    description,
-    frequency,
-    is_active,
-    autonomous_applicability,
-    copilot_applicability,
-    requires_appeals_work,
-    updated_by,
-    updated_at
-FROM metrics_directory
-WHERE name IN (
-    'Точность',
-    'CSI',
-    'Охват',
-    'Скорость'
-)
-ORDER BY name;
+    imv.id,
+    imt.ai_agent_id,
+    imt.agent_type,
+    md.name AS metric_name,
+    md.direction,
+    imv.period_month,
+    imv.metric_value,
+    imv.target_value
+FROM initiative_metric_value imv
+JOIN initiative_metric_type imt
+    ON imt.id = imv.initiative_agent_type_id
+JOIN metrics_directory md
+    ON md.id = imv.metric_directory_id
+WHERE imt.ai_agent_id = 109
+  AND imt.agent_type IN ('autonomous', 'copilot')
+  AND md.name IN (
+      'Точность',
+      'CSI',
+      'Охват',
+      'Скорость'
+  )
+  AND imv.period_month IN (
+      DATE '2026-05-01',
+      DATE '2026-06-01'
+  )
+ORDER BY
+    imt.agent_type,
+    md.name,
+    imv.period_month;
+
+Должно вернуться 16 строк.
 ```
