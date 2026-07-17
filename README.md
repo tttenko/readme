@@ -1,108 +1,140 @@
 ```java
-1. Найдём инициативу и её режимы
+BEGIN;
+
+INSERT INTO metrics_directory (
+    id,
+    name,
+    unit,
+    direction,
+    description,
+    frequency,
+    copilot_applicability,
+    autonomous_applicability,
+    requires_appeals_work,
+    is_active,
+    updated_by,
+    updated_at
+)
 SELECT
-    imt.id,
-    imt.ai_agent_id,
-    imt.agent_type
-FROM initiative_metric_type imt
-ORDER BY imt.ai_agent_id, imt.agent_type;
+    test_metric.id::uuid,
+    test_metric.name,
+    test_metric.unit,
+    test_metric.direction,
+    test_metric.description,
+    test_metric.frequency,
+    test_metric.copilot_applicability,
+    test_metric.autonomous_applicability,
+    test_metric.requires_appeals_work,
+    test_metric.is_active,
+    COALESCE(
+        (
+            SELECT md.updated_by
+            FROM metrics_directory md
+            WHERE md.updated_by IS NOT NULL
+            LIMIT 1
+        ),
+        1
+    ),
+    CURRENT_TIMESTAMP
+FROM (
+    VALUES
+        (
+            '10000000-0000-0000-0000-000000000001',
+            'Точность',
+            'percent',
+            'more_is_better',
+            'Точность работы агента',
+            'regular',
+            TRUE,
+            TRUE,
+            FALSE,
+            TRUE
+        ),
+        (
+            '10000000-0000-0000-0000-000000000002',
+            'CSI',
+            'percent',
+            'more_is_better',
+            'Индекс удовлетворенности CSI',
+            'regular',
+            TRUE,
+            TRUE,
+            FALSE,
+            TRUE
+        ),
+        (
+            '10000000-0000-0000-0000-000000000003',
+            'Охват',
+            'percent',
+            'more_is_better',
+            'Охват процессов',
+            'regular',
+            TRUE,
+            TRUE,
+            FALSE,
+            TRUE
+        ),
+        (
+            '10000000-0000-0000-0000-000000000004',
+            'Скорость',
+            'percent',
+            'less_is_better',
+            'Скорость выполнения операций',
+            'regular',
+            TRUE,
+            TRUE,
+            FALSE,
+            TRUE
+        )
+) AS test_metric(
+    id,
+    name,
+    unit,
+    direction,
+    description,
+    frequency,
+    copilot_applicability,
+    autonomous_applicability,
+    requires_appeals_work,
+    is_active
+)
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM metrics_directory existing_metric
+    WHERE existing_metric.name = test_metric.name
+);
 
-Желательно выбрать инициативу, у которой есть:
+COMMIT;
 
-autonomous
-copilot
+Скрипт:
 
-Если записей много:
+добавляет только отсутствующие метрики;
+делает их доступными для autonomous и copilot;
+устанавливает is_active = true;
+не требует функции gen_random_uuid(), поскольку UUID заданы явно;
+при повторном запуске не создаёт дубликаты по названию.
+
+Проверь результат:
 
 SELECT
-    imt.ai_agent_id,
-    array_agg(imt.agent_type ORDER BY imt.agent_type) AS agent_types
-FROM initiative_metric_type imt
-WHERE imt.agent_type IN ('autonomous', 'copilot')
-GROUP BY imt.ai_agent_id
-ORDER BY imt.ai_agent_id;
-2. Посмотрим доступные метрики
-SELECT
-    md.id,
-    md.name,
-    md.unit,
-    md.direction,
-    md.frequency,
-    md.is_active,
-    md.autonomous_applicability,
-    md.copilot_applicability
-FROM metrics_directory md
-ORDER BY md.name;
-
-Нужно найти четыре метрики, перечисленные в конфигурации:
-
-pre-analytics:
-  metric-names:
-
-Пришли также сами четыре значения из application.yml или application-local.yml, потому что ручка ищет метрики строго по name.
-
-3. Посмотрим существующие значения
-
-После выбора initiativeId подставь его вместо 123:
-
-SELECT
-    imv.id,
-    imt.ai_agent_id,
-    imt.id AS initiative_metric_type_id,
-    imt.agent_type,
-    imv.metric_directory_id,
-    md.name AS metric_name,
-    md.direction,
-    imv.period_month,
-    imv.metric_value,
-    imv.target_value
-FROM initiative_metric_value imv
-JOIN initiative_metric_type imt
-    ON imt.id = imv.initiative_agent_type_id
-JOIN metrics_directory md
-    ON md.id = imv.metric_directory_id
-WHERE imt.ai_agent_id = 123
-ORDER BY
-    imt.agent_type,
-    md.name,
-    imv.period_month;
-4. Проверим структуру таблиц
-
-Это необходимо из-за наследования от BasicLongEntity и BasicUUIDEntity: на изображениях не видны все физические колонки.
-
-SELECT
-    c.table_name,
-    c.ordinal_position,
-    c.column_name,
-    c.data_type,
-    c.is_nullable,
-    c.column_default
-FROM information_schema.columns c
-WHERE c.table_schema = 'public'
-  AND c.table_name IN (
-      'initiative_metric_type',
-      'initiative_metric_value',
-      'metrics_directory'
-  )
-ORDER BY c.table_name, c.ordinal_position;
-5. Проверим ограничения и уникальные индексы
-SELECT
-    tc.table_name,
-    tc.constraint_name,
-    tc.constraint_type,
-    kcu.column_name
-FROM information_schema.table_constraints tc
-LEFT JOIN information_schema.key_column_usage kcu
-    ON kcu.constraint_schema = tc.constraint_schema
-   AND kcu.constraint_name = tc.constraint_name
-WHERE tc.table_schema = 'public'
-  AND tc.table_name IN (
-      'initiative_metric_type',
-      'initiative_metric_value',
-      'metrics_directory'
-  )
-ORDER BY
-    tc.table_name,
-    tc.constraint_name,
-    kcu.ordinal_position;
+    id,
+    name,
+    unit,
+    direction,
+    description,
+    frequency,
+    is_active,
+    autonomous_applicability,
+    copilot_applicability,
+    requires_appeals_work,
+    updated_by,
+    updated_at
+FROM metrics_directory
+WHERE name IN (
+    'Точность',
+    'CSI',
+    'Охват',
+    'Скорость'
+)
+ORDER BY name;
 ```
