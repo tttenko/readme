@@ -1,464 +1,833 @@
 ```java
-- metric-id: ${PRE_ANALYTICS_ACCURACY_METRIC_ID}
-        code: ${PRE_ANALYTICS_ACCURACY_METRIC_CODE}
+@ExtendWith(MockKExtension::class)
+class InitiativeMetricPreAnalyticsReaderTest {
 
-      - metric-id: ${PRE_ANALYTICS_CSI_METRIC_ID}
-        code: ${PRE_ANALYTICS_CSI_METRIC_CODE}
+    @MockK
+    private lateinit var messageProvider: MessageProvider
 
-      - metric-id: ${PRE_ANALYTICS_COVERAGE_METRIC_ID}
-        code: ${PRE_ANALYTICS_COVERAGE_METRIC_CODE}
+    @MockK
+    private lateinit var preAnalyticsProperties:
+        PreAnalyticsProperties
 
-      - metric-id: ${PRE_ANALYTICS_SPEED_METRIC_ID}
-        code: ${PRE_ANALYTICS_SPEED_METRIC_CODE}
+    @MockK
+    private lateinit var initiativeMetricTypeRepository:
+        InitiativeMetricTypeRepository
 
-PRE_ANALYTICS_ACCURACY_METRIC_ID: "1b28305a-3aed-4010-8e74-de752fbe1a32"
-PRE_ANALYTICS_ACCURACY_METRIC_CODE: "Точность"
+    @MockK
+    private lateinit var initiativeMetricValueRepository:
+        InitiativeMetricValueRepository
 
-PRE_ANALYTICS_CSI_METRIC_ID: "2c39416b-4bfe-4121-9f85-ef863fca2b43"
-PRE_ANALYTICS_CSI_METRIC_CODE: "Δ удовлетворённости"
+    @MockK
+    private lateinit var metricsDirectoryRepository:
+        MetricsDirectoryRepository
 
-PRE_ANALYTICS_COVERAGE_METRIC_ID: "3d4a527c-5caf-4232-af96-fa9740db3c54"
-PRE_ANALYTICS_COVERAGE_METRIC_CODE: "Охват пользователей"
+    @MockK
+    private lateinit var responseBuilder:
+        InitiativeMetricPreAnalyticsResponseBuilder
 
-PRE_ANALYTICS_SPEED_METRIC_ID: "4e5b638d-6db0-4343-bfa7-ab0851ec4d65"
-PRE_ANALYTICS_SPEED_METRIC_CODE: "Скорость"
+    private lateinit var reader:
+        InitiativeMetricPreAnalyticsReader
 
-@Component
-class InitiativeMetricPreAnalyticsResponseBuilder {
-
-    fun buildMetricsForAgentType(
-        agentType: String,
-        metricTypes: List<InitiativeMetricTypeEntity>,
-        metrics: List<MetricsDirectoryEntity>,
-        metricConfigurationsById:
-            Map<UUID, PreAnalyticsMetricProperties>,
-        valuesByKey:
-            Map<MetricValueKey, InitiativeMetricValueEntity>,
-        previousMonth: YearMonth,
-        beforePreviousMonth: YearMonth,
-    ): List<InitiativeMetricPreAnalyticsItemResponse> {
-        val agentTypeExists =
-            metricTypes.any { metricType ->
-                metricType.agentType == agentType
-            }
-
-        if (!agentTypeExists) {
-            return emptyList()
-        }
-
-        return metrics.map { metric ->
-            val metricConfiguration =
-                metricConfigurationsById.getValue(
-                    metric.id,
-                )
-
-            val previousValue =
-                valuesByKey[
-                    MetricValueKey(
-                        agentType = agentType,
-                        metricId = metric.id,
-                        periodMonth = previousMonth,
-                    )
-                ]
-
-            val beforePreviousValue =
-                valuesByKey[
-                    MetricValueKey(
-                        agentType = agentType,
-                        metricId = metric.id,
-                        periodMonth = beforePreviousMonth,
-                    )
-                ]
-
-            buildMetricResponse(
-                metric = metric,
-                metricCode = metricConfiguration.code,
-                previousValue = previousValue,
-                beforePreviousValue = beforePreviousValue,
+    @BeforeEach
+    fun setUp() {
+        reader =
+            InitiativeMetricPreAnalyticsReader(
+                messageProvider = messageProvider,
+                preAnalyticsProperties =
+                    preAnalyticsProperties,
+                initiativeMetricTypeRepository =
+                    initiativeMetricTypeRepository,
+                initiativeMetricValueRepository =
+                    initiativeMetricValueRepository,
+                metricsDirectoryRepository =
+                    metricsDirectoryRepository,
+                responseBuilder = responseBuilder,
             )
-        }
     }
 
-    private fun buildMetricResponse(
-        metric: MetricsDirectoryEntity,
-        metricCode: String,
-        previousValue: InitiativeMetricValueEntity?,
-        beforePreviousValue: InitiativeMetricValueEntity?,
-    ): InitiativeMetricPreAnalyticsItemResponse {
-        val submittedMetricValue =
-            previousValue?.metricValue
-
-        if (
-            previousValue == null ||
-            submittedMetricValue == null
-        ) {
-            return emptyMetricResponse(
-                metric = metric,
-                metricCode = metricCode,
-            )
-        }
-
-        val comparisonValue =
-            beforePreviousValue
-                ?.metricValue
-                ?.takeIf { value ->
-                    submittedMetricValue.compareTo(
-                        BigDecimal.ZERO,
-                    ) != 0 &&
-                        value.compareTo(
-                            BigDecimal.ZERO,
-                        ) != 0
-                }
-
-        val deltaValue =
-            comparisonValue?.let { value ->
-                val absoluteDeltaValue =
-                    submittedMetricValue
-                        .subtract(value)
-                        .multiply(HUNDRED)
-                        .divide(
-                            value.abs(),
-                            DELTA_SCALE,
-                            RoundingMode.HALF_UP,
-                        )
-                        .abs()
-
-                applyDeltaSign(
-                    deltaValue = absoluteDeltaValue,
-                    direction = metric.direction,
-                    previousValue = submittedMetricValue,
-                    beforePreviousValue = value,
-                )
-            }
-
-        return InitiativeMetricPreAnalyticsItemResponse(
-            metricId = metric.id,
-            code = metricCode,
-            name = metric.name,
-            unit = metric.unit,
-            value = submittedMetricValue,
-            targetValue = previousValue.targetValue,
-            deltaValue = deltaValue,
-        )
-    }
-
-    private fun emptyMetricResponse(
-        metric: MetricsDirectoryEntity,
-        metricCode: String,
-    ): InitiativeMetricPreAnalyticsItemResponse {
-        return InitiativeMetricPreAnalyticsItemResponse(
-            metricId = metric.id,
-            code = metricCode,
-            name = metric.name,
-            unit = metric.unit,
-            value = null,
-            targetValue = null,
-            deltaValue = null,
-        )
-    }
-
-    private fun applyDeltaSign(
-        deltaValue: BigDecimal,
-        direction: String?,
-        previousValue: BigDecimal,
-        beforePreviousValue: BigDecimal,
-    ): BigDecimal {
-        val comparison =
-            previousValue.compareTo(
-                beforePreviousValue,
-            )
-
-        val improved =
-            when (direction) {
-                MORE_IS_BETTER ->
-                    comparison >= 0
-
-                LESS_IS_BETTER ->
-                    comparison < 0
-
-                else ->
-                    throw AiInternalServerException(
-                        errorCode =
-                            UNSUPPORTED_METRIC_DIRECTION,
-                        message =
-                            "Unsupported metric direction: " +
-                                direction,
-                    )
-            }
-
-        return if (improved) {
-            deltaValue
-        } else {
-            deltaValue.negate()
-        }
-    }
-
-    data class MetricValueKey(
-        val agentType: String,
-        val metricId: UUID,
-        val periodMonth: YearMonth,
-    )
-
-    private companion object {
-
-        const val MORE_IS_BETTER =
-            "more_is_better"
-
-        const val LESS_IS_BETTER =
-            "less_is_better"
-
-        const val UNSUPPORTED_METRIC_DIRECTION =
-            "unsupported.metric.direction"
-
-        const val DELTA_SCALE = 0
-
-        val HUNDRED: BigDecimal =
-            BigDecimal.valueOf(100)
-    }
-}
-
-@Service
-class InitiativeMetricPreAnalyticsReader(
-    private val messageProvider: MessageProvider,
-    private val preAnalyticsProperties:
-        PreAnalyticsProperties,
-    private val initiativeMetricTypeRepository:
-        InitiativeMetricTypeRepository,
-    private val initiativeMetricValueRepository:
-        InitiativeMetricValueRepository,
-    private val metricsDirectoryRepository:
-        MetricsDirectoryRepository,
-    private val responseBuilder:
-        InitiativeMetricPreAnalyticsResponseBuilder,
-) {
-
-    @Transactional(readOnly = true)
-    fun getPreAnalytics(
-        initiativeId: Long,
-        now: Instant = Instant.now(),
-    ): InitiativeMetricPreAnalyticsResponse {
-        val metricTypes =
+    @Test
+    fun `should throw conflict when initiative has no supported agent types`() {
+        every {
             initiativeMetricTypeRepository
                 .findAllByAiAgentIdAndAgentTypeIn(
-                    initiativeId = initiativeId,
+                    initiativeId = INITIATIVE_ID,
                     agentTypes = SUPPORTED_AGENT_TYPES,
                 )
+        } returns emptyList()
 
-        if (metricTypes.isEmpty()) {
-            throw AiConflictException(
-                errorCode =
-                    INITIATIVE_METRIC_TYPES_NOT_FOUND,
-                message =
-                    MessageFormat.format(
-                        messageProvider[
-                            INITIATIVE_METRIC_TYPES_NOT_FOUND
-                        ],
-                        initiativeId,
-                    ),
+        every {
+            messageProvider[
+                INITIATIVE_METRIC_TYPES_NOT_FOUND
+            ]
+        } returns
+            "Metric types not found for initiative {0}"
+
+        assertThatThrownBy {
+            reader.getPreAnalytics(
+                initiativeId = INITIATIVE_ID,
+                now = NOW,
             )
-        }
+        }.isInstanceOf(AiConflictException::class.java)
 
-        val configuredMetrics =
-            preAnalyticsProperties.metrics
-
-        check(
-            configuredMetrics.size ==
-                EXPECTED_METRICS_COUNT
-        ) {
-            "Exactly $EXPECTED_METRICS_COUNT " +
-                "pre-analytics metrics must be configured"
-        }
-
-        check(
-            configuredMetrics.all { configuration ->
-                configuration.metricId != null &&
-                    configuration.code.isNotBlank()
-            }
-        ) {
-            "Pre-analytics metricId and code " +
-                "must be configured"
-        }
-
-        val configuredMetricIds =
-            configuredMetrics.map { configuration ->
-                requireNotNull(configuration.metricId)
-            }
-
-        check(
-            configuredMetricIds.toSet().size ==
-                EXPECTED_METRICS_COUNT
-        ) {
-            "Pre-analytics metricIds must be unique"
-        }
-
-        val configuredMetricCodes =
-            configuredMetrics.map { configuration ->
-                configuration.code
-            }
-
-        check(
-            configuredMetricCodes.toSet().size ==
-                EXPECTED_METRICS_COUNT
-        ) {
-            "Pre-analytics metric codes must be unique"
-        }
-
-        val metricConfigurationsById =
-            configuredMetrics.associateBy { configuration ->
-                requireNotNull(configuration.metricId)
-            }
-
-        val metricsById =
-            metricsDirectoryRepository
-                .findAllById(configuredMetricIds)
-                .associateBy { metric ->
-                    metric.id
-                }
-
-        val missingMetricIds =
-            configuredMetricIds
-                .filterNot(
-                    predicate = metricsById::containsKey,
-                )
-
-        check(missingMetricIds.isEmpty()) {
-            "Invalid pre-analytics metrics configuration: " +
-                "metrics not found=$missingMetricIds"
-        }
-
-        /*
-         * Сохраняем порядок метрик,
-         * заданный в конфигурации.
-         */
-        val metrics =
-            configuredMetricIds.map { metricId ->
-                metricsById.getValue(metricId)
-            }
-
-        val currentMonth =
-            YearMonth.from(
-                now.atZone(ZoneOffset.UTC),
+        verify(exactly = 0) {
+            metricsDirectoryRepository.findAllById(
+                any<Iterable<UUID>>(),
             )
 
-        val previousMonth =
-            currentMonth.minusMonths(1)
-
-        val beforePreviousMonth =
-            currentMonth.minusMonths(2)
-
-        val metricValues =
             initiativeMetricValueRepository
                 .findValuesForInitiativeMetrics(
-                    initiativeId = initiativeId,
-                    agentTypes = SUPPORTED_AGENT_TYPES,
-                    metricDirectoryIds =
-                        configuredMetricIds.toSet(),
-                    periodFrom =
-                        beforePreviousMonth.atDay(1),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
                 )
 
-        val valuesByKey =
-            metricValues
-                .filter { metricValue ->
-                    metricValue.periodMonth ==
-                        previousMonth.atDay(1) ||
-                        metricValue.periodMonth ==
-                        beforePreviousMonth.atDay(1)
-                }
-                .associateBy { metricValue ->
-                    InitiativeMetricPreAnalyticsResponseBuilder
-                        .MetricValueKey(
-                            agentType =
-                                metricValue
-                                    .initiativeMetricType
-                                    ?.agentType
-                                    .orEmpty(),
-                            metricId =
-                                requireNotNull(
-                                    metricValue
-                                        .metricDirectory
-                                        ?.id,
-                                ),
-                            periodMonth =
-                                YearMonth.from(
-                                    requireNotNull(
-                                        metricValue.periodMonth,
-                                    ),
-                                ),
-                        )
-                }
-
-        val metricsAutonomous =
             responseBuilder.buildMetricsForAgentType(
-                agentType = AUTONOMOUS.value,
+                agentType = any(),
+                metricTypes = any(),
+                metrics = any(),
+                metricConfigurationsById = any(),
+                valuesByKey = any(),
+                previousMonth = any(),
+                beforePreviousMonth = any(),
+            )
+        }
+    }
+
+    @Test
+    fun `should throw exception when configured metrics count is not four`() {
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdAndAgentTypeIn(
+                    initiativeId = INITIATIVE_ID,
+                    agentTypes = SUPPORTED_AGENT_TYPES,
+                )
+        } returns listOf(
+            metricType(
+                InitiativeMetricAgentType
+                    .AUTONOMOUS
+                    .value,
+            ),
+        )
+
+        every {
+            preAnalyticsProperties.metrics
+        } returns configuredMetrics().take(3)
+
+        assertThatThrownBy {
+            reader.getPreAnalytics(
+                initiativeId = INITIATIVE_ID,
+                now = NOW,
+            )
+        }
+            .isInstanceOf(
+                IllegalStateException::class.java,
+            )
+            .hasMessage(
+                "Exactly 4 pre-analytics metrics " +
+                    "must be configured",
+            )
+
+        verify(exactly = 0) {
+            metricsDirectoryRepository.findAllById(
+                any<Iterable<UUID>>(),
+            )
+        }
+    }
+
+    @Test
+    fun `should throw exception when configured metric ids contain duplicates`() {
+        val configurations =
+            configuredMetrics().toMutableList()
+
+        configurations[3] =
+            configurations[3].copy(
+                metricId = ACCURACY_METRIC_ID,
+            )
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdAndAgentTypeIn(
+                    initiativeId = INITIATIVE_ID,
+                    agentTypes = SUPPORTED_AGENT_TYPES,
+                )
+        } returns listOf(
+            metricType(
+                InitiativeMetricAgentType
+                    .AUTONOMOUS
+                    .value,
+            ),
+        )
+
+        every {
+            preAnalyticsProperties.metrics
+        } returns configurations
+
+        assertThatThrownBy {
+            reader.getPreAnalytics(
+                initiativeId = INITIATIVE_ID,
+                now = NOW,
+            )
+        }
+            .isInstanceOf(
+                IllegalStateException::class.java,
+            )
+            .hasMessage(
+                "Pre-analytics metricIds must be unique",
+            )
+
+        verify(exactly = 0) {
+            metricsDirectoryRepository.findAllById(
+                any<Iterable<UUID>>(),
+            )
+        }
+    }
+
+    @Test
+    fun `should throw exception when configured metric codes contain duplicates`() {
+        val configurations =
+            configuredMetrics().toMutableList()
+
+        configurations[3] =
+            configurations[3].copy(
+                code = ACCURACY_CODE,
+            )
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdAndAgentTypeIn(
+                    initiativeId = INITIATIVE_ID,
+                    agentTypes = SUPPORTED_AGENT_TYPES,
+                )
+        } returns listOf(
+            metricType(
+                InitiativeMetricAgentType
+                    .AUTONOMOUS
+                    .value,
+            ),
+        )
+
+        every {
+            preAnalyticsProperties.metrics
+        } returns configurations
+
+        assertThatThrownBy {
+            reader.getPreAnalytics(
+                initiativeId = INITIATIVE_ID,
+                now = NOW,
+            )
+        }
+            .isInstanceOf(
+                IllegalStateException::class.java,
+            )
+            .hasMessage(
+                "Pre-analytics metric codes must be unique",
+            )
+
+        verify(exactly = 0) {
+            metricsDirectoryRepository.findAllById(
+                any<Iterable<UUID>>(),
+            )
+        }
+    }
+
+    @Test
+    fun `should throw exception when configured metric is absent in directory`() {
+        val configurations =
+            configuredMetrics()
+
+        val foundMetrics =
+            directoryMetrics().dropLast(1)
+
+        mockReaderRepositories(
+            configurations = configurations,
+            metrics = foundMetrics,
+        )
+
+        assertThatThrownBy {
+            reader.getPreAnalytics(
+                initiativeId = INITIATIVE_ID,
+                now = NOW,
+            )
+        }
+            .isInstanceOf(
+                IllegalStateException::class.java,
+            )
+            .hasMessageContaining(
+                SPEED_METRIC_ID.toString(),
+            )
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetrics(
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                )
+        }
+    }
+
+    @Test
+    fun `should return response without error when at least one metric value is submitted`() {
+        val configurations =
+            configuredMetrics()
+
+        val metrics =
+            directoryMetrics()
+
+        val configuredIds =
+            configurations.map { configuration ->
+                requireNotNull(configuration.metricId)
+            }
+
+        val metricIds =
+            configuredIds.toSet()
+
+        val configurationsById =
+            configurations.associateBy { configuration ->
+                requireNotNull(configuration.metricId)
+            }
+
+        val metricTypes =
+            listOf(
+                metricType(
+                    InitiativeMetricAgentType
+                        .AUTONOMOUS
+                        .value,
+                ),
+                metricType(
+                    InitiativeMetricAgentType
+                        .COPILOT
+                        .value,
+                ),
+            )
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdAndAgentTypeIn(
+                    initiativeId = INITIATIVE_ID,
+                    agentTypes = SUPPORTED_AGENT_TYPES,
+                )
+        } returns metricTypes
+
+        every {
+            preAnalyticsProperties.metrics
+        } returns configurations
+
+        every {
+            metricsDirectoryRepository.findAllById(
+                configuredIds,
+            )
+        } returns metrics
+
+        every {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetrics(
+                    initiativeId = INITIATIVE_ID,
+                    agentTypes = SUPPORTED_AGENT_TYPES,
+                    metricDirectoryIds = metricIds,
+                    periodFrom =
+                        BEFORE_PREVIOUS_MONTH.atDay(1),
+                )
+        } returns emptyList()
+
+        val autonomousItem =
+            responseItem(
+                metric = metrics.first(),
+                code = ACCURACY_CODE,
+                value = BigDecimal("120"),
+            )
+
+        val copilotItem =
+            responseItem(
+                metric = metrics[1],
+                code = CSI_CODE,
+                value = null,
+            )
+
+        every {
+            responseBuilder.buildMetricsForAgentType(
+                agentType =
+                    InitiativeMetricAgentType
+                        .AUTONOMOUS
+                        .value,
                 metricTypes = metricTypes,
                 metrics = metrics,
                 metricConfigurationsById =
-                    metricConfigurationsById,
-                valuesByKey = valuesByKey,
-                previousMonth = previousMonth,
+                    configurationsById,
+                valuesByKey = any(),
+                previousMonth = PREVIOUS_MONTH,
                 beforePreviousMonth =
-                    beforePreviousMonth,
+                    BEFORE_PREVIOUS_MONTH,
             )
+        } returns listOf(autonomousItem)
 
-        val metricsCopilot =
+        every {
             responseBuilder.buildMetricsForAgentType(
-                agentType = COPILOT.value,
+                agentType =
+                    InitiativeMetricAgentType
+                        .COPILOT
+                        .value,
                 metricTypes = metricTypes,
                 metrics = metrics,
                 metricConfigurationsById =
-                    metricConfigurationsById,
-                valuesByKey = valuesByKey,
-                previousMonth = previousMonth,
+                    configurationsById,
+                valuesByKey = any(),
+                previousMonth = PREVIOUS_MONTH,
                 beforePreviousMonth =
-                    beforePreviousMonth,
+                    BEFORE_PREVIOUS_MONTH,
+            )
+        } returns listOf(copilotItem)
+
+        val response =
+            reader.getPreAnalytics(
+                initiativeId = INITIATIVE_ID,
+                now = NOW,
             )
 
-        val hasSubmittedValues =
-            (metricsAutonomous + metricsCopilot)
-                .any { metric ->
-                    metric.value != null
-                }
+        assertThat(response.initiativeId)
+            .isEqualTo(INITIATIVE_ID)
 
-        return InitiativeMetricPreAnalyticsResponse(
-            initiativeId = initiativeId,
-            errorCode =
-                METRIC_VALUES_NOT_SUBMITTED
-                    .takeUnless {
-                        hasSubmittedValues
-                    },
-            periodDisplayText =
-                PERIOD_DISPLAY_TEXT_PREFIX +
-                    currentMonth
-                        .atDay(1)
-                        .format(
-                            PERIOD_DISPLAY_DATE_FORMATTER,
-                        ),
-            metricsAutonomous = metricsAutonomous,
-            metricsCopilot = metricsCopilot,
+        assertThat(response.errorCode)
+            .isNull()
+
+        assertThat(response.periodDisplayText)
+            .isEqualTo("Значения на 01.07.2026")
+
+        assertThat(response.metricsAutonomous)
+            .containsExactly(autonomousItem)
+
+        assertThat(response.metricsCopilot)
+            .containsExactly(copilotItem)
+
+        verify(exactly = 1) {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetrics(
+                    initiativeId = INITIATIVE_ID,
+                    agentTypes = SUPPORTED_AGENT_TYPES,
+                    metricDirectoryIds = metricIds,
+                    periodFrom =
+                        LocalDate.of(2026, 5, 1),
+                )
+        }
+    }
+
+    @Test
+    fun `should return error code when all metric values are absent`() {
+        val configurations =
+            configuredMetrics()
+
+        val metrics =
+            directoryMetrics()
+
+        val configuredIds =
+            configurations.map { configuration ->
+                requireNotNull(configuration.metricId)
+            }
+
+        val metricIds =
+            configuredIds.toSet()
+
+        val configurationsById =
+            configurations.associateBy { configuration ->
+                requireNotNull(configuration.metricId)
+            }
+
+        val metricTypes =
+            listOf(
+                metricType(
+                    InitiativeMetricAgentType
+                        .AUTONOMOUS
+                        .value,
+                ),
+            )
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdAndAgentTypeIn(
+                    initiativeId = INITIATIVE_ID,
+                    agentTypes = SUPPORTED_AGENT_TYPES,
+                )
+        } returns metricTypes
+
+        every {
+            preAnalyticsProperties.metrics
+        } returns configurations
+
+        every {
+            metricsDirectoryRepository.findAllById(
+                configuredIds,
+            )
+        } returns metrics
+
+        every {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetrics(
+                    initiativeId = INITIATIVE_ID,
+                    agentTypes = SUPPORTED_AGENT_TYPES,
+                    metricDirectoryIds = metricIds,
+                    periodFrom =
+                        BEFORE_PREVIOUS_MONTH.atDay(1),
+                )
+        } returns emptyList()
+
+        val emptyItems =
+            metrics.mapIndexed { index, metric ->
+                responseItem(
+                    metric = metric,
+                    code = configurations[index].code,
+                    value = null,
+                )
+            }
+
+        every {
+            responseBuilder.buildMetricsForAgentType(
+                agentType =
+                    InitiativeMetricAgentType
+                        .AUTONOMOUS
+                        .value,
+                metricTypes = metricTypes,
+                metrics = metrics,
+                metricConfigurationsById =
+                    configurationsById,
+                valuesByKey = emptyMap(),
+                previousMonth = PREVIOUS_MONTH,
+                beforePreviousMonth =
+                    BEFORE_PREVIOUS_MONTH,
+            )
+        } returns emptyItems
+
+        every {
+            responseBuilder.buildMetricsForAgentType(
+                agentType =
+                    InitiativeMetricAgentType
+                        .COPILOT
+                        .value,
+                metricTypes = metricTypes,
+                metrics = metrics,
+                metricConfigurationsById =
+                    configurationsById,
+                valuesByKey = emptyMap(),
+                previousMonth = PREVIOUS_MONTH,
+                beforePreviousMonth =
+                    BEFORE_PREVIOUS_MONTH,
+            )
+        } returns emptyList()
+
+        val response =
+            reader.getPreAnalytics(
+                initiativeId = INITIATIVE_ID,
+                now = NOW,
+            )
+
+        assertThat(response.errorCode)
+            .isEqualTo("metric.not-submitted")
+
+        assertThat(response.metricsAutonomous)
+            .containsExactlyElementsOf(emptyItems)
+
+        assertThat(response.metricsCopilot)
+            .isEmpty()
+    }
+
+    @Test
+    fun `should preserve configured metrics order`() {
+        val configurations =
+            configuredMetrics()
+
+        val metricsInConfiguredOrder =
+            directoryMetrics()
+
+        val metricsFromRepository =
+            metricsInConfiguredOrder.reversed()
+
+        val configuredIds =
+            configurations.map { configuration ->
+                requireNotNull(configuration.metricId)
+            }
+
+        val configurationsById =
+            configurations.associateBy { configuration ->
+                requireNotNull(configuration.metricId)
+            }
+
+        val metricTypes =
+            listOf(
+                metricType(
+                    InitiativeMetricAgentType
+                        .AUTONOMOUS
+                        .value,
+                ),
+            )
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdAndAgentTypeIn(
+                    initiativeId = INITIATIVE_ID,
+                    agentTypes = SUPPORTED_AGENT_TYPES,
+                )
+        } returns metricTypes
+
+        every {
+            preAnalyticsProperties.metrics
+        } returns configurations
+
+        every {
+            metricsDirectoryRepository.findAllById(
+                configuredIds,
+            )
+        } returns metricsFromRepository
+
+        every {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetrics(
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                )
+        } returns emptyList()
+
+        every {
+            responseBuilder.buildMetricsForAgentType(
+                agentType =
+                    InitiativeMetricAgentType
+                        .AUTONOMOUS
+                        .value,
+                metricTypes = metricTypes,
+                metrics = metricsInConfiguredOrder,
+                metricConfigurationsById =
+                    configurationsById,
+                valuesByKey = emptyMap(),
+                previousMonth = PREVIOUS_MONTH,
+                beforePreviousMonth =
+                    BEFORE_PREVIOUS_MONTH,
+            )
+        } returns emptyList()
+
+        every {
+            responseBuilder.buildMetricsForAgentType(
+                agentType =
+                    InitiativeMetricAgentType
+                        .COPILOT
+                        .value,
+                metricTypes = metricTypes,
+                metrics = metricsInConfiguredOrder,
+                metricConfigurationsById =
+                    configurationsById,
+                valuesByKey = emptyMap(),
+                previousMonth = PREVIOUS_MONTH,
+                beforePreviousMonth =
+                    BEFORE_PREVIOUS_MONTH,
+            )
+        } returns emptyList()
+
+        reader.getPreAnalytics(
+            initiativeId = INITIATIVE_ID,
+            now = NOW,
+        )
+
+        verify(exactly = 2) {
+            responseBuilder.buildMetricsForAgentType(
+                agentType = any(),
+                metricTypes = metricTypes,
+                metrics = metricsInConfiguredOrder,
+                metricConfigurationsById =
+                    configurationsById,
+                valuesByKey = emptyMap(),
+                previousMonth = PREVIOUS_MONTH,
+                beforePreviousMonth =
+                    BEFORE_PREVIOUS_MONTH,
+            )
+        }
+    }
+
+    private fun mockReaderRepositories(
+        configurations:
+            List<PreAnalyticsMetricProperties>,
+        metrics: List<MetricsDirectoryEntity>,
+    ) {
+        val configuredIds =
+            configurations.map { configuration ->
+                requireNotNull(configuration.metricId)
+            }
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdAndAgentTypeIn(
+                    initiativeId = INITIATIVE_ID,
+                    agentTypes = SUPPORTED_AGENT_TYPES,
+                )
+        } returns listOf(
+            metricType(
+                InitiativeMetricAgentType
+                    .AUTONOMOUS
+                    .value,
+            ),
+        )
+
+        every {
+            preAnalyticsProperties.metrics
+        } returns configurations
+
+        every {
+            metricsDirectoryRepository.findAllById(
+                configuredIds,
+            )
+        } returns metrics
+    }
+
+    private fun configuredMetrics():
+        List<PreAnalyticsMetricProperties> {
+        return listOf(
+            PreAnalyticsMetricProperties(
+                metricId = ACCURACY_METRIC_ID,
+                code = ACCURACY_CODE,
+            ),
+            PreAnalyticsMetricProperties(
+                metricId = CSI_METRIC_ID,
+                code = CSI_CODE,
+            ),
+            PreAnalyticsMetricProperties(
+                metricId = COVERAGE_METRIC_ID,
+                code = COVERAGE_CODE,
+            ),
+            PreAnalyticsMetricProperties(
+                metricId = SPEED_METRIC_ID,
+                code = SPEED_CODE,
+            ),
+        )
+    }
+
+    private fun directoryMetrics():
+        List<MetricsDirectoryEntity> {
+        return listOf(
+            metric(
+                id = ACCURACY_METRIC_ID,
+                name = "Полное название точности",
+            ),
+            metric(
+                id = CSI_METRIC_ID,
+                name = "Полное название CSI",
+            ),
+            metric(
+                id = COVERAGE_METRIC_ID,
+                name = "Полное название охвата",
+            ),
+            metric(
+                id = SPEED_METRIC_ID,
+                name = "Полное название скорости",
+            ),
+        )
+    }
+
+    private fun metricType(
+        agentType: String,
+    ): InitiativeMetricTypeEntity {
+        return mockk {
+            every {
+                this@mockk.agentType
+            } returns agentType
+        }
+    }
+
+    private fun metric(
+        id: UUID,
+        name: String,
+    ): MetricsDirectoryEntity {
+        return mockk {
+            every {
+                this@mockk.id
+            } returns id
+
+            every {
+                this@mockk.name
+            } returns name
+
+            every {
+                unit
+            } returns "percent"
+        }
+    }
+
+    private fun responseItem(
+        metric: MetricsDirectoryEntity,
+        code: String,
+        value: BigDecimal?,
+    ): InitiativeMetricPreAnalyticsItemResponse {
+        return InitiativeMetricPreAnalyticsItemResponse(
+            metricId = metric.id,
+            code = code,
+            name = metric.name,
+            unit = metric.unit,
+            value = value,
+            targetValue =
+                value?.let {
+                    BigDecimal("150")
+                },
+            deltaValue =
+                value?.let {
+                    BigDecimal("20")
+                },
         )
     }
 
     private companion object {
 
-        const val EXPECTED_METRICS_COUNT = 4
+        const val INITIATIVE_ID = 100L
 
-        const val METRIC_VALUES_NOT_SUBMITTED =
-            "metric.not-submitted"
+        const val ACCURACY_CODE =
+            "Точность"
 
-        const val PERIOD_DISPLAY_TEXT_PREFIX =
-            "Значения на "
+        const val CSI_CODE =
+            "Δ удовлетворённости"
 
-        val PERIOD_DISPLAY_DATE_FORMATTER:
-            DateTimeFormatter =
-            DateTimeFormatter.ofPattern(
-                "dd.MM.yyyy",
+        const val COVERAGE_CODE =
+            "Охват пользователей"
+
+        const val SPEED_CODE =
+            "Скорость"
+
+        val ACCURACY_METRIC_ID: UUID =
+            UUID.fromString(
+                "11111111-1111-1111-1111-111111111111",
             )
+
+        val CSI_METRIC_ID: UUID =
+            UUID.fromString(
+                "22222222-2222-2222-2222-222222222222",
+            )
+
+        val COVERAGE_METRIC_ID: UUID =
+            UUID.fromString(
+                "33333333-3333-3333-3333-333333333333",
+            )
+
+        val SPEED_METRIC_ID: UUID =
+            UUID.fromString(
+                "44444444-4444-4444-4444-444444444444",
+            )
+
+        val NOW: Instant =
+            Instant.parse(
+                "2026-07-17T10:00:00Z",
+            )
+
+        val PREVIOUS_MONTH: YearMonth =
+            YearMonth.of(2026, 6)
+
+        val BEFORE_PREVIOUS_MONTH: YearMonth =
+            YearMonth.of(2026, 5)
 
         val SUPPORTED_AGENT_TYPES =
             setOf(
-                AUTONOMOUS.value,
-                COPILOT.value,
+                InitiativeMetricAgentType
+                    .AUTONOMOUS
+                    .value,
+                InitiativeMetricAgentType
+                    .COPILOT
+                    .value,
             )
     }
 }
