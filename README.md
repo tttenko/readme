@@ -10,4 +10,6 @@ PRE_ANALYTICS_COVERAGE_METRIC_CODE: "coverage"
 
 PRE_ANALYTICS_SPEED_METRIC_NAME: "Скорость"
 PRE_ANALYTICS_SPEED_METRIC_CODE: "speed"
+
+Правильно понимаю, что в описании metrics.name опечатка и поле должно заполняться значением name из таблицы metrics_directory? Сейчас в справочнике поля code нет, а code для ответа берётся из конфигурации.
 ```
