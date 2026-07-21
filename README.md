@@ -1,451 +1,119 @@
 ```java
 
 
-@ExtendWith(MockKExtension::class)
-class MetricsAdminServiceTest {
+PUT /api/v1/reference/metrics/{metricId}/pre-analytics
 
-    @MockK
-    private lateinit var metricsDirectoryRepository:
-        MetricsDirectoryRepository
+metricId:
 
-    @MockK
-    private lateinit var messageProvider:
-        MessageProvider
+10000000-0000-0000-0000-000000000001
 
-    @MockK(relaxed = true)
-    private lateinit var userInfoProvider:
-        UserInfoProvider
+Body:
 
-    @MockK(relaxed = true)
-    private lateinit var dateTimeProvider:
-        DateTimeProvider
-
-    private lateinit var metric:
-        MetricsDirectoryEntity
-
-    private lateinit var service:
-        MetricsAdminService
-
-    private var storedCode: String? = null
-
-    private var storedPreAnalytics: Boolean? = null
-
-    @BeforeEach
-    fun setUp() {
-        storedCode = null
-        storedPreAnalytics = null
-
-        metric =
-            mockk(relaxed = true) {
-                every {
-                    id
-                } returns METRIC_ID
-
-                every {
-                    code
-                } answers {
-                    storedCode
-                }
-
-                every {
-                    code = any()
-                } answers {
-                    storedCode = firstArg()
-                }
-
-                every {
-                    isPreAnalytics
-                } answers {
-                    storedPreAnalytics
-                }
-
-                every {
-                    isPreAnalytics = any()
-                } answers {
-                    storedPreAnalytics = firstArg()
-                }
-            }
-
-        service =
-            MetricsAdminService(
-                metricsDirectoryRepository =
-                    metricsDirectoryRepository,
-                messageProvider = messageProvider,
-                userInfoProvider = userInfoProvider,
-                dateTimeProvider = dateTimeProvider,
-            )
-
-        every {
-            metricsDirectoryRepository.findById(
-                METRIC_ID,
-            )
-        } returns Optional.of(metric)
-
-        every {
-            metricsDirectoryRepository
-                .existsByCodeAndIdNot(
-                    code = any(),
-                    id = METRIC_ID,
-                )
-        } returns false
-
-        every {
-            metricsDirectoryRepository.save(metric)
-        } returns metric
-
-        every {
-            messageProvider[METRIC_NOT_FOUND]
-        } returns
-            "Метрика с идентификатором {0} не найдена"
-
-        every {
-            messageProvider[
-                PRE_ANALYTICS_CODE_REQUIRED
-            ]
-        } returns
-            "Для метрики pre-analytics необходимо заполнить code"
-
-        every {
-            messageProvider[
-                METRIC_CODE_ALREADY_EXISTS
-            ]
-        } returns
-            "Метрика с code {0} уже существует"
-    }
-
-    @Test
-    fun `should throw not found when metric does not exist`() {
-        every {
-            metricsDirectoryRepository.findById(
-                METRIC_ID,
-            )
-        } returns Optional.empty()
-
-        assertThatThrownBy {
-            service.updatePreAnalyticsSettings(
-                metricId = METRIC_ID,
-                request =
-                    request(
-                        code = METRIC_CODE,
-                        isPreAnalytics = true,
-                    ),
-            )
-        }
-            .isInstanceOf(
-                AiNotFoundException::class.java,
-            )
-            .hasMessage(
-                "Метрика с идентификатором " +
-                    "$METRIC_ID не найдена",
-            )
-
-        verify(exactly = 0) {
-            metricsDirectoryRepository.save(any())
-
-            metricsDirectoryRepository
-                .existsByCodeAndIdNot(
-                    any(),
-                    any(),
-                )
-
-            userInfoProvider.currentUser()
-
-            dateTimeProvider.currentDateTime()
-        }
-    }
-
-    @Test
-    fun `should throw bad request when pre analytics enabled without code`() {
-        assertThatThrownBy {
-            service.updatePreAnalyticsSettings(
-                metricId = METRIC_ID,
-                request =
-                    request(
-                        code = null,
-                        isPreAnalytics = true,
-                    ),
-            )
-        }
-            .isInstanceOf(
-                AiBadRequestException::class.java,
-            )
-            .hasMessage(
-                "Для метрики pre-analytics " +
-                    "необходимо заполнить code",
-            )
-
-        verify(exactly = 0) {
-            metricsDirectoryRepository.save(any())
-
-            metricsDirectoryRepository
-                .existsByCodeAndIdNot(
-                    any(),
-                    any(),
-                )
-
-            userInfoProvider.currentUser()
-
-            dateTimeProvider.currentDateTime()
-        }
-    }
-
-    @Test
-    fun `should throw bad request when pre analytics enabled with blank code`() {
-        assertThatThrownBy {
-            service.updatePreAnalyticsSettings(
-                metricId = METRIC_ID,
-                request =
-                    request(
-                        code = "   ",
-                        isPreAnalytics = true,
-                    ),
-            )
-        }
-            .isInstanceOf(
-                AiBadRequestException::class.java,
-            )
-            .hasMessage(
-                "Для метрики pre-analytics " +
-                    "необходимо заполнить code",
-            )
-
-        verify(exactly = 0) {
-            metricsDirectoryRepository.save(any())
-
-            metricsDirectoryRepository
-                .existsByCodeAndIdNot(
-                    any(),
-                    any(),
-                )
-
-            userInfoProvider.currentUser()
-
-            dateTimeProvider.currentDateTime()
-        }
-    }
-
-    @Test
-    fun `should throw bad request when metric code already exists`() {
-        every {
-            metricsDirectoryRepository
-                .existsByCodeAndIdNot(
-                    code = METRIC_CODE,
-                    id = METRIC_ID,
-                )
-        } returns true
-
-        assertThatThrownBy {
-            service.updatePreAnalyticsSettings(
-                metricId = METRIC_ID,
-                request =
-                    request(
-                        code = METRIC_CODE,
-                        isPreAnalytics = true,
-                    ),
-            )
-        }
-            .isInstanceOf(
-                AiBadRequestException::class.java,
-            )
-            .hasMessage(
-                "Метрика с code $METRIC_CODE " +
-                    "уже существует",
-            )
-
-        verify(exactly = 1) {
-            metricsDirectoryRepository
-                .existsByCodeAndIdNot(
-                    code = METRIC_CODE,
-                    id = METRIC_ID,
-                )
-        }
-
-        verify(exactly = 0) {
-            metricsDirectoryRepository.save(any())
-
-            userInfoProvider.currentUser()
-
-            dateTimeProvider.currentDateTime()
-        }
-    }
-
-    @Test
-    fun `should update pre analytics settings`() {
-        val request =
-            request(
-                code = METRIC_CODE,
-                isPreAnalytics = true,
-            )
-
-        val response =
-            service.updatePreAnalyticsSettings(
-                metricId = METRIC_ID,
-                request = request,
-            )
-
-        assertThat(response)
-            .usingRecursiveComparison()
-            .isEqualTo(
-                UpdateMetricPreAnalyticsResponse(
-                    metricId = METRIC_ID,
-                    code = METRIC_CODE,
-                    isPreAnalytics = true,
-                ),
-            )
-
-        verify(exactly = 1) {
-            metricsDirectoryRepository
-                .existsByCodeAndIdNot(
-                    code = METRIC_CODE,
-                    id = METRIC_ID,
-                )
-
-            userInfoProvider.currentUser()
-
-            dateTimeProvider.currentDateTime()
-
-            metricsDirectoryRepository.save(metric)
-        }
-
-        verify(exactly = 1) {
-            metric.code = METRIC_CODE
-            metric.isPreAnalytics = true
-            metric.updatedBy = any()
-            metric.updatedAt = any()
-        }
-    }
-
-    @Test
-    fun `should save null settings`() {
-        storedCode = METRIC_CODE
-        storedPreAnalytics = true
-
-        val response =
-            service.updatePreAnalyticsSettings(
-                metricId = METRIC_ID,
-                request =
-                    request(
-                        code = null,
-                        isPreAnalytics = null,
-                    ),
-            )
-
-        assertThat(response)
-            .usingRecursiveComparison()
-            .isEqualTo(
-                UpdateMetricPreAnalyticsResponse(
-                    metricId = METRIC_ID,
-                    code = null,
-                    isPreAnalytics = null,
-                ),
-            )
-
-        verify(exactly = 0) {
-            metricsDirectoryRepository
-                .existsByCodeAndIdNot(
-                    any(),
-                    any(),
-                )
-        }
-
-        verify(exactly = 1) {
-            metric.code = null
-            metric.isPreAnalytics = null
-            metricsDirectoryRepository.save(metric)
-        }
-    }
-
-    @Test
-    fun `should allow disabled pre analytics without code`() {
-        val response =
-            service.updatePreAnalyticsSettings(
-                metricId = METRIC_ID,
-                request =
-                    request(
-                        code = null,
-                        isPreAnalytics = false,
-                    ),
-            )
-
-        assertThat(response.metricId)
-            .isEqualTo(METRIC_ID)
-
-        assertThat(response.code)
-            .isNull()
-
-        assertThat(response.isPreAnalytics)
-            .isFalse()
-
-        verify(exactly = 0) {
-            metricsDirectoryRepository
-                .existsByCodeAndIdNot(
-                    any(),
-                    any(),
-                )
-        }
-
-        verify(exactly = 1) {
-            metric.code = null
-            metric.isPreAnalytics = false
-            metricsDirectoryRepository.save(metric)
-        }
-    }
-
-    @Test
-    fun `should check code uniqueness when pre analytics flag is null`() {
-        val response =
-            service.updatePreAnalyticsSettings(
-                metricId = METRIC_ID,
-                request =
-                    request(
-                        code = METRIC_CODE,
-                        isPreAnalytics = null,
-                    ),
-            )
-
-        assertThat(response.code)
-            .isEqualTo(METRIC_CODE)
-
-        assertThat(response.isPreAnalytics)
-            .isNull()
-
-        verify(exactly = 1) {
-            metricsDirectoryRepository
-                .existsByCodeAndIdNot(
-                    code = METRIC_CODE,
-                    id = METRIC_ID,
-                )
-
-            metricsDirectoryRepository.save(metric)
-        }
-    }
-
-    private fun request(
-        code: String?,
-        isPreAnalytics: Boolean?,
-    ): UpdateMetricPreAnalyticsRequest {
-        return UpdateMetricPreAnalyticsRequest(
-            code = code,
-            isPreAnalytics = isPreAnalytics,
-        )
-    }
-
-    private companion object {
-
-        val METRIC_ID: UUID =
-            UUID.fromString(
-                "a860b390-b739-48e6-a694-e96582eb4e95",
-            )
-
-        const val METRIC_CODE =
-            "accuracy"
-
-        const val PRE_ANALYTICS_CODE_REQUIRED =
-            "metric.pre-analytics.code-required"
-
-        const val METRIC_CODE_ALREADY_EXISTS =
-            "metric.code.already-exists"
-    }
+{
+  "code": "Точность",
+  "isPreAnalytics": true
 }
 
+Ожидаемый статус:
+
+200 OK
+4. Заполни остальные метрики
+CSI
+
+metricId:
+
+10000000-0000-0000-0000-000000000002
+{
+  "code": "Δ удовлетворённости",
+  "isPreAnalytics": true
+}
+Охват
+
+metricId:
+
+10000000-0000-0000-0000-000000000003
+{
+  "code": "Охват пользователей",
+  "isPreAnalytics": true
+}
+Скорость
+
+metricId:
+
+10000000-0000-0000-0000-000000000004
+{
+  "code": "Скорость",
+  "isPreAnalytics": true
+}
+
+Каждый запрос должен вернуть 200 OK.
+
+5. Проверь данные в БД
+SELECT
+    id,
+    name,
+    code,
+    is_pre_analytics
+FROM metrics_directory
+WHERE id IN (
+    '10000000-0000-0000-0000-000000000001',
+    '10000000-0000-0000-0000-000000000002',
+    '10000000-0000-0000-0000-000000000003',
+    '10000000-0000-0000-0000-000000000004'
+)
+ORDER BY id;
+
+Должны быть четыре строки с заполненным code и:
+
+is_pre_analytics = true
+6. Вызови pre-analytics
+GET /api/v1/ai-agent/initiatives/320/pre-analytics
+
+Ожидаемый результат:
+
+errorCode = null;
+в metricsAutonomous снова присутствуют четыре метрики;
+если у инициативы есть copilot, они также находятся в metricsCopilot;
+metricId, value, targetValue и deltaValue не изменились;
+code теперь берётся из metrics_directory.
+
+По твоим данным ожидаются:
+
+metricId	code	value	targetValue	deltaValue
+...0001	Точность	120	150	20
+...0002	Δ удовлетворённости	80	150	-20
+...0003	Охват пользователей	-2	150	33
+...0004	Скорость	-2	150	-33
+7. Докажи, что конфигурация больше не используется
+
+На локальном стенде временно измени код четвёртой метрики:
+
+{
+  "code": "Скорость DB TEST",
+  "isPreAnalytics": true
+}
+
+Повтори GET:
+
+GET /api/v1/ai-agent/initiatives/320/pre-analytics
+
+В ответе должно появиться:
+
+"code": "Скорость DB TEST"
+
+Затем отключи эту метрику:
+
+{
+  "code": "Скорость DB TEST",
+  "isPreAnalytics": false
+}
+
+После повторного GET метрика «Скорость» должна исчезнуть из pre-analytics.
+
+В конце обязательно восстанови:
+
+{
+  "code": "Скорость",
+  "isPreAnalytics": true
+}
 ```
