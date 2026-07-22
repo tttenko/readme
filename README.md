@@ -1,6 +1,6 @@
 ```java
 
-ExtendWith(MockKExtension::class)
+@ExtendWith(MockKExtension::class)
 class InitiativeMetricPreAnalyticsResponseBuilderTest {
 
     @MockK
@@ -25,9 +25,7 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
     @BeforeEach
     fun setUp() {
         every {
-            messageProvider[
-                PRE_ANALYTICS_CODE_NOT_CONFIGURED
-            ]
+            messageProvider[PRE_ANALYTICS_CODE_NOT_CONFIGURED]
         } returns PRE_ANALYTICS_CODE_NOT_CONFIGURED_MESSAGE
 
         responseBuilder =
@@ -47,18 +45,12 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
 
         autonomousMetricType =
             metricType(
-                agentType =
-                    InitiativeMetricAgentType
-                        .AUTONOMOUS
-                        .value,
+                agentType = AUTONOMOUS,
             )
 
         copilotMetricType =
             metricType(
-                agentType =
-                    InitiativeMetricAgentType
-                        .COPILOT
-                        .value,
+                agentType = COPILOT,
             )
     }
 
@@ -66,10 +58,7 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
     fun shouldReturnEmptyListWhenRequestedAgentTypeDoesNotExist() {
         val result =
             responseBuilder.buildMetricsForAgentType(
-                agentType =
-                    InitiativeMetricAgentType
-                        .AUTONOMOUS
-                        .value,
+                agentType = AUTONOMOUS,
                 metricTypes = listOf(copilotMetricType),
                 metrics = listOf(metric),
                 valuesByKey = emptyMap(),
@@ -133,13 +122,12 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
     }
 
     @Test
-    fun shouldBuildResponseWithCalculatedDeltaAndDiagramValues() {
+    fun shouldBuildResponseWithDeltaAndDiagramValues() {
         every {
             valueCalculator.calculateDeltaValue(
                 direction = MORE_IS_BETTER,
                 submittedMetricValue = SUBMITTED_VALUE,
-                beforePreviousMetricValue =
-                    BEFORE_PREVIOUS_VALUE,
+                beforePreviousMetricValue = BEFORE_PREVIOUS_VALUE,
             )
         } returns DELTA_VALUE
 
@@ -198,8 +186,7 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
             valueCalculator.calculateDeltaValue(
                 direction = MORE_IS_BETTER,
                 submittedMetricValue = SUBMITTED_VALUE,
-                beforePreviousMetricValue =
-                    BEFORE_PREVIOUS_VALUE,
+                beforePreviousMetricValue = BEFORE_PREVIOUS_VALUE,
             )
         }
 
@@ -213,7 +200,140 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
     }
 
     @Test
-    fun shouldPassNullBeforePreviousValueToCalculatorWhenValueIsAbsent() {
+    fun shouldAddDiagramValueReturnedByCalculator() {
+        every {
+            valueCalculator.calculateDeltaValue(
+                direction = MORE_IS_BETTER,
+                submittedMetricValue = SUBMITTED_VALUE,
+                beforePreviousMetricValue = BEFORE_PREVIOUS_VALUE,
+            )
+        } returns DELTA_VALUE
+
+        every {
+            valueCalculator.calculateDiagramValue(
+                direction = MORE_IS_BETTER,
+                actualValue = SUBMITTED_VALUE,
+                targetValue = TARGET_VALUE,
+            )
+        } returns DIAGRAM_VALUE
+
+        val response =
+            buildResponseWithSubmittedValues()
+
+        assertThat(response.diagramValue)
+            .isEqualByComparingTo(DIAGRAM_VALUE)
+
+        verify(exactly = 1) {
+            valueCalculator.calculateDiagramValue(
+                direction = MORE_IS_BETTER,
+                actualValue = SUBMITTED_VALUE,
+                targetValue = TARGET_VALUE,
+            )
+        }
+    }
+
+    @Test
+    fun shouldReturnNullDiagramValueWhenCalculatorReturnsNull() {
+        every {
+            valueCalculator.calculateDeltaValue(
+                direction = MORE_IS_BETTER,
+                submittedMetricValue = SUBMITTED_VALUE,
+                beforePreviousMetricValue = BEFORE_PREVIOUS_VALUE,
+            )
+        } returns DELTA_VALUE
+
+        every {
+            valueCalculator.calculateDiagramValue(
+                direction = MORE_IS_BETTER,
+                actualValue = SUBMITTED_VALUE,
+                targetValue = TARGET_VALUE,
+            )
+        } returns null
+
+        val response =
+            buildResponseWithSubmittedValues()
+
+        assertThat(response.value)
+            .isEqualByComparingTo(SUBMITTED_VALUE)
+
+        assertThat(response.targetValue)
+            .isEqualByComparingTo(TARGET_VALUE)
+
+        assertThat(response.deltaValue)
+            .isEqualByComparingTo(DELTA_VALUE)
+
+        assertThat(response.diagramValue)
+            .isNull()
+    }
+
+    @Test
+    fun shouldPassNullTargetValueToDiagramCalculator() {
+        every {
+            valueCalculator.calculateDeltaValue(
+                direction = MORE_IS_BETTER,
+                submittedMetricValue = SUBMITTED_VALUE,
+                beforePreviousMetricValue = BEFORE_PREVIOUS_VALUE,
+            )
+        } returns DELTA_VALUE
+
+        every {
+            valueCalculator.calculateDiagramValue(
+                direction = MORE_IS_BETTER,
+                actualValue = SUBMITTED_VALUE,
+                targetValue = null,
+            )
+        } returns null
+
+        val previousValue =
+            metricValue(
+                metricValue = SUBMITTED_VALUE,
+                targetValue = null,
+            )
+
+        val beforePreviousValue =
+            metricValue(
+                metricValue = BEFORE_PREVIOUS_VALUE,
+                targetValue = null,
+            )
+
+        val response =
+            buildResponse(
+                valuesByKey =
+                    mapOf(
+                        key(
+                            agentType = AUTONOMOUS,
+                            periodMonth = PREVIOUS_MONTH,
+                        ) to previousValue,
+                        key(
+                            agentType = AUTONOMOUS,
+                            periodMonth = BEFORE_PREVIOUS_MONTH,
+                        ) to beforePreviousValue,
+                    ),
+            )
+
+        assertThat(response.value)
+            .isEqualByComparingTo(SUBMITTED_VALUE)
+
+        assertThat(response.targetValue)
+            .isNull()
+
+        assertThat(response.deltaValue)
+            .isEqualByComparingTo(DELTA_VALUE)
+
+        assertThat(response.diagramValue)
+            .isNull()
+
+        verify(exactly = 1) {
+            valueCalculator.calculateDiagramValue(
+                direction = MORE_IS_BETTER,
+                actualValue = SUBMITTED_VALUE,
+                targetValue = null,
+            )
+        }
+    }
+
+    @Test
+    fun shouldPassNullBeforePreviousValueToDeltaCalculator() {
         every {
             valueCalculator.calculateDeltaValue(
                 direction = MORE_IS_BETTER,
@@ -259,9 +379,6 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
         assertThat(response.diagramValue)
             .isEqualByComparingTo(DIAGRAM_VALUE)
 
-        assertThat(response.agentType)
-            .isEqualTo(AUTONOMOUS)
-
         verify(exactly = 1) {
             valueCalculator.calculateDeltaValue(
                 direction = MORE_IS_BETTER,
@@ -269,71 +386,12 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
                 beforePreviousMetricValue = null,
             )
         }
-    }
-
-    @Test
-    fun shouldPassNullTargetValueToDiagramCalculator() {
-        every {
-            valueCalculator.calculateDeltaValue(
-                direction = MORE_IS_BETTER,
-                submittedMetricValue = SUBMITTED_VALUE,
-                beforePreviousMetricValue =
-                    BEFORE_PREVIOUS_VALUE,
-            )
-        } returns DELTA_VALUE
-
-        every {
-            valueCalculator.calculateDiagramValue(
-                direction = MORE_IS_BETTER,
-                actualValue = SUBMITTED_VALUE,
-                targetValue = null,
-            )
-        } returns null
-
-        val previousValue =
-            metricValue(
-                metricValue = SUBMITTED_VALUE,
-                targetValue = null,
-            )
-
-        val beforePreviousValue =
-            metricValue(
-                metricValue = BEFORE_PREVIOUS_VALUE,
-                targetValue = null,
-            )
-
-        val response =
-            buildResponse(
-                valuesByKey =
-                    mapOf(
-                        key(
-                            agentType = AUTONOMOUS,
-                            periodMonth = PREVIOUS_MONTH,
-                        ) to previousValue,
-                        key(
-                            agentType = AUTONOMOUS,
-                            periodMonth = BEFORE_PREVIOUS_MONTH,
-                        ) to beforePreviousValue,
-                    ),
-            )
-
-        assertThat(response.value)
-            .isEqualByComparingTo(SUBMITTED_VALUE)
-
-        assertThat(response.targetValue)
-            .isNull()
-
-        assertThat(response.deltaValue)
-            .isEqualByComparingTo(DELTA_VALUE)
-
-        assertThat(response.diagramValue)
-            .isNull()
 
         verify(exactly = 1) {
             valueCalculator.calculateDiagramValue(
                 direction = MORE_IS_BETTER,
                 actualValue = SUBMITTED_VALUE,
-                targetValue = null,
+                targetValue = TARGET_VALUE,
             )
         }
     }
@@ -348,6 +406,8 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
 
         val response =
             buildResponse(
+                agentType = AUTONOMOUS,
+                metricTypes = listOf(autonomousMetricType),
                 valuesByKey =
                     mapOf(
                         key(
@@ -369,13 +429,12 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
     }
 
     @Test
-    fun shouldSetCopilotAgentTypeInResponse() {
+    fun shouldBuildCopilotResponseWithCopilotAgentType() {
         every {
             valueCalculator.calculateDeltaValue(
                 direction = MORE_IS_BETTER,
                 submittedMetricValue = SUBMITTED_VALUE,
-                beforePreviousMetricValue =
-                    BEFORE_PREVIOUS_VALUE,
+                beforePreviousMetricValue = BEFORE_PREVIOUS_VALUE,
             )
         } returns DELTA_VALUE
 
@@ -419,11 +478,60 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
         assertThat(response.agentType)
             .isEqualTo(COPILOT)
 
+        assertThat(response.value)
+            .isEqualByComparingTo(SUBMITTED_VALUE)
+
         assertThat(response.deltaValue)
             .isEqualByComparingTo(DELTA_VALUE)
 
         assertThat(response.diagramValue)
             .isEqualByComparingTo(DIAGRAM_VALUE)
+    }
+
+    @Test
+    fun shouldPassMetricDirectionToCalculators() {
+        every { metric.direction } returns LESS_IS_BETTER
+
+        every {
+            valueCalculator.calculateDeltaValue(
+                direction = LESS_IS_BETTER,
+                submittedMetricValue = SUBMITTED_VALUE,
+                beforePreviousMetricValue = BEFORE_PREVIOUS_VALUE,
+            )
+        } returns DELTA_VALUE
+
+        every {
+            valueCalculator.calculateDiagramValue(
+                direction = LESS_IS_BETTER,
+                actualValue = SUBMITTED_VALUE,
+                targetValue = TARGET_VALUE,
+            )
+        } returns DIAGRAM_VALUE
+
+        val response =
+            buildResponseWithSubmittedValues()
+
+        assertThat(response.deltaValue)
+            .isEqualByComparingTo(DELTA_VALUE)
+
+        assertThat(response.diagramValue)
+            .isEqualByComparingTo(DIAGRAM_VALUE)
+
+        verify(exactly = 1) {
+            valueCalculator.calculateDeltaValue(
+                direction = LESS_IS_BETTER,
+                submittedMetricValue = SUBMITTED_VALUE,
+                beforePreviousMetricValue = BEFORE_PREVIOUS_VALUE,
+            )
+        }
+
+        verify(exactly = 1) {
+            valueCalculator.calculateDiagramValue(
+                direction = LESS_IS_BETTER,
+                actualValue = SUBMITTED_VALUE,
+                targetValue = TARGET_VALUE,
+            )
+        }
     }
 
     @Test
@@ -468,6 +576,35 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
         verify {
             valueCalculator wasNot Called
         }
+    }
+
+    private fun buildResponseWithSubmittedValues():
+        InitiativeMetricPreAnalyticsItemResponse {
+        val previousValue =
+            metricValue(
+                metricValue = SUBMITTED_VALUE,
+                targetValue = TARGET_VALUE,
+            )
+
+        val beforePreviousValue =
+            metricValue(
+                metricValue = BEFORE_PREVIOUS_VALUE,
+                targetValue = TARGET_VALUE,
+            )
+
+        return buildResponse(
+            valuesByKey =
+                mapOf(
+                    key(
+                        agentType = AUTONOMOUS,
+                        periodMonth = PREVIOUS_MONTH,
+                    ) to previousValue,
+                    key(
+                        agentType = AUTONOMOUS,
+                        periodMonth = BEFORE_PREVIOUS_MONTH,
+                    ) to beforePreviousValue,
+                ),
+        )
     }
 
     private fun buildResponse(
@@ -545,6 +682,7 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
     }
 
     private companion object {
+
         val METRIC_ID: UUID =
             UUID.fromString(
                 "a860b390-b739-48e6-a694-e96582eb4e95",
@@ -556,19 +694,19 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
         val BEFORE_PREVIOUS_MONTH: YearMonth =
             YearMonth.of(2026, 5)
 
-        val SUBMITTED_VALUE =
+        val SUBMITTED_VALUE: BigDecimal =
             BigDecimal("120")
 
-        val BEFORE_PREVIOUS_VALUE =
+        val BEFORE_PREVIOUS_VALUE: BigDecimal =
             BigDecimal("100")
 
-        val TARGET_VALUE =
+        val TARGET_VALUE: BigDecimal =
             BigDecimal("150")
 
-        val DELTA_VALUE =
+        val DELTA_VALUE: BigDecimal =
             BigDecimal("20")
 
-        val DIAGRAM_VALUE =
+        val DIAGRAM_VALUE: BigDecimal =
             BigDecimal("80")
 
         const val METRIC_CODE =
@@ -582,6 +720,9 @@ class InitiativeMetricPreAnalyticsResponseBuilderTest {
 
         const val MORE_IS_BETTER =
             "more_is_better"
+
+        const val LESS_IS_BETTER =
+            "less_is_better"
 
         const val AUTONOMOUS =
             "autonomous"
