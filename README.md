@@ -1,119 +1,391 @@
 ```java
 
 
-PUT /api/v1/reference/metrics/{metricId}/pre-analytics
+@Component
+class InitiativeMetricPreAnalyticsResponseBuilder {
 
-metricId:
+    fun buildMetricsForAgentType(
+        agentType: String,
+        metricTypes: List<InitiativeMetricTypeEntity>,
+        metrics: List<MetricsDirectoryEntity>,
+        valuesByKey: Map<MetricValueKey, InitiativeMetricValueEntity>,
+        previousMonth: YearMonth,
+        beforePreviousMonth: YearMonth,
+    ): List<InitiativeMetricPreAnalyticsItemResponse> {
+        val agentTypeExists =
+            metricTypes.any { metricType ->
+                metricType.agentType == agentType
+            }
 
-10000000-0000-0000-0000-000000000001
+        if (!agentTypeExists) {
+            return emptyList()
+        }
 
-Body:
+        return metrics.map { metric ->
+            val metricId =
+                requireNotNull(metric.id)
 
-{
-  "code": "Точность",
-  "isPreAnalytics": true
+            val previousValue =
+                valuesByKey[
+                    MetricValueKey(
+                        agentType = agentType,
+                        metricId = metricId,
+                        periodMonth = previousMonth,
+                    )
+                ]
+
+            val beforePreviousValue =
+                valuesByKey[
+                    MetricValueKey(
+                        agentType = agentType,
+                        metricId = metricId,
+                        periodMonth = beforePreviousMonth,
+                    )
+                ]
+
+            buildMetricResponse(
+                agentType = agentType,
+                metric = metric,
+                metricId = metricId,
+                previousValue = previousValue,
+                beforePreviousValue = beforePreviousValue,
+            )
+        }
+    }
+
+    private fun buildMetricResponse(
+        agentType: String,
+        metric: MetricsDirectoryEntity,
+        metricId: UUID,
+        previousValue: InitiativeMetricValueEntity?,
+        beforePreviousValue: InitiativeMetricValueEntity?,
+    ): InitiativeMetricPreAnalyticsItemResponse {
+        val metricCode =
+            metric.code
+                ?.takeIf(String::isNotBlank)
+                ?: throw AiInternalServerException(
+                    errorCode =
+                        PRE_ANALYTICS_CODE_NOT_CONFIGURED,
+                    message =
+                        "Code is not configured for " +
+                            "pre-analytics metric $metricId",
+                )
+
+        val submittedMetricValue =
+            previousValue?.metricValue
+
+        if (
+            previousValue == null ||
+            submittedMetricValue == null
+        ) {
+            return emptyMetricResponse(
+                agentType = agentType,
+                metric = metric,
+                metricId = metricId,
+                metricCode = metricCode,
+            )
+        }
+
+        val comparisonValue =
+            beforePreviousValue
+                ?.metricValue
+                ?.takeIf { value ->
+                    submittedMetricValue.compareTo(
+                        BigDecimal.ZERO,
+                    ) != 0 &&
+                        value.compareTo(
+                            BigDecimal.ZERO,
+                        ) != 0
+                }
+
+        val deltaValue =
+            comparisonValue?.let { value ->
+                val absoluteDeltaValue =
+                    submittedMetricValue
+                        .subtract(value)
+                        .multiply(HUNDRED)
+                        .divide(
+                            value.abs(),
+                            DELTA_SCALE,
+                            RoundingMode.HALF_UP,
+                        )
+                        .abs()
+
+                applyDeltaSign(
+                    deltaValue = absoluteDeltaValue,
+                    direction = metric.direction,
+                    previousValue = submittedMetricValue,
+                    beforePreviousValue = value,
+                )
+            }
+
+        return InitiativeMetricPreAnalyticsItemResponse(
+            metricId = metricId,
+            code = metricCode,
+            name = metric.name,
+            unit = metric.unit,
+            value = submittedMetricValue,
+            targetValue = previousValue.targetValue,
+            deltaValue = deltaValue,
+            agentType = agentType,
+        )
+    }
+
+    private fun emptyMetricResponse(
+        agentType: String,
+        metric: MetricsDirectoryEntity,
+        metricId: UUID,
+        metricCode: String,
+    ): InitiativeMetricPreAnalyticsItemResponse {
+        return InitiativeMetricPreAnalyticsItemResponse(
+            metricId = metricId,
+            code = metricCode,
+            name = metric.name,
+            unit = metric.unit,
+            value = null,
+            targetValue = null,
+            deltaValue = null,
+            agentType = agentType,
+        )
+    }
+
+    private fun applyDeltaSign(
+        deltaValue: BigDecimal,
+        direction: String?,
+        previousValue: BigDecimal,
+        beforePreviousValue: BigDecimal,
+    ): BigDecimal {
+        val comparison =
+            previousValue.compareTo(
+                beforePreviousValue,
+            )
+
+        val improved =
+            when (direction) {
+                MORE_IS_BETTER ->
+                    comparison >= 0
+
+                LESS_IS_BETTER ->
+                    comparison < 0
+
+                else ->
+                    throw AiInternalServerException(
+                        errorCode =
+                            UNSUPPORTED_METRIC_DIRECTION,
+                        message =
+                            "Unsupported metric direction: " +
+                                direction,
+                    )
+            }
+
+        return if (improved) {
+            deltaValue
+        } else {
+            deltaValue.negate()
+        }
+    }
+
+    data class MetricValueKey(
+        val agentType: String,
+        val metricId: UUID,
+        val periodMonth: YearMonth,
+    )
+
+    private companion object {
+        const val MORE_IS_BETTER =
+            "more_is_better"
+
+        const val LESS_IS_BETTER =
+            "less_is_better"
+
+        const val UNSUPPORTED_METRIC_DIRECTION =
+            "unsupported.metric.direction"
+
+        const val PRE_ANALYTICS_CODE_NOT_CONFIGURED =
+            "pre-analytics.metric.code-not-configured"
+
+        const val DELTA_SCALE = 0
+
+        val HUNDRED: BigDecimal =
+            BigDecimal.valueOf(100)
+    }
 }
 
-Ожидаемый статус:
+@Service
+class InitiativeMetricPreAnalyticsReader(
+    private val messageProvider: MessageProvider,
+    private val initiativeMetricTypeRepository: InitiativeMetricTypeRepository,
+    private val initiativeMetricValueRepository: InitiativeMetricValueRepository,
+    private val metricsDirectoryRepository: MetricsDirectoryRepository,
+    private val responseBuilder: InitiativeMetricPreAnalyticsResponseBuilder,
+) {
 
-200 OK
-4. Заполни остальные метрики
-CSI
+    @Transactional(readOnly = true)
+    fun getPreAnalytics(
+        initiativeId: Long,
+        now: Instant = Instant.now(),
+    ): InitiativeMetricPreAnalyticsResponse {
+        val metricTypes =
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdAndAgentTypeIn(
+                    initiativeId = initiativeId,
+                    agentTypes = SUPPORTED_AGENT_TYPES,
+                )
 
-metricId:
+        if (metricTypes.isEmpty()) {
+            throw AiConflictException(
+                errorCode = INITIATIVE_METRIC_TYPES_NOT_FOUND,
+                message = MessageFormat.format(
+                    messageProvider[INITIATIVE_METRIC_TYPES_NOT_FOUND],
+                    initiativeId,
+                ),
+            )
+        }
 
-10000000-0000-0000-0000-000000000002
-{
-  "code": "Δ удовлетворённости",
-  "isPreAnalytics": true
+        val metrics =
+            metricsDirectoryRepository.findAllByIsPreAnalyticsTrue()
+
+        val metricIds =
+            metrics
+                .map { metric ->
+                    requireNotNull(metric.id)
+                }
+                .toSet()
+
+        val currentMonth =
+            YearMonth.from(
+                now.atZone(ZoneOffset.UTC),
+            )
+
+        val previousMonth =
+            currentMonth.minusMonths(1)
+
+        val beforePreviousMonth =
+            currentMonth.minusMonths(2)
+
+        val metricValues =
+            if (metricIds.isEmpty()) {
+                emptyList()
+            } else {
+                initiativeMetricValueRepository
+                    .findValuesForInitiativeMetrics(
+                        initiativeId = initiativeId,
+                        agentTypes = SUPPORTED_AGENT_TYPES,
+                        metricDirectoryIds = metricIds,
+                        periodFrom = beforePreviousMonth.atDay(1),
+                    )
+            }
+
+        val valuesByKey =
+            metricValues
+                .filter { metricValue ->
+                    metricValue.periodMonth ==
+                        previousMonth.atDay(1) ||
+                        metricValue.periodMonth ==
+                        beforePreviousMonth.atDay(1)
+                }
+                .associateBy { metricValue ->
+                    InitiativeMetricPreAnalyticsResponseBuilder
+                        .MetricValueKey(
+                            agentType =
+                                metricValue
+                                    .initiativeMetricType
+                                    ?.agentType
+                                    .orEmpty(),
+                            metricId =
+                                requireNotNull(
+                                    metricValue
+                                        .metricDirectory
+                                        ?.id,
+                                ),
+                            periodMonth =
+                                YearMonth.from(
+                                    requireNotNull(
+                                        metricValue.periodMonth,
+                                    ),
+                                ),
+                        )
+                }
+
+        val metricsAutonomous =
+            responseBuilder.buildMetricsForAgentType(
+                agentType = AUTONOMOUS.value,
+                metricTypes = metricTypes,
+                metrics = metrics,
+                valuesByKey = valuesByKey,
+                previousMonth = previousMonth,
+                beforePreviousMonth = beforePreviousMonth,
+            )
+
+        val metricsCopilot =
+            responseBuilder.buildMetricsForAgentType(
+                agentType = COPILOT.value,
+                metricTypes = metricTypes,
+                metrics = metrics,
+                valuesByKey = valuesByKey,
+                previousMonth = previousMonth,
+                beforePreviousMonth = beforePreviousMonth,
+            )
+
+        val responseMetrics =
+            metricsAutonomous + metricsCopilot
+
+        val hasSubmittedValues =
+            responseMetrics.any { metric ->
+                metric.value != null
+            }
+
+        return InitiativeMetricPreAnalyticsResponse(
+            initiativeId = initiativeId,
+            errorCode =
+                METRIC_VALUES_NOT_SUBMITTED
+                    .takeUnless { hasSubmittedValues },
+            periodDisplayText =
+                PERIOD_DISPLAY_TEXT_PREFIX +
+                    currentMonth
+                        .atDay(1)
+                        .format(
+                            PERIOD_DISPLAY_DATE_FORMATTER,
+                        ),
+            metrics = responseMetrics,
+        )
+    }
+
+    private companion object {
+        const val METRIC_VALUES_NOT_SUBMITTED =
+            "metric.not-submitted"
+
+        const val PERIOD_DISPLAY_TEXT_PREFIX =
+            "Значения на "
+
+        val PERIOD_DISPLAY_DATE_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern(
+                "dd.MM.yyyy",
+            )
+
+        val SUPPORTED_AGENT_TYPES =
+            setOf(
+                AUTONOMOUS.value,
+                COPILOT.value,
+            )
+    }
 }
-Охват
 
-metricId:
-
-10000000-0000-0000-0000-000000000003
-{
-  "code": "Охват пользователей",
-  "isPreAnalytics": true
-}
-Скорость
-
-metricId:
-
-10000000-0000-0000-0000-000000000004
-{
-  "code": "Скорость",
-  "isPreAnalytics": true
-}
-
-Каждый запрос должен вернуть 200 OK.
-
-5. Проверь данные в БД
-SELECT
-    id,
-    name,
-    code,
-    is_pre_analytics
-FROM metrics_directory
-WHERE id IN (
-    '10000000-0000-0000-0000-000000000001',
-    '10000000-0000-0000-0000-000000000002',
-    '10000000-0000-0000-0000-000000000003',
-    '10000000-0000-0000-0000-000000000004'
+data class InitiativeMetricPreAnalyticsResponse(
+    val initiativeId: Long,
+    val errorCode: String?,
+    val periodDisplayText: String,
+    val metrics: List<InitiativeMetricPreAnalyticsItemResponse>,
 )
-ORDER BY id;
 
-Должны быть четыре строки с заполненным code и:
-
-is_pre_analytics = true
-6. Вызови pre-analytics
-GET /api/v1/ai-agent/initiatives/320/pre-analytics
-
-Ожидаемый результат:
-
-errorCode = null;
-в metricsAutonomous снова присутствуют четыре метрики;
-если у инициативы есть copilot, они также находятся в metricsCopilot;
-metricId, value, targetValue и deltaValue не изменились;
-code теперь берётся из metrics_directory.
-
-По твоим данным ожидаются:
-
-metricId	code	value	targetValue	deltaValue
-...0001	Точность	120	150	20
-...0002	Δ удовлетворённости	80	150	-20
-...0003	Охват пользователей	-2	150	33
-...0004	Скорость	-2	150	-33
-7. Докажи, что конфигурация больше не используется
-
-На локальном стенде временно измени код четвёртой метрики:
-
-{
-  "code": "Скорость DB TEST",
-  "isPreAnalytics": true
-}
-
-Повтори GET:
-
-GET /api/v1/ai-agent/initiatives/320/pre-analytics
-
-В ответе должно появиться:
-
-"code": "Скорость DB TEST"
-
-Затем отключи эту метрику:
-
-{
-  "code": "Скорость DB TEST",
-  "isPreAnalytics": false
-}
-
-После повторного GET метрика «Скорость» должна исчезнуть из pre-analytics.
-
-В конце обязательно восстанови:
-
-{
-  "code": "Скорость",
-  "isPreAnalytics": true
-}
+data class InitiativeMetricPreAnalyticsItemResponse(
+    val metricId: UUID,
+    val code: String?,
+    val name: String?,
+    val unit: String?,
+    val value: BigDecimal?,
+    val targetValue: BigDecimal?,
+    val deltaValue: BigDecimal?,
+    val agentType: String,
+)
 ```
