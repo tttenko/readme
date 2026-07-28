@@ -1,28 +1,56 @@
 ```java
 
-interface InitiativeDeviationStrategy {
+class InitiativeDeviationCalculationSession(
+    val initiativeIds: Set<Long>,
+    private val agentStatusSlaRepository: AgentStatusSlaRepository,
+    private val jiraIssueRepository: JiraIssueRepository,
+    private val enablerRepository: EnablerRepository,
+    private val aiAgentRepository: AIAgentRepository,
+    val currentPeriodMetricsDeviationFinder: CurrentPeriodMetricsDeviationFinder,
+) {
 
-    /**
-     * Код отклонения, за которое отвечает стратегия.
-     */
-    val code: InitiativeDeviationCode
+    val statusSlaByInitiativeId: Map<Long, List<AgentStatusSlaEntity>> by lazy {
+        if (initiativeIds.isEmpty()) {
+            emptyMap()
+        } else {
+            agentStatusSlaRepository
+                .findAllByAiAgentIdIn(initiativeIds)
+                .filter { it.aiAgent?.id != null }
+                .groupBy { requireNotNull(it.aiAgent?.id) }
+        }
+    }
 
-    /**
-     * Порядок технической проверки.
-     *
-     * Не совпадает с приоритетом показа.
-     * Тяжёлые проверки должны выполняться последними.
-     */
-    val evaluationOrder: Int
+    val initiativeIdsWithValidGigaUsage: Set<Long> by lazy {
+        if (initiativeIds.isEmpty()) {
+            emptySet()
+        } else {
+            jiraIssueRepository
+                .findInitiativeIdsWithValidGigaUsage(initiativeIds)
+                .toSet()
+        }
+    }
 
-    /**
-     * Возвращает ID инициатив, для которых найдено отклонение.
-     */
-    fun findMatchingInitiativeIds(
-        candidateInitiativeIds: Set<Long>,
-        session: InitiativeDeviationCalculationSession,
-        context: InitiativeDeviationEvaluationContext,
-    ): Set<Long>
+    val initiativeIdsWithEnablers: Set<Long> by lazy {
+        if (initiativeIds.isEmpty()) {
+            emptySet()
+        } else {
+            enablerRepository
+                .findInitiativeIdsWithEnablers(initiativeIds)
+                .toSet()
+        }
+    }
+
+    val statusCodeByInitiativeId: Map<Long, String?> by lazy {
+        if (initiativeIds.isEmpty()) {
+            emptyMap()
+        } else {
+            aiAgentRepository
+                .findInitiativeStatuses(initiativeIds)
+                .associate { projection ->
+                    projection.initiativeId to projection.statusCode
+                }
+        }
+    }
 }
 
 ```
