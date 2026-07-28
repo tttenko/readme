@@ -5,6 +5,7 @@ class CurrentPeriodMetricsDeviationFinder(
     private val initiativeMetricTypeRepository: InitiativeMetricTypeRepository,
     private val metricsDirectoryRepository: MetricsDirectoryRepository,
     private val initiativeMetricValueRepository: InitiativeMetricValueRepository,
+    private val metricApplicabilityPolicy: InitiativeMetricApplicabilityPolicy,
 ) {
 
     fun findInitiativeIdsWithMissingMetrics(
@@ -18,44 +19,54 @@ class CurrentPeriodMetricsDeviationFinder(
         val metricTypes =
             initiativeMetricTypeRepository.findAllByAiAgentIdIn(initiativeIds)
 
+        if (metricTypes.isEmpty()) {
+            return emptySet()
+        }
+
         val metricTypesByInitiativeId =
             metricTypes
                 .filter { metricType -> metricType.aiAgent?.id != null }
-                .groupBy { metricType -> requireNotNull(metricType.aiAgent?.id) }
+                .groupBy { metricType ->
+                    requireNotNull(metricType.aiAgent?.id)
+                }
 
         val activeMetrics =
             metricsDirectoryRepository.findAllByActiveIsTrue()
 
+        if (activeMetrics.isEmpty()) {
+            return emptySet()
+        }
+
         val metricTypeIds =
-            metricTypes.mapTo(mutableSetOf()) { metricType -> metricType.id }
+            metricTypes.mapTo(mutableSetOf()) { metricType ->
+                metricType.id
+            }
 
         val filledKeys =
-            if (metricTypeIds.isEmpty()) {
-                emptySet()
-            } else {
-                initiativeMetricValueRepository
-                    .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
-                        initiativeMetricTypeIds = metricTypeIds,
-                        periodMonth = currentPeriod,
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    initiativeMetricTypeIds = metricTypeIds,
+                    periodMonth = currentPeriod,
+                )
+                .asSequence()
+                .filter { metricValue ->
+                    metricValue.metricValue != null
+                }
+                .mapNotNull { metricValue ->
+                    val metricTypeId =
+                        metricValue.initiativeMetricType?.id
+                            ?: return@mapNotNull null
+
+                    val metricId =
+                        metricValue.metricDirectory?.id
+                            ?: return@mapNotNull null
+
+                    MetricCoverageKey(
+                        initiativeMetricTypeId = metricTypeId,
+                        metricId = metricId,
                     )
-                    .asSequence()
-                    .filter { metricValue -> metricValue.metricValue != null }
-                    .mapNotNull { metricValue ->
-                        val metricTypeId =
-                            metricValue.initiativeMetricType?.id
-                                ?: return@mapNotNull null
-
-                        val metricId =
-                            metricValue.metricDirectory?.id
-                                ?: return@mapNotNull null
-
-                        MetricCoverageKey(
-                            initiativeMetricTypeId = metricTypeId,
-                            metricId = metricId,
-                        )
-                    }
-                    .toSet()
-            }
+                }
+                .toSet()
 
         return initiativeIds.filterTo(mutableSetOf()) { initiativeId ->
             val initiativeMetricTypes =
@@ -63,10 +74,17 @@ class CurrentPeriodMetricsDeviationFinder(
 
             val expectedKeys =
                 initiativeMetricTypes.flatMapTo(mutableSetOf()) { metricType ->
+                    val agentType =
+                        InitiativeMetricAgentType.fromValue(
+                            metricType.agentType.orEmpty(),
+                        ) ?: return@flatMapTo emptyList()
+
                     activeMetrics
-                        .asSequence()
                         .filter { metric ->
-                            metric.isApplicableTo(metricType.agentType)
+                            metricApplicabilityPolicy.isApplicable(
+                                metric = metric,
+                                agentType = agentType,
+                            )
                         }
                         .map { metric ->
                             MetricCoverageKey(
@@ -74,7 +92,6 @@ class CurrentPeriodMetricsDeviationFinder(
                                 metricId = metric.id,
                             )
                         }
-                        .toList()
                 }
 
             expectedKeys.isNotEmpty() &&
@@ -82,26 +99,9 @@ class CurrentPeriodMetricsDeviationFinder(
         }
     }
 
-    private fun MetricsDirectoryEntity.isApplicableTo(
-        rawAgentType: String?,
-    ): Boolean =
-        when (InitiativeMetricAgentType.fromValue(rawAgentType.orEmpty())) {
-            InitiativeMetricAgentType.AUTONOMOUS ->
-                autonomousApplicability == true
-
-            InitiativeMetricAgentType.COPILOT ->
-                copilotApplicability == true
-
-            InitiativeMetricAgentType.APPEALS ->
-                requiresAppealsWork == true
-
-            null -> false
-        }
-
     private data class MetricCoverageKey(
         val initiativeMetricTypeId: Long,
         val metricId: UUID,
     )
 }
-
 ```
