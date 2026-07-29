@@ -1,65 +1,49 @@
 ```java
 
-@Component
-class GigaUsageNotFilledStrategy : InitiativeDeviationStrategy {
-
-    override val code = InitiativeDeviationCode.GIGAUSAGE_NOT_FILLED
-
-    override val evaluationOrder: Int = 30
-
-    override fun findMatchingInitiativeIds(
-        candidateInitiativeIds: Set<Long>,
-        session: InitiativeDeviationCalculationSession,
-        context: InitiativeDeviationEvaluationContext,
-    ): Set<Long> =
-        candidateInitiativeIds -
-            session.initiativeIdsWithValidGigaUsage
+interface InitiativeStatusProjection {
+    val initiativeId: Long
+    val statusCode: String?
 }
 
 @Query(
     """
-        select distinct jiraIssue.agent.id
-        from JiraIssueEntity jiraIssue
-        where jiraIssue.agent.id in :initiativeIds
-          and lower(jiraIssue.project) = 'gigausage'
-          and jiraIssue.jiraKey is not null
-          and trim(jiraIssue.jiraKey) <> ''
+        select
+            agent.id as initiativeId,
+            status.code as statusCode
+        from AIAgentEntity agent
+        left join agent.agentStatus status
+        where agent.id in :initiativeIds
     """
 )
-fun findInitiativeIdsWithValidGigaUsage(
+fun findInitiativeStatuses(
     @Param("initiativeIds")
     initiativeIds: Collection<Long>,
-): Set<Long>
+): List<InitiativeStatusProjection>
 
+fun findAllByAiAgentIdIn(
+    initiativeIds: Collection<Long>,
+): List<InitiativeMetricTypeEntity>
 
-@Component
-class EnablersNotFilledStrategy : InitiativeDeviationStrategy {
-
-    override val code = InitiativeDeviationCode.ENABLERS_NOT_FILLED
-
-    override val evaluationOrder: Int = 40
-
-    override fun findMatchingInitiativeIds(
-        candidateInitiativeIds: Set<Long>,
-        session: InitiativeDeviationCalculationSession,
-        context: InitiativeDeviationEvaluationContext,
-    ): Set<Long> =
-        candidateInitiativeIds -
-            session.initiativeIdsWithEnablers
-}
+fun findAllByActiveIsTrue(): List<MetricsDirectoryEntity>
 
 @Query(
-    value = """
-        select distinct agent_enabler.agent_id
-        from agent_enabler
-        where agent_enabler.agent_id in (:initiativeIds)
-    """,
-    nativeQuery = true,
+    """
+        select metricValue
+        from InitiativeMetricValueEntity metricValue
+        join fetch metricValue.initiativeMetricType initiativeMetricType
+        join fetch metricValue.metricDirectory metricDirectory
+        where initiativeMetricType.id in :initiativeMetricTypeIds
+          and metricValue.periodMonth = :periodMonth
+    """
 )
-fun findInitiativeIdsWithEnablers(
-    @Param("initiativeIds")
-    initiativeIds: Collection<Long>,
-): Set<Long>
+fun findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+    @Param("initiativeMetricTypeIds")
+    initiativeMetricTypeIds: Collection<Long>,
+
+    @Param("periodMonth")
+    periodMonth: LocalDate,
+): List<InitiativeMetricValueEntity>
+
 
 
 
