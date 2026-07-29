@@ -1,175 +1,126 @@
 ```java
 
-@Component
-class CurrentPeriodMetricsNotFilledStrategy : InitiativeDeviationStrategy {
+@Query(
+    value = """
+        SELECT DISTINCT a.id
+        FROM ai_agent a
+        LEFT JOIN status s ON a.agent_status_id = s.id
+        LEFT JOIN division d ON a.division_id = d.id
+        LEFT JOIN block b1 ON d.block_id = b1.id
+        LEFT JOIN block b2 ON a.block_id = b2.id
+        LEFT JOIN implemented_platform ip ON a.id = ip.ai_agent_id
+        LEFT JOIN platform p ON ip.platform_id = p.id
+        LEFT JOIN program prgm ON a.program_id = prgm.id
+        LEFT JOIN initiative_type ite
+            ON a.agent_initiative_type = ite.code
+        LEFT JOIN user_audience ua
+            ON a.user_audience_code = ua.code
+        LEFT JOIN agent_contact ac ON a.id = ac.agent_id
+        WHERE a.disabled = :disabled
+          AND (
+              :search IS NULL
+              OR LOWER(a.agent_name)
+                  LIKE LOWER(CONCAT('%', :search, '%'))
+              OR LOWER(a.agent_id)
+                  LIKE LOWER(CONCAT('%', :search, '%'))
+              OR LOWER(a.agent_jira_url)
+                  LIKE LOWER(CONCAT('%', :search, '%'))
+          )
+          AND (:terbankIds IS NULL OR a.terbank_id IN (:terbankIds))
+          AND (
+              COALESCE(:programCodes) IS NULL
+              OR prgm.code IN (:programCodes)
+          )
+          AND (
+              COALESCE(:agentStatusCodes) IS NULL
+              OR s.code IN (:agentStatusCodes)
+          )
+          AND (
+              COALESCE(:blockCodes) IS NULL
+              OR b2.code IN (:blockCodes)
+              OR b1.code IN (:blockCodes)
+          )
+          AND (
+              COALESCE(:divisionCodes) IS NULL
+              OR d.code IN (:divisionCodes)
+          )
+          AND (
+              COALESCE(:platformCodes) IS NULL
+              OR p.code IN (:platformCodes)
+          )
+          AND (
+              COALESCE(:initiativeTypes) IS NULL
+              OR ite.code IN (:initiativeTypes)
+          )
+          AND (
+              COALESCE(:userAudiences) IS NULL
+              OR ua.code IN (:userAudiences)
+          )
+          AND (
+              COALESCE(:deadlineExpiredIds) IS NULL
+              OR a.deadline_expired IN (:deadlineExpiredIds)
+          )
+          AND (
+              :userId IS NULL
+              OR a.owner_id = :userId
+              OR ac.user_id = :userId
+          )
+    """,
+    nativeQuery = true,
+)
+fun findFilteredInitiativeIds(
+    @Param("search")
+    search: String?,
 
-    override val code =
-        InitiativeDeviationCode.CURRENT_PERIOD_METRICS_NOT_FILLED
+    @Param("terbankIds")
+    terbankIds: Collection<Long>?,
 
-    /**
-     * Самая тяжёлая проверка выполняется последней.
-     */
-    override val evaluationOrder: Int = 1000
+    @Param("programCodes")
+    programCodes: Collection<String>?,
 
-    override fun findMatchingInitiativeIds(
-        candidateInitiativeIds: Set<Long>,
-        session: InitiativeDeviationCalculationSession,
-        context: InitiativeDeviationEvaluationContext,
-    ): Set<Long> {
-        if (context.today.dayOfMonth <= context.metricsDeadlineDay) {
-            return emptySet()
-        }
+    @Param("agentStatusCodes")
+    agentStatusCodes: Collection<String>?,
 
-        val targetSolutionInitiativeIds =
-            candidateInitiativeIds.filterTo(mutableSetOf()) { initiativeId ->
-                session.statusCodeByInitiativeId[initiativeId] ==
-                    Metadata.DraftStatus.TARGET_SOLUTION
-            }
+    @Param("blockCodes")
+    blockCodes: Collection<String>?,
 
-        return session.currentPeriodMetricsDeviationFinder
-            .findInitiativeIdsWithMissingMetrics(
-                initiativeIds = targetSolutionInitiativeIds,
-                currentPeriod = context.currentPeriod,
-            )
-    }
-}
+    @Param("divisionCodes")
+    divisionCodes: Collection<String>?,
 
-@Component
-class InitiativeDeviationStrategyRegistry(
-    strategies: List<InitiativeDeviationStrategy>,
-) {
+    @Param("platformCodes")
+    platformCodes: Collection<String>?,
 
-    private val strategiesByCode =
-        strategies.associateBy { strategy -> strategy.code }
+    @Param("initiativeTypes")
+    initiativeTypes: Collection<String>?,
 
-    init {
-        require(strategiesByCode.size == strategies.size) {
-            "Обнаружено несколько стратегий для одного кода отклонения"
-        }
-    }
+    @Param("userAudiences")
+    userAudiences: Collection<String>?,
 
-    fun getEnabledStrategies(
-        properties: InitiativeDeviationProperties,
-    ): List<InitiativeDeviationStrategy> =
-        strategiesByCode.values
-            .filter { strategy ->
-                properties.getRequiredRule(strategy.code).enabled
-            }
-            .sortedBy { strategy -> strategy.evaluationOrder }
-}
+    @Param("disabled")
+    disabled: Boolean,
 
-@Component
-class InitiativeDeviationCalculator(
-    private val strategyRegistry: InitiativeDeviationStrategyRegistry,
-    private val sessionFactory: InitiativeDeviationCalculationSessionFactory,
-    private val properties: InitiativeDeviationProperties,
-    private val clock: Clock,
-) {
+    @Param("deadlineExpiredIds")
+    deadlineExpiredIds: Collection<String>?,
 
-    /**
-     * Рассчитывает полный список отклонений для переданных инициатив.
-     *
-     * Используется при формировании content страницы.
-     */
-    fun calculate(
-        initiativeIds: Set<Long>,
-    ): Map<Long, List<InitiativeDeviationResponse>> {
-        if (initiativeIds.isEmpty()) {
-            return emptyMap()
-        }
+    @Param("userId")
+    userId: Long?,
+): Set<Long>
 
-        val context = createContext()
-        val session = sessionFactory.create(initiativeIds)
+В основном findAll добавляются параметры:
 
-        val deviationsByInitiativeId =
-            initiativeIds.associateWith {
-                mutableListOf<InitiativeDeviationResponse>()
-            }
+@Param("filterByDeviation")
+filterByDeviation: Boolean,
 
-        strategyRegistry
-            .getEnabledStrategies(properties)
-            .forEach { strategy ->
-                val matchingIds =
-                    strategy.findMatchingInitiativeIds(
-                        candidateInitiativeIds = initiativeIds,
-                        session = session,
-                        context = context,
-                    )
+@Param("deviationInitiativeIds")
+deviationInitiativeIds: Collection<Long>,
 
-                val rule = properties.getRequiredRule(strategy.code)
+И в основной запрос и countQuery добавляется:
 
-                val response =
-                    InitiativeDeviationResponse(
-                        code = strategy.code.name,
-                        priority = rule.priority,
-                        title = rule.title,
-                        description = rule.description,
-                    )
+AND (
+    :filterByDeviation = false
+    OR a.id IN (:deviationInitiativeIds)
+)
 
-                matchingIds.forEach { initiativeId ->
-                    deviationsByInitiativeId
-                        .getValue(initiativeId)
-                        .add(response)
-                }
-            }
-
-        return deviationsByInitiativeId.mapValues { (_, deviations) ->
-            deviations.sortedBy { deviation -> deviation.priority }
-        }
-    }
-
-    /**
-     * Определяет инициативы, у которых есть хотя бы одно отклонение.
-     *
-     * Используется для hasDeviation=true до применения пагинации.
-     * После первого найденного отклонения инициатива исключается
-     * из последующих проверок.
-     */
-    fun findInitiativeIdsWithAnyDeviation(
-        initiativeIds: Set<Long>,
-    ): Set<Long> {
-        if (initiativeIds.isEmpty()) {
-            return emptySet()
-        }
-
-        val context = createContext()
-        val session = sessionFactory.create(initiativeIds)
-
-        val matchedIds = mutableSetOf<Long>()
-        var remainingIds = initiativeIds
-
-        strategyRegistry
-            .getEnabledStrategies(properties)
-            .forEach { strategy ->
-                if (remainingIds.isEmpty()) {
-                    return@forEach
-                }
-
-                val currentMatches =
-                    strategy.findMatchingInitiativeIds(
-                        candidateInitiativeIds = remainingIds,
-                        session = session,
-                        context = context,
-                    )
-
-                matchedIds += currentMatches
-                remainingIds -= currentMatches
-            }
-
-        return matchedIds
-    }
-
-    private fun createContext(): InitiativeDeviationEvaluationContext {
-        val today = LocalDate.now(clock)
-
-        return InitiativeDeviationEvaluationContext(
-            today = today,
-            currentPeriod = YearMonth.from(today).atDay(1),
-            metricsDeadlineDay =
-                properties.currentPeriodMetricsDeadlineDay,
-        )
-    }
-}
 
 
 
