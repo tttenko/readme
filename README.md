@@ -1,127 +1,128 @@
 ```java
 
-@Query(
-    value = """
-        SELECT DISTINCT a.id
-        FROM ai_agent a
-        LEFT JOIN status s ON a.agent_status_id = s.id
-        LEFT JOIN division d ON a.division_id = d.id
-        LEFT JOIN block b1 ON d.block_id = b1.id
-        LEFT JOIN block b2 ON a.block_id = b2.id
-        LEFT JOIN implemented_platform ip ON a.id = ip.ai_agent_id
-        LEFT JOIN platform p ON ip.platform_id = p.id
-        LEFT JOIN program prgm ON a.program_id = prgm.id
-        LEFT JOIN initiative_type ite
-            ON a.agent_initiative_type = ite.code
-        LEFT JOIN user_audience ua
-            ON a.user_audience_code = ua.code
-        LEFT JOIN agent_contact ac ON a.id = ac.agent_id
-        WHERE a.disabled = :disabled
-          AND (
-              :search IS NULL
-              OR LOWER(a.agent_name)
-                  LIKE LOWER(CONCAT('%', :search, '%'))
-              OR LOWER(a.agent_id)
-                  LIKE LOWER(CONCAT('%', :search, '%'))
-              OR LOWER(a.agent_jira_url)
-                  LIKE LOWER(CONCAT('%', :search, '%'))
-          )
-          AND (:terbankIds IS NULL OR a.terbank_id IN (:terbankIds))
-          AND (
-              COALESCE(:programCodes) IS NULL
-              OR prgm.code IN (:programCodes)
-          )
-          AND (
-              COALESCE(:agentStatusCodes) IS NULL
-              OR s.code IN (:agentStatusCodes)
-          )
-          AND (
-              COALESCE(:blockCodes) IS NULL
-              OR b2.code IN (:blockCodes)
-              OR b1.code IN (:blockCodes)
-          )
-          AND (
-              COALESCE(:divisionCodes) IS NULL
-              OR d.code IN (:divisionCodes)
-          )
-          AND (
-              COALESCE(:platformCodes) IS NULL
-              OR p.code IN (:platformCodes)
-          )
-          AND (
-              COALESCE(:initiativeTypes) IS NULL
-              OR ite.code IN (:initiativeTypes)
-          )
-          AND (
-              COALESCE(:userAudiences) IS NULL
-              OR ua.code IN (:userAudiences)
-          )
-          AND (
-              COALESCE(:deadlineExpiredIds) IS NULL
-              OR a.deadline_expired IN (:deadlineExpiredIds)
-          )
-          AND (
-              :userId IS NULL
-              OR a.owner_id = :userId
-              OR ac.user_id = :userId
-          )
-    """,
-    nativeQuery = true,
-)
-fun findFilteredInitiativeIds(
-    @Param("search")
-    search: String?,
+fun getAIAgentList(
+    showcaseRequestDto: ShowcaseRequestDto,
+    hasDeviation: Boolean,
+): Page<AiAgentShowcaseResponse> {
 
-    @Param("terbankIds")
-    terbankIds: Collection<Long>?,
+    val user = userInfoProvider.currentUser()
+    if (!user.roles.contains("CMS_ADMIN") &&
+        (showcaseRequestDto.userId != null) &&
+        (showcaseRequestDto.userId != user.id)
+    ) {
+        throw AiForbiddenException(
+            errorCode = Metadata.ErrorMessages.FORBIDDEN_USER_ID_FILTER,
+            message = messageProvider[
+                Metadata.ErrorMessages.FORBIDDEN_USER_ID_FILTER
+            ]
+        )
+    }
 
-    @Param("programCodes")
-    programCodes: Collection<String>?,
+    val sortField = when (showcaseRequestDto.sort) {
+        AiAgentsSort.deadlineExpired -> "deadline_priority"
+        AiAgentsSort.agentEffectOptimization -> "agent_effect_optimization"
+        AiAgentsSort.alphabet -> "alphabet"
+        null, AiAgentsSort.agentEffectRevenue -> "agent_effect_revenue"
+    }
 
-    @Param("agentStatusCodes")
-    agentStatusCodes: Collection<String>?,
+    val sortDirection = showcaseRequestDto.sortType.name
 
-    @Param("blockCodes")
-    blockCodes: Collection<String>?,
+    val pageRequest = PageRequest.of(
+        showcaseRequestDto.page!!,
+        showcaseRequestDto.size!!,
+        Sort.unsorted()
+    )
 
-    @Param("divisionCodes")
-    divisionCodes: Collection<String>?,
+    val initiativeIdsWithDeviation =
+        if (hasDeviation) {
+            val filteredInitiativeIds =
+                aiAgentRepository.findFilteredInitiativeIds(
+                    search = showcaseRequestDto.search?.toSqlLikeExpression(),
+                    terbankIds = showcaseRequestDto.terbankId ?: emptyList(),
+                    programCodes = showcaseRequestDto.program,
+                    agentStatusCodes = showcaseRequestDto.agentStatus,
+                    blockCodes = showcaseRequestDto.block,
+                    divisionCodes = showcaseRequestDto.division,
+                    platformCodes = showcaseRequestDto.platform,
+                    initiativeTypes = showcaseRequestDto.initiativeType,
+                    userAudiences = showcaseRequestDto.userAudience,
+                    disabled = showcaseRequestDto.disabled,
+                    userId = showcaseRequestDto.userId,
+                    deadlineExpiredIds =
+                        showcaseRequestDto.deadlineExpired?.map { it.name }
+                )
 
-    @Param("platformCodes")
-    platformCodes: Collection<String>?,
+            initiativeDeviationCalculator.findInitiativeIdsWithAnyDeviation(
+                initiativeIds = filteredInitiativeIds
+            )
+        } else {
+            emptySet()
+        }
 
-    @Param("initiativeTypes")
-    initiativeTypes: Collection<String>?,
+    if (hasDeviation && initiativeIdsWithDeviation.isEmpty()) {
+        return Page.empty(pageRequest)
+    }
 
-    @Param("userAudiences")
-    userAudiences: Collection<String>?,
+    val agentsPage = aiAgentRepository.findAll(
+        search = showcaseRequestDto.search?.toSqlLikeExpression(),
+        terbankIds = showcaseRequestDto.terbankId ?: emptyList(),
+        programCodes = showcaseRequestDto.program,
+        agentStatusCodes = showcaseRequestDto.agentStatus,
+        blockCodes = showcaseRequestDto.block,
+        divisionCodes = showcaseRequestDto.division,
+        platformCodes = showcaseRequestDto.platform,
+        initiativeTypes = showcaseRequestDto.initiativeType,
+        userAudiences = showcaseRequestDto.userAudience,
+        disabled = showcaseRequestDto.disabled,
+        userId = showcaseRequestDto.userId,
+        deadlineExpiredIds = showcaseRequestDto.deadlineExpired?.map { it.name },
+        sortField = sortField,
+        sortDirection = sortDirection,
+        filterByDeviation = hasDeviation,
+        deviationInitiativeIds =
+            if (initiativeIdsWithDeviation.isEmpty()) {
+                setOf(-1L)
+            } else {
+                initiativeIdsWithDeviation
+            },
+        pageRequest = pageRequest
+    )
 
-    @Param("disabled")
-    disabled: Boolean,
+    val initiativeIds = agentsPage.content
+        .map { it.id }
+        .toSet()
 
-    @Param("deadlineExpiredIds")
-    deadlineExpiredIds: Collection<String>?,
+    val metricAgentTypes = setOf(
+        InitiativeMetricAgentType.AUTONOMOUS.value,
+        InitiativeMetricAgentType.COPILOT.value
+    )
 
-    @Param("userId")
-    userId: Long?,
-): Set<Long>
+    val initiativeIdsWithAgentTypes =
+        if (initiativeIds.isEmpty()) {
+            emptySet()
+        } else {
+            initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
+                initiativeIds = initiativeIds,
+                agentTypes = metricAgentTypes
+            )
+        }
 
-В основном findAll добавляются параметры:
+    val deviationsByInitiativeId =
+        initiativeDeviationCalculator.calculate(
+            initiativeIds = initiativeIds
+        )
 
-@Param("filterByDeviation")
-filterByDeviation: Boolean,
+    return agentsPage.map { agent ->
+        val hasMetricsValue =
+            agent.agentStatus?.code == TARGET_SOLUTION &&
+                agent.id in initiativeIdsWithAgentTypes
 
-@Param("deviationInitiativeIds")
-deviationInitiativeIds: Collection<Long>,
-
-И в основной запрос и countQuery добавляется:
-
-AND (
-    :filterByDeviation = false
-    OR a.id IN (:deviationInitiativeIds)
-)
-
-
+        agent.toAiAgentShowcaseResponse(
+            hasMetricsValue = hasMetricsValue,
+            deviations = deviationsByInitiativeId[agent.id].orEmpty()
+        )
+    }
+}
 
 
 
