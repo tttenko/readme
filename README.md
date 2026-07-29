@@ -1,6 +1,7 @@
 ```java
 
 SELECT
+    c.table_schema,
     c.table_name,
     c.ordinal_position,
     c.column_name,
@@ -11,54 +12,57 @@ SELECT
     c.is_identity,
     c.identity_generation
 FROM information_schema.columns c
-WHERE c.table_schema = 'public'
-  AND c.table_name IN (
-      'ai_agent',
-      'agent_status_sla',
-      'status',
-      'jira_issue',
-      'agent_enabler',
-      'enabler',
-      'initiative_metric_type',
-      'initiative_metric_value',
-      'metrics_directory',
-      'program',
-      'division',
-      'block',
-      'initiative_type',
-      'user_audience'
-  )
+WHERE LOWER(c.table_name) IN (
+    'ai_agent',
+    'agent_status_sla',
+    'status',
+    'jira_issue',
+    'agent_enabler',
+    'enabler',
+    'initiative_metric_type',
+    'initiative_metric_value',
+    'metrics_directory',
+    'program',
+    'division',
+    'block',
+    'initiative_type',
+    'user_audience'
+)
 ORDER BY
+    c.table_schema,
     c.table_name,
     c.ordinal_position;
-
+4. Универсальный запрос ограничений
 SELECT
+    tc.table_schema,
     tc.table_name,
     tc.constraint_name,
     tc.constraint_type,
     kcu.column_name,
+    ccu.table_schema AS referenced_schema,
     ccu.table_name AS referenced_table,
     ccu.column_name AS referenced_column
 FROM information_schema.table_constraints tc
 LEFT JOIN information_schema.key_column_usage kcu
     ON kcu.constraint_schema = tc.constraint_schema
    AND kcu.constraint_name = tc.constraint_name
+   AND kcu.table_name = tc.table_name
 LEFT JOIN information_schema.constraint_column_usage ccu
     ON ccu.constraint_schema = tc.constraint_schema
    AND ccu.constraint_name = tc.constraint_name
-WHERE tc.table_schema = 'public'
-  AND tc.table_name IN (
-      'ai_agent',
-      'agent_status_sla',
-      'status',
-      'jira_issue',
-      'agent_enabler',
-      'enabler',
-      'initiative_metric_type',
-      'initiative_metric_value',
-      'metrics_directory'
-  )
+WHERE LOWER(tc.table_name) IN (
+    'ai_agent',
+    'agent_status_sla',
+    'status',
+    'jira_issue',
+    'agent_enabler',
+    'enabler',
+    'initiative_metric_type',
+    'initiative_metric_value',
+    'metrics_directory'
+)
 ORDER BY
+    tc.table_schema,
     tc.table_name,
     tc.constraint_type,
     tc.constraint_name,
