@@ -1,542 +1,772 @@
 ```java
-@ExtendWith(MockKExtension::class)
- class InitiativeDeviationCalculationSessionTest {
+internal class CurrentPeriodMetricsDeviationFinderTest {
 
     @MockK
-    private lateinit var agentStatusSlaRepository: AgentStatusSlaRepository
+    private lateinit var initiativeMetricTypeRepository:
+        InitiativeMetricTypeRepository
 
     @MockK
-    private lateinit var jiraIssueRepository: JiraIssueRepository
+    private lateinit var metricsDirectoryRepository:
+        MetricsDirectoryRepository
 
     @MockK
-    private lateinit var enablerRepository: EnablerRepository
+    private lateinit var initiativeMetricValueRepository:
+        InitiativeMetricValueRepository
 
     @MockK
-    private lateinit var aiAgentRepository: AIAgentRepository
+    private lateinit var metricApplicabilityPolicy:
+        InitiativeMetricApplicabilityPolicy
 
-    @MockK
-    private lateinit var currentPeriodMetricsDeviationFinder:
-        CurrentPeriodMetricsDeviationFinder
+    private lateinit var finder: CurrentPeriodMetricsDeviationFinder
 
+    private val currentPeriod = LocalDate.of(2026, 7, 1)
 
-    @Test
-    fun `statusSlaByInitiativeId should return empty map and not call repository when initiative ids are empty`() {
-        val session = createSession(
-            initiativeIds = emptySet()
+    @BeforeEach
+    fun setUp() {
+        MockKAnnotations.init(this)
+
+        finder = CurrentPeriodMetricsDeviationFinder(
+            initiativeMetricTypeRepository =
+                initiativeMetricTypeRepository,
+            metricsDirectoryRepository =
+                metricsDirectoryRepository,
+            initiativeMetricValueRepository =
+                initiativeMetricValueRepository,
+            metricApplicabilityPolicy =
+                metricApplicabilityPolicy,
         )
-
-        val result = session.statusSlaByInitiativeId
-
-        assertThat(result).isEmpty()
-
-        verify(exactly = 0) {
-            agentStatusSlaRepository.findAllByAiAgentIdIn(any())
-        }
     }
 
     @Test
-    fun `statusSlaByInitiativeId should group SLA records by initiative id`() {
-        val firstAgent = createAgent(id = 1L)
-        val secondAgent = createAgent(id = 2L)
-
-        val firstSla = createStatusSla(agent = firstAgent)
-        val secondSla = createStatusSla(agent = firstAgent)
-        val thirdSla = createStatusSla(agent = secondAgent)
-
-        every {
-            agentStatusSlaRepository.findAllByAiAgentIdIn(
-                setOf(1L, 2L)
-            )
-        } returns listOf(
-            firstSla,
-            secondSla,
-            thirdSla
-        )
-
-        val session = createSession(
-            initiativeIds = setOf(1L, 2L)
-        )
-
-        val result = session.statusSlaByInitiativeId
-
-        assertThat(result.keys)
-            .containsExactlyInAnyOrder(1L, 2L)
-
-        assertThat(result.getValue(1L))
-            .containsExactly(firstSla, secondSla)
-
-        assertThat(result.getValue(2L))
-            .containsExactly(thirdSla)
-
-        verify(exactly = 1) {
-            agentStatusSlaRepository.findAllByAiAgentIdIn(
-                setOf(1L, 2L)
-            )
-        }
-    }
-
-    @Test
-    fun `statusSlaByInitiativeId should ignore records without initiative`() {
-        val agent = createAgent(id = 1L)
-
-        val validSla = createStatusSla(agent = agent)
-        val slaWithoutAgent = createStatusSla(agent = null)
-
-        every {
-            agentStatusSlaRepository.findAllByAiAgentIdIn(
-                setOf(1L)
-            )
-        } returns listOf(
-            validSla,
-            slaWithoutAgent
-        )
-
-        val session = createSession(
-            initiativeIds = setOf(1L)
-        )
-
-        val result = session.statusSlaByInitiativeId
-
-        assertThat(result)
-            .containsOnlyKeys(1L)
-
-        assertThat(result.getValue(1L))
-            .containsExactly(validSla)
-    }
-
-    @Test
-    fun `statusSlaByInitiativeId should ignore records whose initiative id is null`() {
-        val agentWithoutId = mockk<AIAgentEntity>()
-
-        every {
-            agentWithoutId.id
-        } returns null
-
-        val sla = createStatusSla(
-            agent = agentWithoutId
-        )
-
-        every {
-            agentStatusSlaRepository.findAllByAiAgentIdIn(
-                setOf(1L)
-            )
-        } returns listOf(sla)
-
-        val session = createSession(
-            initiativeIds = setOf(1L)
-        )
-
-        val result = session.statusSlaByInitiativeId
-
-        assertThat(result).isEmpty()
-    }
-
-    @Test
-    fun `statusSlaByInitiativeId should call repository only once on repeated access`() {
-        every {
-            agentStatusSlaRepository.findAllByAiAgentIdIn(
-                setOf(1L)
-            )
-        } returns emptyList()
-
-        val session = createSession(
-            initiativeIds = setOf(1L)
-        )
-
-        session.statusSlaByInitiativeId
-        session.statusSlaByInitiativeId
-        session.statusSlaByInitiativeId
-
-        verify(exactly = 1) {
-            agentStatusSlaRepository.findAllByAiAgentIdIn(
-                setOf(1L)
-            )
-        }
-    }
-
-    @Test
-    fun `initiativeIdsWithValidGigaUsage should return empty set and not call repository when initiative ids are empty`() {
-        val session = createSession(
-            initiativeIds = emptySet()
-        )
-
+    fun `should return empty set and not call repositories when initiative ids are empty`() {
         val result =
-            session.initiativeIdsWithValidGigaUsage
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = emptySet(),
+                currentPeriod = currentPeriod,
+            )
 
         assertThat(result).isEmpty()
 
         verify(exactly = 0) {
-            jiraIssueRepository
-                .findInitiativeIdsWithValidGigaUsage(any())
-        }
-    }
-
-    @Test
-    fun `initiativeIdsWithValidGigaUsage should return initiative ids from repository`() {
-        every {
-            jiraIssueRepository
-                .findInitiativeIdsWithValidGigaUsage(
-                    setOf(1L, 2L, 3L)
-                )
-        } returns setOf(1L, 3L)
-
-        val session = createSession(
-            initiativeIds = setOf(1L, 2L, 3L)
-        )
-
-        val result =
-            session.initiativeIdsWithValidGigaUsage
-
-        assertThat(result)
-            .containsExactlyInAnyOrder(1L, 3L)
-
-        verify(exactly = 1) {
-            jiraIssueRepository
-                .findInitiativeIdsWithValidGigaUsage(
-                    setOf(1L, 2L, 3L)
-                )
-        }
-    }
-
-    @Test
-    fun `initiativeIdsWithValidGigaUsage should call repository only once on repeated access`() {
-        every {
-            jiraIssueRepository
-                .findInitiativeIdsWithValidGigaUsage(
-                    setOf(1L)
-                )
-        } returns setOf(1L)
-
-        val session = createSession(
-            initiativeIds = setOf(1L)
-        )
-
-        session.initiativeIdsWithValidGigaUsage
-        session.initiativeIdsWithValidGigaUsage
-
-        verify(exactly = 1) {
-            jiraIssueRepository
-                .findInitiativeIdsWithValidGigaUsage(
-                    setOf(1L)
-                )
-        }
-    }
-
-    @Test
-    fun `initiativeIdsWithEnablers should return empty set and not call repository when initiative ids are empty`() {
-        val session = createSession(
-            initiativeIds = emptySet()
-        )
-
-        val result = session.initiativeIdsWithEnablers
-
-        assertThat(result).isEmpty()
-
-        verify(exactly = 0) {
-            enablerRepository
-                .findInitiativeIdsWithEnablers(any())
-        }
-    }
-
-    @Test
-    fun `initiativeIdsWithEnablers should return initiative ids from repository`() {
-        every {
-            enablerRepository
-                .findInitiativeIdsWithEnablers(
-                    setOf(1L, 2L, 3L)
-                )
-        } returns setOf(2L, 3L)
-
-        val session = createSession(
-            initiativeIds = setOf(1L, 2L, 3L)
-        )
-
-        val result = session.initiativeIdsWithEnablers
-
-        assertThat(result)
-            .containsExactlyInAnyOrder(2L, 3L)
-
-        verify(exactly = 1) {
-            enablerRepository
-                .findInitiativeIdsWithEnablers(
-                    setOf(1L, 2L, 3L)
-                )
-        }
-    }
-
-    @Test
-    fun `initiativeIdsWithEnablers should call repository only once on repeated access`() {
-        every {
-            enablerRepository
-                .findInitiativeIdsWithEnablers(
-                    setOf(1L)
-                )
-        } returns setOf(1L)
-
-        val session = createSession(
-            initiativeIds = setOf(1L)
-        )
-
-        session.initiativeIdsWithEnablers
-        session.initiativeIdsWithEnablers
-
-        verify(exactly = 1) {
-            enablerRepository
-                .findInitiativeIdsWithEnablers(
-                    setOf(1L)
-                )
-        }
-    }
-
-    @Test
-    fun `statusCodeByInitiativeId should return empty map and not call repository when initiative ids are empty`() {
-        val session = createSession(
-            initiativeIds = emptySet()
-        )
-
-        val result = session.statusCodeByInitiativeId
-
-        assertThat(result).isEmpty()
-
-        verify(exactly = 0) {
-            aiAgentRepository.findInitiativeStatuses(any())
-        }
-    }
-
-    @Test
-    fun `statusCodeByInitiativeId should map initiative ids to status codes`() {
-        val firstProjection =
-            createStatusProjection(
-                initiativeId = 1L,
-                statusCode = "targetSolution"
-            )
-
-        val secondProjection =
-            createStatusProjection(
-                initiativeId = 2L,
-                statusCode = "implementation"
-            )
-
-        every {
-            aiAgentRepository.findInitiativeStatuses(
-                setOf(1L, 2L)
-            )
-        } returns listOf(
-            firstProjection,
-            secondProjection
-        )
-
-        val session = createSession(
-            initiativeIds = setOf(1L, 2L)
-        )
-
-        val result = session.statusCodeByInitiativeId
-
-        assertThat(result)
-            .containsEntry(1L, "targetSolution")
-            .containsEntry(2L, "implementation")
-            .hasSize(2)
-
-        verify(exactly = 1) {
-            aiAgentRepository.findInitiativeStatuses(
-                setOf(1L, 2L)
-            )
-        }
-    }
-
-    @Test
-    fun `statusCodeByInitiativeId should preserve null status code`() {
-        val projection =
-            createStatusProjection(
-                initiativeId = 1L,
-                statusCode = null
-            )
-
-        every {
-            aiAgentRepository.findInitiativeStatuses(
-                setOf(1L)
-            )
-        } returns listOf(projection)
-
-        val session = createSession(
-            initiativeIds = setOf(1L)
-        )
-
-        val result = session.statusCodeByInitiativeId
-
-        assertThat(result)
-            .containsKey(1L)
-
-        assertThat(result[1L]).isNull()
-    }
-
-    @Test
-    fun `statusCodeByInitiativeId should use last status when repository returns duplicate initiative ids`() {
-        val firstProjection =
-            createStatusProjection(
-                initiativeId = 1L,
-                statusCode = "draft"
-            )
-
-        val secondProjection =
-            createStatusProjection(
-                initiativeId = 1L,
-                statusCode = "targetSolution"
-            )
-
-        every {
-            aiAgentRepository.findInitiativeStatuses(
-                setOf(1L)
-            )
-        } returns listOf(
-            firstProjection,
-            secondProjection
-        )
-
-        val session = createSession(
-            initiativeIds = setOf(1L)
-        )
-
-        val result = session.statusCodeByInitiativeId
-
-        assertThat(result)
-            .containsEntry(1L, "targetSolution")
-            .hasSize(1)
-    }
-
-    @Test
-    fun `statusCodeByInitiativeId should call repository only once on repeated access`() {
-        every {
-            aiAgentRepository.findInitiativeStatuses(
-                setOf(1L)
-            )
-        } returns emptyList()
-
-        val session = createSession(
-            initiativeIds = setOf(1L)
-        )
-
-        session.statusCodeByInitiativeId
-        session.statusCodeByInitiativeId
-        session.statusCodeByInitiativeId
-
-        verify(exactly = 1) {
-            aiAgentRepository.findInitiativeStatuses(
-                setOf(1L)
-            )
-        }
-    }
-
-    @Test
-    fun `accessing one lazy property should not load data for other properties`() {
-        every {
-            jiraIssueRepository
-                .findInitiativeIdsWithValidGigaUsage(
-                    setOf(1L)
-                )
-        } returns setOf(1L)
-
-        val session = createSession(
-            initiativeIds = setOf(1L)
-        )
-
-        val result =
-            session.initiativeIdsWithValidGigaUsage
-
-        assertThat(result).containsExactly(1L)
-
-        verify(exactly = 1) {
-            jiraIssueRepository
-                .findInitiativeIdsWithValidGigaUsage(
-                    setOf(1L)
-                )
-        }
-
-        verify(exactly = 0) {
-            agentStatusSlaRepository
+            initiativeMetricTypeRepository
                 .findAllByAiAgentIdIn(any())
         }
 
         verify(exactly = 0) {
-            enablerRepository
-                .findInitiativeIdsWithEnablers(any())
+            metricsDirectoryRepository
+                .findAllByActiveIsTrue()
         }
 
         verify(exactly = 0) {
-            aiAgentRepository
-                .findInitiativeStatuses(any())
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    any(),
+                    any(),
+                )
         }
     }
 
     @Test
-    fun `session should expose provided metrics deviation finder`() {
-        val session = createSession(
-            initiativeIds = setOf(1L)
+    fun `should return empty set when initiatives have no metric types`() {
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns emptyList()
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).isEmpty()
+
+        verify(exactly = 1) {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        }
+
+        verify(exactly = 0) {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    any(),
+                    any(),
+                )
+        }
+    }
+
+    @Test
+    fun `should return empty set when there are no active metrics`() {
+        val metricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = 1L,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns emptyList()
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).isEmpty()
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    any(),
+                    any(),
+                )
+        }
+    }
+
+    @Test
+    fun `should return initiative id when applicable metric value is missing`() {
+        val metricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = 1L,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
+
+        val metric = createMetric()
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns listOf(metric)
+
+        every {
+            metricApplicabilityPolicy.isApplicable(
+                metric = metric,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS,
+            )
+        } returns true
+
+        every {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    initiativeMetricTypeIds = setOf(10L),
+                    periodMonth = currentPeriod,
+                )
+        } returns emptyList()
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).containsExactly(1L)
+    }
+
+    @Test
+    fun `should not return initiative id when all applicable metrics are filled`() {
+        val metricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = 1L,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
+
+        val metricId = UUID.randomUUID()
+        val metric = createMetric(id = metricId)
+
+        val metricValue =
+            createMetricValue(
+                metricType = metricType,
+                metric = metric,
+                value = BigDecimal.TEN,
+            )
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns listOf(metric)
+
+        every {
+            metricApplicabilityPolicy.isApplicable(
+                metric = metric,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS,
+            )
+        } returns true
+
+        every {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    initiativeMetricTypeIds = setOf(10L),
+                    periodMonth = currentPeriod,
+                )
+        } returns listOf(metricValue)
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).isEmpty()
+    }
+
+    @Test
+    fun `should return initiative id when metric value entity exists but metricValue is null`() {
+        val metricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = 1L,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
+
+        val metric = createMetric()
+
+        val metricValue =
+            createMetricValue(
+                metricType = metricType,
+                metric = metric,
+                value = null,
+            )
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns listOf(metric)
+
+        every {
+            metricApplicabilityPolicy.isApplicable(
+                metric,
+                InitiativeMetricAgentType.AUTONOMOUS,
+            )
+        } returns true
+
+        every {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    setOf(10L),
+                    currentPeriod,
+                )
+        } returns listOf(metricValue)
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).containsExactly(1L)
+    }
+
+    @Test
+    fun `should ignore metrics that are not applicable to initiative agent type`() {
+        val metricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = 1L,
+                agentType =
+                    InitiativeMetricAgentType.COPILOT.value,
+            )
+
+        val metric = createMetric()
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns listOf(metric)
+
+        every {
+            metricApplicabilityPolicy.isApplicable(
+                metric = metric,
+                agentType =
+                    InitiativeMetricAgentType.COPILOT,
+            )
+        } returns false
+
+        every {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    setOf(10L),
+                    currentPeriod,
+                )
+        } returns emptyList()
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).isEmpty()
+    }
+
+    @Test
+    fun `should ignore metric type with unknown agent type`() {
+        val metricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = 1L,
+                agentType = "unknown",
+            )
+
+        val metric = createMetric()
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns listOf(metric)
+
+        every {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    setOf(10L),
+                    currentPeriod,
+                )
+        } returns emptyList()
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).isEmpty()
+
+        verify(exactly = 0) {
+            metricApplicabilityPolicy.isApplicable(
+                any(),
+                any(),
+            )
+        }
+    }
+
+    @Test
+    fun `should ignore metric type without initiative`() {
+        val metricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = null,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
+
+        val metric = createMetric()
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns listOf(metric)
+
+        every {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    setOf(10L),
+                    currentPeriod,
+                )
+        } returns emptyList()
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).isEmpty()
+
+        verify(exactly = 0) {
+            metricApplicabilityPolicy.isApplicable(
+                any(),
+                any(),
+            )
+        }
+    }
+
+    @Test
+    fun `should return only initiative with missing metrics when another initiative is fully filled`() {
+        val firstMetricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = 1L,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
+
+        val secondMetricType =
+            createMetricType(
+                id = 20L,
+                initiativeId = 2L,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
+
+        val metric = createMetric()
+
+        val secondInitiativeValue =
+            createMetricValue(
+                metricType = secondMetricType,
+                metric = metric,
+                value = BigDecimal.ONE,
+            )
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L, 2L))
+        } returns listOf(
+            firstMetricType,
+            secondMetricType,
         )
 
-        assertThat(
-            session.currentPeriodMetricsDeviationFinder
-        ).isSameAs(currentPeriodMetricsDeviationFinder)
+        every {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns listOf(metric)
+
+        every {
+            metricApplicabilityPolicy.isApplicable(
+                metric = metric,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS,
+            )
+        } returns true
+
+        every {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    initiativeMetricTypeIds = setOf(10L, 20L),
+                    periodMonth = currentPeriod,
+                )
+        } returns listOf(secondInitiativeValue)
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L, 2L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).containsExactly(1L)
     }
 
-    private fun createSession(
-        initiativeIds: Set<Long>
-    ): InitiativeDeviationCalculationSession =
-        InitiativeDeviationCalculationSession(
-            initiativeIds = initiativeIds,
-            agentStatusSlaRepository =
-                agentStatusSlaRepository,
-            jiraIssueRepository =
-                jiraIssueRepository,
-            enablerRepository =
-                enablerRepository,
-            aiAgentRepository =
-                aiAgentRepository,
-            currentPeriodMetricsDeviationFinder =
-                currentPeriodMetricsDeviationFinder
+    @Test
+    fun `should require values for all applicable metrics`() {
+        val metricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = 1L,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
+
+        val firstMetric = createMetric()
+        val secondMetric = createMetric()
+
+        val firstMetricValue =
+            createMetricValue(
+                metricType = metricType,
+                metric = firstMetric,
+                value = BigDecimal.ONE,
+            )
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns listOf(
+            firstMetric,
+            secondMetric,
         )
 
-    private fun createAgent(
-        id: Long
-    ): AIAgentEntity {
-        val agent = mockk<AIAgentEntity>()
+        every {
+            metricApplicabilityPolicy.isApplicable(
+                metric = firstMetric,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS,
+            )
+        } returns true
 
         every {
-            agent.id
-        } returns id
+            metricApplicabilityPolicy.isApplicable(
+                metric = secondMetric,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS,
+            )
+        } returns true
 
-        return agent
+        every {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    setOf(10L),
+                    currentPeriod,
+                )
+        } returns listOf(firstMetricValue)
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).containsExactly(1L)
     }
 
-    private fun createStatusSla(
-        agent: AIAgentEntity?
-    ): AgentStatusSlaEntity {
-        val statusSla = mockk<AgentStatusSlaEntity>()
+    @Test
+    fun `should require values for every initiative agent type`() {
+        val autonomousMetricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = 1L,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
+
+        val copilotMetricType =
+            createMetricType(
+                id = 20L,
+                initiativeId = 1L,
+                agentType =
+                    InitiativeMetricAgentType.COPILOT.value,
+            )
+
+        val metric = createMetric()
+
+        val autonomousValue =
+            createMetricValue(
+                metricType = autonomousMetricType,
+                metric = metric,
+                value = BigDecimal.ONE,
+            )
 
         every {
-            statusSla.aiAgent
-        } returns agent
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns listOf(
+            autonomousMetricType,
+            copilotMetricType,
+        )
 
-        return statusSla
+        every {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns listOf(metric)
+
+        every {
+            metricApplicabilityPolicy.isApplicable(
+                metric,
+                InitiativeMetricAgentType.AUTONOMOUS,
+            )
+        } returns true
+
+        every {
+            metricApplicabilityPolicy.isApplicable(
+                metric,
+                InitiativeMetricAgentType.COPILOT,
+            )
+        } returns true
+
+        every {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    setOf(10L, 20L),
+                    currentPeriod,
+                )
+        } returns listOf(autonomousValue)
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).containsExactly(1L)
     }
 
-    private fun createStatusProjection(
-        initiativeId: Long,
-        statusCode: String?
-    ): InitiativeStatusProjection {
-        val projection =
-            mockk<InitiativeStatusProjection>()
+    @Test
+    fun `should ignore filled metric value without metric type reference`() {
+        val metricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = 1L,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
+
+        val metric = createMetric()
+
+        val invalidMetricValue =
+            createMetricValue(
+                metricType = null,
+                metric = metric,
+                value = BigDecimal.ONE,
+            )
 
         every {
-            projection.initiativeId
-        } returns initiativeId
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns listOf(metricType)
 
         every {
-            projection.statusCode
-        } returns statusCode
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns listOf(metric)
 
-        return projection
+        every {
+            metricApplicabilityPolicy.isApplicable(
+                metric,
+                InitiativeMetricAgentType.AUTONOMOUS,
+            )
+        } returns true
+
+        every {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    setOf(10L),
+                    currentPeriod,
+                )
+        } returns listOf(invalidMetricValue)
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).containsExactly(1L)
+    }
+
+    @Test
+    fun `should ignore filled metric value without metric directory reference`() {
+        val metricType =
+            createMetricType(
+                id = 10L,
+                initiativeId = 1L,
+                agentType =
+                    InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
+
+        val metric = createMetric()
+
+        val invalidMetricValue =
+            createMetricValue(
+                metricType = metricType,
+                metric = null,
+                value = BigDecimal.ONE,
+            )
+
+        every {
+            initiativeMetricTypeRepository
+                .findAllByAiAgentIdIn(setOf(1L))
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findAllByActiveIsTrue()
+        } returns listOf(metric)
+
+        every {
+            metricApplicabilityPolicy.isApplicable(
+                metric,
+                InitiativeMetricAgentType.AUTONOMOUS,
+            )
+        } returns true
+
+        every {
+            initiativeMetricValueRepository
+                .findAllByInitiativeMetricTypeIdsAndPeriodMonth(
+                    setOf(10L),
+                    currentPeriod,
+                )
+        } returns listOf(invalidMetricValue)
+
+        val result =
+            finder.findInitiativeIdsWithMissingMetrics(
+                initiativeIds = setOf(1L),
+                currentPeriod = currentPeriod,
+            )
+
+        assertThat(result).containsExactly(1L)
+    }
+
+    private fun createMetricType(
+        id: Long,
+        initiativeId: Long?,
+        agentType: String?,
+    ): InitiativeMetricTypeEntity {
+        val metricType = mockk<InitiativeMetricTypeEntity>()
+        val agent =
+            initiativeId?.let {
+                mockk<AIAgentEntity>().also { agent ->
+                    every { agent.id } returns initiativeId
+                }
+            }
+
+        every { metricType.id } returns id
+        every { metricType.aiAgent } returns agent
+        every { metricType.agentType } returns agentType
+
+        return metricType
+    }
+
+    private fun createMetric(
+        id: UUID = UUID.randomUUID(),
+    ): MetricsDirectoryEntity {
+        val metric = mockk<MetricsDirectoryEntity>()
+
+        every { metric.id } returns id
+
+        return metric
+    }
+
+    private fun createMetricValue(
+        metricType: InitiativeMetricTypeEntity?,
+        metric: MetricsDirectoryEntity?,
+        value: BigDecimal?,
+    ): InitiativeMetricValueEntity {
+        val metricValue = mockk<InitiativeMetricValueEntity>()
+
+        every { metricValue.initiativeMetricType } returns metricType
+        every { metricValue.metricDirectory } returns metric
+        every { metricValue.metricValue } returns value
+
+        return metricValue
     }
 }
-
 ```
