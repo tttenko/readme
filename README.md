@@ -1,740 +1,542 @@
 ```java
+@ExtendWith(MockKExtension::class)
+ class InitiativeDeviationCalculationSessionTest {
 
-@Test
-fun `getAIAgentList should throw forbidden when non admin requests another userId`() {
-    val user = UserDto(
-        id = 10L,
-        roles = setOf("PROJECT_OFFICE"),
-        email = null,
-        login = null,
-        firstName = null,
-        lastName = null,
-        patronymic = null,
-        phoneNumber = null,
-        position = null,
-        sberbankEmployee = null,
-        companyId = null
-    )
+    @MockK
+    private lateinit var agentStatusSlaRepository: AgentStatusSlaRepository
 
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10,
-        userId = 99L
-    )
+    @MockK
+    private lateinit var jiraIssueRepository: JiraIssueRepository
 
-    every { userInfoProvider.currentUser() } returns user
-    every {
-        messageProvider[
-            Metadata.ErrorMessages.FORBIDDEN_USER_ID_FILTER
-        ]
-    } returns "forbidden"
+    @MockK
+    private lateinit var enablerRepository: EnablerRepository
 
-    val exception = assertThrows<AiForbiddenException> {
-        service.getAIAgentList(
-            showcaseRequestDto = request,
-            hasDeviation = false
+    @MockK
+    private lateinit var aiAgentRepository: AIAgentRepository
+
+    @MockK
+    private lateinit var currentPeriodMetricsDeviationFinder:
+        CurrentPeriodMetricsDeviationFinder
+
+
+    @Test
+    fun `statusSlaByInitiativeId should return empty map and not call repository when initiative ids are empty`() {
+        val session = createSession(
+            initiativeIds = emptySet()
         )
+
+        val result = session.statusSlaByInitiativeId
+
+        assertThat(result).isEmpty()
+
+        verify(exactly = 0) {
+            agentStatusSlaRepository.findAllByAiAgentIdIn(any())
+        }
     }
 
-    assertEquals(
-        Metadata.ErrorMessages.FORBIDDEN_USER_ID_FILTER,
-        exception.errorCode
-    )
+    @Test
+    fun `statusSlaByInitiativeId should group SLA records by initiative id`() {
+        val firstAgent = createAgent(id = 1L)
+        val secondAgent = createAgent(id = 2L)
 
-    verify(exactly = 0) {
-        aiAgentRepository.findAll(
-            search = any(),
-            terbankIds = any(),
-            programCodes = any(),
-            agentStatusCodes = any(),
-            blockCodes = any(),
-            divisionCodes = any(),
-            platformCodes = any(),
-            initiativeTypes = any(),
-            userAudiences = any(),
-            disabled = any(),
-            userId = any(),
-            deadlineExpiredIds = any(),
-            sortField = any(),
-            sortDirection = any(),
-            filterByDeviation = any(),
-            deviationInitiativeIds = any(),
-            pageRequest = any()
+        val firstSla = createStatusSla(agent = firstAgent)
+        val secondSla = createStatusSla(agent = firstAgent)
+        val thirdSla = createStatusSla(agent = secondAgent)
+
+        every {
+            agentStatusSlaRepository.findAllByAiAgentIdIn(
+                setOf(1L, 2L)
+            )
+        } returns listOf(
+            firstSla,
+            secondSla,
+            thirdSla
         )
+
+        val session = createSession(
+            initiativeIds = setOf(1L, 2L)
+        )
+
+        val result = session.statusSlaByInitiativeId
+
+        assertThat(result.keys)
+            .containsExactlyInAnyOrder(1L, 2L)
+
+        assertThat(result.getValue(1L))
+            .containsExactly(firstSla, secondSla)
+
+        assertThat(result.getValue(2L))
+            .containsExactly(thirdSla)
+
+        verify(exactly = 1) {
+            agentStatusSlaRepository.findAllByAiAgentIdIn(
+                setOf(1L, 2L)
+            )
+        }
     }
 
-    verify(exactly = 0) {
-        initiativeDeviationCalculator.calculate(any())
-    }
-}
-@Test
-fun `getAIAgentList should call repository with deadlineExpired sort`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10,
-        sort = AiAgentsSort.deadlineExpired
-    )
+    @Test
+    fun `statusSlaByInitiativeId should ignore records without initiative`() {
+        val agent = createAgent(id = 1L)
 
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
+        val validSla = createStatusSla(agent = agent)
+        val slaWithoutAgent = createStatusSla(agent = null)
 
-    mockAgentRepository(agents = emptyList())
-
-    every {
-        initiativeDeviationCalculator.calculate(emptySet())
-    } returns emptyMap()
-
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = false
-    )
-
-    Assertions.assertThat(result.content).isEmpty()
-
-    verify(exactly = 1) {
-        aiAgentRepository.findAll(
-            search = any(),
-            terbankIds = any(),
-            programCodes = any(),
-            agentStatusCodes = any(),
-            blockCodes = any(),
-            divisionCodes = any(),
-            platformCodes = any(),
-            initiativeTypes = any(),
-            userAudiences = any(),
-            disabled = any(),
-            userId = any(),
-            deadlineExpiredIds = any(),
-            sortField = "deadline_priority",
-            sortDirection = "DESC",
-            filterByDeviation = false,
-            deviationInitiativeIds = setOf(-1L),
-            pageRequest = any()
+        every {
+            agentStatusSlaRepository.findAllByAiAgentIdIn(
+                setOf(1L)
+            )
+        } returns listOf(
+            validSla,
+            slaWithoutAgent
         )
-    }
-}
-@Test
-fun `getAIAgentList should call repository with alphabet sort`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10,
-        sort = AiAgentsSort.alphabet,
-        sortType = Sort.Direction.ASC
-    )
 
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
-
-    mockAgentRepository(agents = emptyList())
-
-    every {
-        initiativeDeviationCalculator.calculate(emptySet())
-    } returns emptyMap()
-
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = false
-    )
-
-    Assertions.assertThat(result.content).isEmpty()
-
-    verify(exactly = 1) {
-        aiAgentRepository.findAll(
-            search = any(),
-            terbankIds = any(),
-            programCodes = any(),
-            agentStatusCodes = any(),
-            blockCodes = any(),
-            divisionCodes = any(),
-            platformCodes = any(),
-            initiativeTypes = any(),
-            userAudiences = any(),
-            disabled = any(),
-            userId = any(),
-            deadlineExpiredIds = any(),
-            sortField = "alphabet",
-            sortDirection = "ASC",
-            filterByDeviation = false,
-            deviationInitiativeIds = setOf(-1L),
-            pageRequest = any()
-        )
-    }
-}
-Исправленные тесты hasMetricsValue
-@Test
-fun `getAIAgentList should return hasMetricsValue true when status is targetSolution and agent has supported metric type`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
-
-    val agent = createAgent(
-        id = 1L,
-        statusCode = "targetSolution"
-    )
-
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
-
-    mockAgentRepository(agents = listOf(agent))
-
-    every {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L),
-            agentTypes = metricAgentTypes
-        )
-    } returns setOf(1L)
-
-    every {
-        initiativeDeviationCalculator.calculate(
+        val session = createSession(
             initiativeIds = setOf(1L)
         )
-    } returns emptyMap()
 
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = false
-    )
+        val result = session.statusSlaByInitiativeId
 
-    Assertions.assertThat(result.content).hasSize(1)
-    Assertions.assertThat(result.content[0].hasMetricsValue).isTrue()
+        assertThat(result)
+            .containsOnlyKeys(1L)
 
-    verify(exactly = 1) {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L),
-            agentTypes = metricAgentTypes
-        )
-    }
-}
-@Test
-fun `getAIAgentList should return hasMetricsValue false when status is targetSolution but agent has no supported metric type`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
-
-    val agent = createAgent(
-        id = 1L,
-        statusCode = "targetSolution"
-    )
-
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
-
-    mockAgentRepository(agents = listOf(agent))
-
-    every {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L),
-            agentTypes = metricAgentTypes
-        )
-    } returns emptySet()
-
-    every {
-        initiativeDeviationCalculator.calculate(setOf(1L))
-    } returns emptyMap()
-
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = false
-    )
-
-    Assertions.assertThat(result.content).hasSize(1)
-    Assertions.assertThat(result.content[0].hasMetricsValue).isFalse()
-}
-@Test
-fun `getAIAgentList should return hasMetricsValue false when metric type exists but status is not targetSolution`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
-
-    val agent = createAgent(
-        id = 1L,
-        statusCode = "implementation"
-    )
-
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
-
-    mockAgentRepository(agents = listOf(agent))
-
-    every {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L),
-            agentTypes = metricAgentTypes
-        )
-    } returns setOf(1L)
-
-    every {
-        initiativeDeviationCalculator.calculate(setOf(1L))
-    } returns emptyMap()
-
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = false
-    )
-
-    Assertions.assertThat(result.content).hasSize(1)
-    Assertions.assertThat(result.content[0].hasMetricsValue).isFalse()
-}
-@Test
-fun `getAIAgentList should return hasMetricsValue false when agent status is null`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
-
-    val agent = createAgent(
-        id = 1L,
-        statusCode = null
-    )
-
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
-
-    mockAgentRepository(agents = listOf(agent))
-
-    every {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L),
-            agentTypes = metricAgentTypes
-        )
-    } returns setOf(1L)
-
-    every {
-        initiativeDeviationCalculator.calculate(setOf(1L))
-    } returns emptyMap()
-
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = false
-    )
-
-    Assertions.assertThat(result.content).hasSize(1)
-    Assertions.assertThat(result.content[0].hasMetricsValue).isFalse()
-}
-@Test
-fun `getAIAgentList should calculate hasMetricsValue separately for every agent`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
-
-    val targetSolutionAgent = createAgent(
-        id = 1L,
-        statusCode = "targetSolution"
-    )
-
-    val anotherStatusAgent = createAgent(
-        id = 2L,
-        statusCode = "implementation"
-    )
-
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
-
-    mockAgentRepository(
-        agents = listOf(
-            targetSolutionAgent,
-            anotherStatusAgent
-        )
-    )
-
-    every {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L, 2L),
-            agentTypes = metricAgentTypes
-        )
-    } returns setOf(1L, 2L)
-
-    every {
-        initiativeDeviationCalculator.calculate(
-            setOf(1L, 2L)
-        )
-    } returns emptyMap()
-
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = false
-    )
-
-    Assertions.assertThat(result.content).hasSize(2)
-
-    Assertions.assertThat(
-        result.content.first { it.id == 1L }.hasMetricsValue
-    ).isTrue()
-
-    Assertions.assertThat(
-        result.content.first { it.id == 2L }.hasMetricsValue
-    ).isFalse()
-}
-Пустая страница
-@Test
-fun `getAIAgentList should not call metric type repository when agents page is empty`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
-
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
-
-    mockAgentRepository(agents = emptyList())
-
-    every {
-        initiativeDeviationCalculator.calculate(emptySet())
-    } returns emptyMap()
-
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = false
-    )
-
-    Assertions.assertThat(result.content).isEmpty()
-
-    verify(exactly = 0) {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = any(),
-            agentTypes = any()
-        )
+        assertThat(result.getValue(1L))
+            .containsExactly(validSla)
     }
 
-    verify(exactly = 1) {
-        initiativeDeviationCalculator.calculate(emptySet())
-    }
-}
-Новые тесты для hasDeviation
-hasDeviation=false не запускает предварительный поиск
-@Test
-fun `getAIAgentList should not filter initiatives by deviation when hasDeviation is false`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
+    @Test
+    fun `statusSlaByInitiativeId should ignore records whose initiative id is null`() {
+        val agentWithoutId = mockk<AIAgentEntity>()
 
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
+        every {
+            agentWithoutId.id
+        } returns null
 
-    mockAgentRepository(agents = emptyList())
-
-    every {
-        initiativeDeviationCalculator.calculate(emptySet())
-    } returns emptyMap()
-
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = false
-    )
-
-    Assertions.assertThat(result.content).isEmpty()
-
-    verify(exactly = 0) {
-        initiativeDeviationCalculator
-            .findInitiativeIdsWithAnyDeviation(any())
-    }
-
-    verify(exactly = 1) {
-        aiAgentRepository.findAll(
-            search = any(),
-            terbankIds = any(),
-            programCodes = any(),
-            agentStatusCodes = any(),
-            blockCodes = any(),
-            divisionCodes = any(),
-            platformCodes = any(),
-            initiativeTypes = any(),
-            userAudiences = any(),
-            disabled = any(),
-            userId = any(),
-            deadlineExpiredIds = any(),
-            sortField = any(),
-            sortDirection = any(),
-            filterByDeviation = false,
-            deviationInitiativeIds = setOf(-1L),
-            pageRequest = any()
+        val sla = createStatusSla(
+            agent = agentWithoutId
         )
+
+        every {
+            agentStatusSlaRepository.findAllByAiAgentIdIn(
+                setOf(1L)
+            )
+        } returns listOf(sla)
+
+        val session = createSession(
+            initiativeIds = setOf(1L)
+        )
+
+        val result = session.statusSlaByInitiativeId
+
+        assertThat(result).isEmpty()
     }
-}
-hasDeviation=true передаёт найденные ID в основной запрос
-@Test
-fun `getAIAgentList should filter page by initiatives with deviation`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
 
-    val agent = createAgent(
-        id = 2L,
-        statusCode = "implementation"
-    )
+    @Test
+    fun `statusSlaByInitiativeId should call repository only once on repeated access`() {
+        every {
+            agentStatusSlaRepository.findAllByAiAgentIdIn(
+                setOf(1L)
+            )
+        } returns emptyList()
 
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
+        val session = createSession(
+            initiativeIds = setOf(1L)
+        )
 
-    mockFilteredInitiativeIds(
-        initiativeIds = setOf(1L, 2L, 3L)
-    )
+        session.statusSlaByInitiativeId
+        session.statusSlaByInitiativeId
+        session.statusSlaByInitiativeId
 
-    every {
-        initiativeDeviationCalculator.findInitiativeIdsWithAnyDeviation(
+        verify(exactly = 1) {
+            agentStatusSlaRepository.findAllByAiAgentIdIn(
+                setOf(1L)
+            )
+        }
+    }
+
+    @Test
+    fun `initiativeIdsWithValidGigaUsage should return empty set and not call repository when initiative ids are empty`() {
+        val session = createSession(
+            initiativeIds = emptySet()
+        )
+
+        val result =
+            session.initiativeIdsWithValidGigaUsage
+
+        assertThat(result).isEmpty()
+
+        verify(exactly = 0) {
+            jiraIssueRepository
+                .findInitiativeIdsWithValidGigaUsage(any())
+        }
+    }
+
+    @Test
+    fun `initiativeIdsWithValidGigaUsage should return initiative ids from repository`() {
+        every {
+            jiraIssueRepository
+                .findInitiativeIdsWithValidGigaUsage(
+                    setOf(1L, 2L, 3L)
+                )
+        } returns setOf(1L, 3L)
+
+        val session = createSession(
             initiativeIds = setOf(1L, 2L, 3L)
         )
-    } returns setOf(2L, 3L)
 
-    mockAgentRepository(
-        agents = listOf(agent),
-        filterByDeviation = true,
-        deviationInitiativeIds = setOf(2L, 3L)
-    )
+        val result =
+            session.initiativeIdsWithValidGigaUsage
 
-    every {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(2L),
-            agentTypes = metricAgentTypes
+        assertThat(result)
+            .containsExactlyInAnyOrder(1L, 3L)
+
+        verify(exactly = 1) {
+            jiraIssueRepository
+                .findInitiativeIdsWithValidGigaUsage(
+                    setOf(1L, 2L, 3L)
+                )
+        }
+    }
+
+    @Test
+    fun `initiativeIdsWithValidGigaUsage should call repository only once on repeated access`() {
+        every {
+            jiraIssueRepository
+                .findInitiativeIdsWithValidGigaUsage(
+                    setOf(1L)
+                )
+        } returns setOf(1L)
+
+        val session = createSession(
+            initiativeIds = setOf(1L)
         )
-    } returns emptySet()
 
-    every {
-        initiativeDeviationCalculator.calculate(
-            initiativeIds = setOf(2L)
+        session.initiativeIdsWithValidGigaUsage
+        session.initiativeIdsWithValidGigaUsage
+
+        verify(exactly = 1) {
+            jiraIssueRepository
+                .findInitiativeIdsWithValidGigaUsage(
+                    setOf(1L)
+                )
+        }
+    }
+
+    @Test
+    fun `initiativeIdsWithEnablers should return empty set and not call repository when initiative ids are empty`() {
+        val session = createSession(
+            initiativeIds = emptySet()
         )
-    } returns emptyMap()
 
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = true
-    )
+        val result = session.initiativeIdsWithEnablers
 
-    Assertions.assertThat(result.content).hasSize(1)
-    Assertions.assertThat(result.content[0].id).isEqualTo(2L)
+        assertThat(result).isEmpty()
 
-    verify(exactly = 1) {
-        initiativeDeviationCalculator.findInitiativeIdsWithAnyDeviation(
+        verify(exactly = 0) {
+            enablerRepository
+                .findInitiativeIdsWithEnablers(any())
+        }
+    }
+
+    @Test
+    fun `initiativeIdsWithEnablers should return initiative ids from repository`() {
+        every {
+            enablerRepository
+                .findInitiativeIdsWithEnablers(
+                    setOf(1L, 2L, 3L)
+                )
+        } returns setOf(2L, 3L)
+
+        val session = createSession(
             initiativeIds = setOf(1L, 2L, 3L)
         )
+
+        val result = session.initiativeIdsWithEnablers
+
+        assertThat(result)
+            .containsExactlyInAnyOrder(2L, 3L)
+
+        verify(exactly = 1) {
+            enablerRepository
+                .findInitiativeIdsWithEnablers(
+                    setOf(1L, 2L, 3L)
+                )
+        }
     }
 
-    verify(exactly = 1) {
-        aiAgentRepository.findAll(
-            search = any(),
-            terbankIds = any(),
-            programCodes = any(),
-            agentStatusCodes = any(),
-            blockCodes = any(),
-            divisionCodes = any(),
-            platformCodes = any(),
-            initiativeTypes = any(),
-            userAudiences = any(),
-            disabled = any(),
-            userId = any(),
-            deadlineExpiredIds = any(),
-            sortField = any(),
-            sortDirection = any(),
-            filterByDeviation = true,
-            deviationInitiativeIds = setOf(2L, 3L),
-            pageRequest = any()
+    @Test
+    fun `initiativeIdsWithEnablers should call repository only once on repeated access`() {
+        every {
+            enablerRepository
+                .findInitiativeIdsWithEnablers(
+                    setOf(1L)
+                )
+        } returns setOf(1L)
+
+        val session = createSession(
+            initiativeIds = setOf(1L)
         )
+
+        session.initiativeIdsWithEnablers
+        session.initiativeIdsWithEnablers
+
+        verify(exactly = 1) {
+            enablerRepository
+                .findInitiativeIdsWithEnablers(
+                    setOf(1L)
+                )
+        }
     }
-}
-Нет ни одной инициативы с отклонением
-@Test
-fun `getAIAgentList should return empty page when hasDeviation is true and no deviations found`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
 
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
+    @Test
+    fun `statusCodeByInitiativeId should return empty map and not call repository when initiative ids are empty`() {
+        val session = createSession(
+            initiativeIds = emptySet()
+        )
 
-    mockFilteredInitiativeIds(
-        initiativeIds = setOf(1L, 2L)
-    )
+        val result = session.statusCodeByInitiativeId
 
-    every {
-        initiativeDeviationCalculator.findInitiativeIdsWithAnyDeviation(
+        assertThat(result).isEmpty()
+
+        verify(exactly = 0) {
+            aiAgentRepository.findInitiativeStatuses(any())
+        }
+    }
+
+    @Test
+    fun `statusCodeByInitiativeId should map initiative ids to status codes`() {
+        val firstProjection =
+            createStatusProjection(
+                initiativeId = 1L,
+                statusCode = "targetSolution"
+            )
+
+        val secondProjection =
+            createStatusProjection(
+                initiativeId = 2L,
+                statusCode = "implementation"
+            )
+
+        every {
+            aiAgentRepository.findInitiativeStatuses(
+                setOf(1L, 2L)
+            )
+        } returns listOf(
+            firstProjection,
+            secondProjection
+        )
+
+        val session = createSession(
             initiativeIds = setOf(1L, 2L)
         )
-    } returns emptySet()
 
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = true
-    )
+        val result = session.statusCodeByInitiativeId
 
-    Assertions.assertThat(result.content).isEmpty()
-    Assertions.assertThat(result.totalElements).isZero()
-    Assertions.assertThat(result.totalPages).isZero()
+        assertThat(result)
+            .containsEntry(1L, "targetSolution")
+            .containsEntry(2L, "implementation")
+            .hasSize(2)
 
-    verify(exactly = 0) {
-        aiAgentRepository.findAll(
-            search = any(),
-            terbankIds = any(),
-            programCodes = any(),
-            agentStatusCodes = any(),
-            blockCodes = any(),
-            divisionCodes = any(),
-            platformCodes = any(),
-            initiativeTypes = any(),
-            userAudiences = any(),
-            disabled = any(),
-            userId = any(),
-            deadlineExpiredIds = any(),
-            sortField = any(),
-            sortDirection = any(),
-            filterByDeviation = any(),
-            deviationInitiativeIds = any(),
-            pageRequest = any()
-        )
+        verify(exactly = 1) {
+            aiAgentRepository.findInitiativeStatuses(
+                setOf(1L, 2L)
+            )
+        }
     }
 
-    verify(exactly = 0) {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = any(),
-            agentTypes = any()
+    @Test
+    fun `statusCodeByInitiativeId should preserve null status code`() {
+        val projection =
+            createStatusProjection(
+                initiativeId = 1L,
+                statusCode = null
+            )
+
+        every {
+            aiAgentRepository.findInitiativeStatuses(
+                setOf(1L)
+            )
+        } returns listOf(projection)
+
+        val session = createSession(
+            initiativeIds = setOf(1L)
         )
+
+        val result = session.statusCodeByInitiativeId
+
+        assertThat(result)
+            .containsKey(1L)
+
+        assertThat(result[1L]).isNull()
     }
 
-    verify(exactly = 0) {
-        initiativeDeviationCalculator.calculate(any())
+    @Test
+    fun `statusCodeByInitiativeId should use last status when repository returns duplicate initiative ids`() {
+        val firstProjection =
+            createStatusProjection(
+                initiativeId = 1L,
+                statusCode = "draft"
+            )
+
+        val secondProjection =
+            createStatusProjection(
+                initiativeId = 1L,
+                statusCode = "targetSolution"
+            )
+
+        every {
+            aiAgentRepository.findInitiativeStatuses(
+                setOf(1L)
+            )
+        } returns listOf(
+            firstProjection,
+            secondProjection
+        )
+
+        val session = createSession(
+            initiativeIds = setOf(1L)
+        )
+
+        val result = session.statusCodeByInitiativeId
+
+        assertThat(result)
+            .containsEntry(1L, "targetSolution")
+            .hasSize(1)
     }
-}
-Проверка добавления отклонений в ответ
-@Test
-fun `getAIAgentList should add calculated deviations to corresponding agent`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
 
-    val firstAgent = createAgent(
-        id = 1L,
-        statusCode = "implementation"
-    )
+    @Test
+    fun `statusCodeByInitiativeId should call repository only once on repeated access`() {
+        every {
+            aiAgentRepository.findInitiativeStatuses(
+                setOf(1L)
+            )
+        } returns emptyList()
 
-    val secondAgent = createAgent(
-        id = 2L,
-        statusCode = "implementation"
-    )
-
-    val deviation = InitiativeDeviationResponse(
-        code = InitiativeDeviationCode.STAGE_DEADLINE_EXPIRED.name,
-        priority = 1,
-        title = "Нарушен дедлайн этапа",
-        description = "Срок завершения этапа уже прошёл"
-    )
-
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
-
-    mockAgentRepository(
-        agents = listOf(firstAgent, secondAgent)
-    )
-
-    every {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L, 2L),
-            agentTypes = metricAgentTypes
+        val session = createSession(
+            initiativeIds = setOf(1L)
         )
-    } returns emptySet()
 
-    every {
-        initiativeDeviationCalculator.calculate(
-            initiativeIds = setOf(1L, 2L)
+        session.statusCodeByInitiativeId
+        session.statusCodeByInitiativeId
+        session.statusCodeByInitiativeId
+
+        verify(exactly = 1) {
+            aiAgentRepository.findInitiativeStatuses(
+                setOf(1L)
+            )
+        }
+    }
+
+    @Test
+    fun `accessing one lazy property should not load data for other properties`() {
+        every {
+            jiraIssueRepository
+                .findInitiativeIdsWithValidGigaUsage(
+                    setOf(1L)
+                )
+        } returns setOf(1L)
+
+        val session = createSession(
+            initiativeIds = setOf(1L)
         )
-    } returns mapOf(
-        1L to listOf(deviation),
-        2L to emptyList()
-    )
 
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = false
-    )
+        val result =
+            session.initiativeIdsWithValidGigaUsage
 
-    val firstResponse = result.content.first { it.id == 1L }
-    val secondResponse = result.content.first { it.id == 2L }
+        assertThat(result).containsExactly(1L)
 
-    Assertions.assertThat(firstResponse.deviations)
-        .containsExactly(deviation)
+        verify(exactly = 1) {
+            jiraIssueRepository
+                .findInitiativeIdsWithValidGigaUsage(
+                    setOf(1L)
+                )
+        }
 
-    Assertions.assertThat(secondResponse.deviations)
-        .isEmpty()
-}
-Если калькулятор не вернул ключ инициативы
+        verify(exactly = 0) {
+            agentStatusSlaRepository
+                .findAllByAiAgentIdIn(any())
+        }
 
-Этот тест проверяет .orEmpty():
+        verify(exactly = 0) {
+            enablerRepository
+                .findInitiativeIdsWithEnablers(any())
+        }
 
-@Test
-fun `getAIAgentList should return empty deviations when calculator has no entry for agent`() {
-    val request = ShowcaseRequestDto(
-        page = 0,
-        size = 10
-    )
+        verify(exactly = 0) {
+            aiAgentRepository
+                .findInitiativeStatuses(any())
+        }
+    }
 
-    val agent = createAgent(
-        id = 1L,
-        statusCode = "implementation"
-    )
-
-    every { userInfoProvider.currentUser() } returns cmsAdminUser()
-
-    mockAgentRepository(agents = listOf(agent))
-
-    every {
-        initiativeMetricTypeRepository.findInitiativeIdsWithAgentTypes(
-            initiativeIds = setOf(1L),
-            agentTypes = metricAgentTypes
+    @Test
+    fun `session should expose provided metrics deviation finder`() {
+        val session = createSession(
+            initiativeIds = setOf(1L)
         )
-    } returns emptySet()
 
-    every {
-        initiativeDeviationCalculator.calculate(setOf(1L))
-    } returns emptyMap()
+        assertThat(
+            session.currentPeriodMetricsDeviationFinder
+        ).isSameAs(currentPeriodMetricsDeviationFinder)
+    }
 
-    val result = service.getAIAgentList(
-        showcaseRequestDto = request,
-        hasDeviation = false
-    )
-
-    Assertions.assertThat(result.content.single().deviations).isEmpty()
-}
-Обновлённые вспомогательные методы
-private fun mockAgentRepository(
-    agents: List<AIAgentEntity>,
-    filterByDeviation: Boolean = false,
-    deviationInitiativeIds: Set<Long> = setOf(-1L)
-) {
-    every {
-        aiAgentRepository.findAll(
-            search = any(),
-            terbankIds = any(),
-            programCodes = any(),
-            agentStatusCodes = any(),
-            blockCodes = any(),
-            divisionCodes = any(),
-            platformCodes = any(),
-            initiativeTypes = any(),
-            userAudiences = any(),
-            disabled = any(),
-            userId = any(),
-            deadlineExpiredIds = any(),
-            sortField = any(),
-            sortDirection = any(),
-            filterByDeviation = filterByDeviation,
-            deviationInitiativeIds = deviationInitiativeIds,
-            pageRequest = any()
+    private fun createSession(
+        initiativeIds: Set<Long>
+    ): InitiativeDeviationCalculationSession =
+        InitiativeDeviationCalculationSession(
+            initiativeIds = initiativeIds,
+            agentStatusSlaRepository =
+                agentStatusSlaRepository,
+            jiraIssueRepository =
+                jiraIssueRepository,
+            enablerRepository =
+                enablerRepository,
+            aiAgentRepository =
+                aiAgentRepository,
+            currentPeriodMetricsDeviationFinder =
+                currentPeriodMetricsDeviationFinder
         )
-    } returns PageImpl(agents)
-}
-private fun mockFilteredInitiativeIds(
-    initiativeIds: Set<Long>
-) {
-    every {
-        aiAgentRepository.findFilteredInitiativeIds(
-            search = any(),
-            terbankIds = any(),
-            programCodes = any(),
-            agentStatusCodes = any(),
-            blockCodes = any(),
-            divisionCodes = any(),
-            platformCodes = any(),
-            initiativeTypes = any(),
-            userAudiences = any(),
-            disabled = any(),
-            userId = any(),
-            deadlineExpiredIds = any()
-        )
-    } returns initiativeIds
+
+    private fun createAgent(
+        id: Long
+    ): AIAgentEntity {
+        val agent = mockk<AIAgentEntity>()
+
+        every {
+            agent.id
+        } returns id
+
+        return agent
+    }
+
+    private fun createStatusSla(
+        agent: AIAgentEntity?
+    ): AgentStatusSlaEntity {
+        val statusSla = mockk<AgentStatusSlaEntity>()
+
+        every {
+            statusSla.aiAgent
+        } returns agent
+
+        return statusSla
+    }
+
+    private fun createStatusProjection(
+        initiativeId: Long,
+        statusCode: String?
+    ): InitiativeStatusProjection {
+        val projection =
+            mockk<InitiativeStatusProjection>()
+
+        every {
+            projection.initiativeId
+        } returns initiativeId
+
+        every {
+            projection.statusCode
+        } returns statusCode
+
+        return projection
+    }
 }
 
 ```
