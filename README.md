@@ -1,6 +1,5 @@
 ```java
-@ExtendWith(MockKExtension::class)
-internal class StageDeadlineExpiredStrategyTest {
+ class StageDeadlineExpiredStrategyTest {
 
     private val strategy = StageDeadlineExpiredStrategy()
 
@@ -42,8 +41,7 @@ internal class StageDeadlineExpiredStrategyTest {
         assertThat(strategy.evaluationOrder).isEqualTo(10)
     }
 }
-Не заполнены дедлайны
-@ExtendWith(MockKExtension::class)
+
 internal class StageDeadlinesNotFilledStrategyTest {
 
     private val strategy = StageDeadlinesNotFilledStrategy()
@@ -86,11 +84,7 @@ internal class StageDeadlinesNotFilledStrategyTest {
         assertThat(strategy.evaluationOrder).isEqualTo(20)
     }
 }
-Дедлайн через один, два или три дня
 
-Одним параметризованным тестом покрываются все три реализации AbstractUpcomingStageDeadlineStrategy.
-
-@ExtendWith(MockKExtension::class)
 internal class UpcomingStageDeadlineStrategyTest {
 
     @ParameterizedTest
@@ -163,8 +157,7 @@ internal class UpcomingStageDeadlineStrategyTest {
             )
     }
 }
-Энейблеры
-@ExtendWith(MockKExtension::class)
+
 internal class EnablersNotFilledStrategyTest {
 
     private val strategy = EnablersNotFilledStrategy()
@@ -189,8 +182,7 @@ internal class EnablersNotFilledStrategyTest {
         assertThat(strategy.evaluationOrder).isEqualTo(40)
     }
 }
-GigaUsage
-@ExtendWith(MockKExtension::class)
+
 internal class GigaUsageNotFilledStrategyTest {
 
     private val strategy = GigaUsageNotFilledStrategy()
@@ -215,35 +207,32 @@ internal class GigaUsageNotFilledStrategyTest {
         assertThat(strategy.evaluationOrder).isEqualTo(30)
     }
 }
-Метрики до порогового дня
-@ExtendWith(MockKExtension::class)
+
 internal class CurrentPeriodMetricsNotFilledStrategyTest {
 
     private val strategy = CurrentPeriodMetricsNotFilledStrategy()
 
     @Test
     fun `should not check metrics on or before configured deadline day`() {
-        val finder = mockk<CurrentPeriodMetricsDeviationFinder>()
         val session = mockk<InitiativeDeviationCalculationSession>()
-
-        val context = createContext(
-            today = LocalDate.of(2026, 7, 15),
-            metricsDeadlineDay = 15,
-        )
 
         val result = strategy.findMatchingInitiativeIds(
             candidateInitiativeIds = setOf(1L, 2L),
             session = session,
-            context = context,
+            context = createContext(
+                today = LocalDate.of(2026, 7, 15),
+                metricsDeadlineDay = 15,
+            ),
         )
 
         assertThat(result).isEmpty()
 
         verify(exactly = 0) {
-            finder.findInitiativeIdsWithMissingMetrics(
-                initiativeIds = any(),
-                currentPeriod = any(),
-            )
+            session.statusCodeByInitiativeId
+        }
+
+        verify(exactly = 0) {
+            session.currentPeriodMetricsDeviationFinder
         }
     }
 
@@ -300,50 +289,19 @@ internal class CurrentPeriodMetricsNotFilledStrategyTest {
     }
 }
 
-В первом тесте метрик мок finder не связан с session, поэтому проверка его отсутствия будет формально бессмысленной. Корректнее связать его:
-
-@Test
-fun `should not check metrics on or before configured deadline day`() {
-    val finder = mockk<CurrentPeriodMetricsDeviationFinder>()
-    val session = mockk<InitiativeDeviationCalculationSession>()
-
-    every {
-        session.currentPeriodMetricsDeviationFinder
-    } returns finder
-
-    val result = strategy.findMatchingInitiativeIds(
-        candidateInitiativeIds = setOf(1L, 2L),
-        session = session,
-        context = createContext(
-            today = LocalDate.of(2026, 7, 15),
-            metricsDeadlineDay = 15,
-        ),
-    )
-
-    assertThat(result).isEmpty()
-
-    verify(exactly = 0) {
-        finder.findInitiativeIdsWithMissingMetrics(
-            initiativeIds = any(),
-            currentPeriod = any(),
-        )
-    }
-}
-
-Используй именно эту исправленную версию первого теста.
-
-Реестр стратегий
-
-Один тест одновременно проверяет:
-
-исключение выключенной стратегии;
-сортировку включённых стратегий по evaluationOrder.
-@ExtendWith(MockKExtension::class)
 internal class InitiativeDeviationStrategyRegistryTest {
 
     @Test
     fun `should return only enabled strategies sorted by evaluation order`() {
         val properties = mockk<InitiativeDeviationProperties>()
+
+        val enabledRule =
+            mockk<InitiativeDeviationProperties.Rule>()
+        val disabledRule =
+            mockk<InitiativeDeviationProperties.Rule>()
+
+        every { enabledRule.enabled } returns true
+        every { disabledRule.enabled } returns false
 
         val firstStrategy = mockStrategy(
             code = InitiativeDeviationCode.STAGE_DEADLINE_EXPIRED,
@@ -364,20 +322,20 @@ internal class InitiativeDeviationStrategyRegistryTest {
         every {
             properties.getRequiredRule(
                 InitiativeDeviationCode.STAGE_DEADLINE_EXPIRED
-            ).enabled
-        } returns true
+            )
+        } returns enabledRule
 
         every {
             properties.getRequiredRule(
                 InitiativeDeviationCode.STAGE_DEADLINES_NOT_FILLED
-            ).enabled
-        } returns false
+            )
+        } returns disabledRule
 
         every {
             properties.getRequiredRule(
                 InitiativeDeviationCode.CURRENT_PERIOD_METRICS_NOT_FILLED
-            ).enabled
-        } returns true
+            )
+        } returns enabledRule
 
         val registry = InitiativeDeviationStrategyRegistry(
             strategies = listOf(
@@ -407,39 +365,6 @@ internal class InitiativeDeviationStrategyRegistryTest {
     }
 }
 
-Если MockK не позволяет стабильно замокать цепочку:
-
-properties.getRequiredRule(code).enabled
-
-создай отдельные моки правил:
-
-val enabledRule =
-    mockk<InitiativeDeviationProperties.Rule>()
-
-val disabledRule =
-    mockk<InitiativeDeviationProperties.Rule>()
-
-every { enabledRule.enabled } returns true
-every { disabledRule.enabled } returns false
-
-every {
-    properties.getRequiredRule(
-        InitiativeDeviationCode.STAGE_DEADLINE_EXPIRED
-    )
-} returns enabledRule
-
-every {
-    properties.getRequiredRule(
-        InitiativeDeviationCode.STAGE_DEADLINES_NOT_FILLED
-    )
-} returns disabledRule
-
-every {
-    properties.getRequiredRule(
-        InitiativeDeviationCode.CURRENT_PERIOD_METRICS_NOT_FILLED
-    )
-} returns enabledRule
-Общие вспомогательные функции
 private fun createContext(
     today: LocalDate = LocalDate.of(2026, 7, 30),
     metricsDeadlineDay: Int = 15,
@@ -458,6 +383,4 @@ private fun createStatusSla(
         this.plannedDate = plannedDate
         this.completedDate = completedDate
     }
-
-    InitiativeDeviationStrategyTest.kt
 ```
