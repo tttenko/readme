@@ -1,88 +1,356 @@
 ```java
-<databaseChangeLog
-        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
-        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:schemaLocation="
-            http://www.liquibase.org/xml/ns/dbchangelog
-            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-3.5.xsd">
+data class InitiativeDeviationCountResponse(
 
-    <changeSet
-            id="add-index-agent-contact-user-id-agent-id"
-            author="KoptenkoMV">
+    @field:Schema(
+        description = "Количество инициатив с отклонениями",
+        example = "12",
+    )
+    val totalInitiativeWithDeviations: Long,
+)
 
-        <createIndex
-                tableName="agent_contact"
-                indexName="idx_agent_contact_user_id_agent_id">
+data class InitiativeDeviationCountQueryParams(
+    val userId: Long?,
 
-            <column name="user_id"/>
-            <column name="agent_id"/>
-        </createIndex>
+    val todayStart: LocalDateTime,
+    val tomorrowStart: LocalDateTime,
+    val inTwoDaysStart: LocalDateTime,
+    val inThreeDaysStart: LocalDateTime,
+    val inFourDaysStart: LocalDateTime,
 
-        <rollback>
-            <dropIndex
-                    tableName="agent_contact"
-                    indexName="idx_agent_contact_user_id_agent_id"/>
-        </rollback>
-    </changeSet>
+    val currentPeriod: LocalDate,
+    val gigaUsageProject: String,
 
-    <changeSet
-            id="add-index-agent-status-sla-deviations"
-            author="KoptenkoMV">
+    val stageDeadlineExpiredEnabled: Boolean,
+    val stageDeadlinesNotFilledEnabled: Boolean,
+    val gigaUsageNotFilledEnabled: Boolean,
+    val enablersNotFilledEnabled: Boolean,
+    val stageDeadlineTomorrowEnabled: Boolean,
+    val stageDeadlineInTwoDaysEnabled: Boolean,
+    val stageDeadlineInThreeDaysEnabled: Boolean,
+    val checkCurrentPeriodMetrics: Boolean,
+)
 
-        <createIndex
-                tableName="agent_status_sla"
-                indexName="idx_agent_status_sla_agent_completed_planned">
+interface InitiativeDeviationCountRepository :
+    Repository<AIAgentEntity, Long> {
 
-            <column name="ai_agent_id"/>
-            <column name="completed_date"/>
-            <column name="planned_date"/>
-        </createIndex>
+    @Query(
+        nativeQuery = true,
+        value = """
+            WITH candidates AS (
+                SELECT agent.id
+                FROM ai_agent agent
+                WHERE agent.disabled = false
+                  AND (
+                      CAST(:#{#params.userId} AS BIGINT) IS NULL
+                      OR agent.owner_id = :#{#params.userId}
+                      OR EXISTS (
+                          SELECT 1
+                          FROM agent_contact contact
+                          WHERE contact.agent_id = agent.id
+                            AND contact.user_id = :#{#params.userId}
+                      )
+                  )
+            ),
 
-        <rollback>
-            <dropIndex
-                    tableName="agent_status_sla"
-                    indexName="idx_agent_status_sla_agent_completed_planned"/>
-        </rollback>
-    </changeSet>
+            cheap_deviations AS (
+                SELECT candidate.id
+                FROM candidates candidate
+                WHERE
+                    (
+                        :#{#params.stageDeadlineExpiredEnabled} = true
+                        AND EXISTS (
+                            SELECT 1
+                            FROM agent_status_sla sla
+                            WHERE sla.ai_agent_id = candidate.id
+                              AND sla.completed_date IS NULL
+                              AND sla.planned_date IS NOT NULL
+                              AND sla.planned_date < :#{#params.todayStart}
+                        )
+                    )
 
-    <changeSet
-            id="add-index-jira-issue-agent-project-key"
-            author="KoptenkoMV">
+                    OR
 
-        <createIndex
-                tableName="jira_issue"
-                indexName="idx_jira_issue_agent_project_key">
+                    (
+                        :#{#params.stageDeadlinesNotFilledEnabled} = true
+                        AND EXISTS (
+                            SELECT 1
+                            FROM agent_status_sla sla
+                            WHERE sla.ai_agent_id = candidate.id
+                              AND sla.completed_date IS NULL
+                              AND sla.planned_date IS NULL
+                        )
+                    )
 
-            <column name="agent_id"/>
-            <column name="project"/>
-            <column name="jira_key"/>
-        </createIndex>
+                    OR
 
-        <rollback>
-            <dropIndex
-                    tableName="jira_issue"
-                    indexName="idx_jira_issue_agent_project_key"/>
-        </rollback>
-    </changeSet>
+                    (
+                        :#{#params.gigaUsageNotFilledEnabled} = true
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM jira_issue jira
+                            WHERE jira.agent_id = candidate.id
+                              AND LOWER(jira.project) =
+                                  LOWER(:#{#params.gigaUsageProject})
+                              AND NULLIF(BTRIM(jira.jira_key), '') IS NOT NULL
+                        )
+                    )
 
-    <changeSet
-            id="add-index-initiative-metric-type-agent-type"
-            author="KoptenkoMV">
+                    OR
 
-        <createIndex
-                tableName="initiative_metric_type"
-                indexName="idx_initiative_metric_type_agent_id_type">
+                    (
+                        :#{#params.enablersNotFilledEnabled} = true
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM agent_enabler agent_enabler
+                            WHERE agent_enabler.agent_id = candidate.id
+                        )
+                    )
 
-            <column name="ai_agent_id"/>
-            <column name="agent_type"/>
-        </createIndex>
+                    OR
 
-        <rollback>
-            <dropIndex
-                    tableName="initiative_metric_type"
-                    indexName="idx_initiative_metric_type_agent_id_type"/>
-        </rollback>
-    </changeSet>
+                    (
+                        :#{#params.stageDeadlineTomorrowEnabled} = true
+                        AND EXISTS (
+                            SELECT 1
+                            FROM agent_status_sla sla
+                            WHERE sla.ai_agent_id = candidate.id
+                              AND sla.completed_date IS NULL
+                              AND sla.planned_date >=
+                                  :#{#params.tomorrowStart}
+                              AND sla.planned_date <
+                                  :#{#params.inTwoDaysStart}
+                        )
+                    )
 
-</databaseChangeLog>
+                    OR
+
+                    (
+                        :#{#params.stageDeadlineInTwoDaysEnabled} = true
+                        AND EXISTS (
+                            SELECT 1
+                            FROM agent_status_sla sla
+                            WHERE sla.ai_agent_id = candidate.id
+                              AND sla.completed_date IS NULL
+                              AND sla.planned_date >=
+                                  :#{#params.inTwoDaysStart}
+                              AND sla.planned_date <
+                                  :#{#params.inThreeDaysStart}
+                        )
+                    )
+
+                    OR
+
+                    (
+                        :#{#params.stageDeadlineInThreeDaysEnabled} = true
+                        AND EXISTS (
+                            SELECT 1
+                            FROM agent_status_sla sla
+                            WHERE sla.ai_agent_id = candidate.id
+                              AND sla.completed_date IS NULL
+                              AND sla.planned_date >=
+                                  :#{#params.inThreeDaysStart}
+                              AND sla.planned_date <
+                                  :#{#params.inFourDaysStart}
+                        )
+                    )
+            ),
+
+            remaining_candidates AS (
+                SELECT candidate.id
+                FROM candidates candidate
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM cheap_deviations deviation
+                    WHERE deviation.id = candidate.id
+                )
+            ),
+
+            metric_deviations AS (
+                SELECT candidate.id
+                FROM remaining_candidates candidate
+                WHERE :#{#params.checkCurrentPeriodMetrics} = true
+                  AND EXISTS (
+                      SELECT 1
+                      FROM initiative_metric_type metric_type
+                      INNER JOIN metrics_directory metric
+                          ON metric.is_active IS TRUE
+                         AND (
+                             (
+                                 metric_type.agent_type = 'autonomous'
+                                 AND metric.autonomous_applicability IS TRUE
+                             )
+                             OR
+                             (
+                                 metric_type.agent_type = 'copilot'
+                                 AND metric.copilot_applicability IS TRUE
+                             )
+                             OR
+                             (
+                                 metric_type.agent_type = 'appeals'
+                                 AND metric.requires_appeals_work IS TRUE
+                             )
+                         )
+                      WHERE metric_type.ai_agent_id = candidate.id
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM initiative_metric_value metric_value
+                            WHERE metric_value.initiative_agent_type_id =
+                                  metric_type.id
+                              AND metric_value.metric_directory_id =
+                                  metric.id
+                              AND metric_value.period_month =
+                                  :#{#params.currentPeriod}
+                              AND metric_value.metric_value IS NOT NULL
+                        )
+                  )
+            )
+
+            SELECT COUNT(*)
+            FROM (
+                SELECT id
+                FROM cheap_deviations
+
+                UNION ALL
+
+                SELECT id
+                FROM metric_deviations
+            ) initiatives_with_deviations
+        """,
+    )
+    fun countInitiativesWithDeviations(
+        @Param("params")
+        params: InitiativeDeviationCountQueryParams,
+    ): Long
+}
+
+@Service
+class InitiativeDeviationCountService(
+    private val initiativeDeviationCountRepository:
+        InitiativeDeviationCountRepository,
+    private val dateTimeProvider: DateTimeProvider,
+    private val properties: InitiativeDeviationProperties,
+) {
+
+    @Transactional(readOnly = true)
+    fun getInitiativesWithDeviationsCount(
+        userId: Long?,
+    ): InitiativeDeviationCountResponse {
+        val today = dateTimeProvider.currentDate()
+
+        val params = InitiativeDeviationCountQueryParams(
+            userId = userId,
+
+            todayStart = today.atStartOfDay(),
+            tomorrowStart = today.plusDays(1).atStartOfDay(),
+            inTwoDaysStart = today.plusDays(2).atStartOfDay(),
+            inThreeDaysStart = today.plusDays(3).atStartOfDay(),
+            inFourDaysStart = today.plusDays(4).atStartOfDay(),
+
+            currentPeriod = today.withDayOfMonth(1),
+            gigaUsageProject = GIGAUSAGE_PROJECT,
+
+            stageDeadlineExpiredEnabled =
+                properties.getRequiredRule(
+                    InitiativeDeviationCode.STAGE_DEADLINE_EXPIRED,
+                ).enabled,
+
+            stageDeadlinesNotFilledEnabled =
+                properties.getRequiredRule(
+                    InitiativeDeviationCode.STAGE_DEADLINES_NOT_FILLED,
+                ).enabled,
+
+            gigaUsageNotFilledEnabled =
+                properties.getRequiredRule(
+                    InitiativeDeviationCode.GIGAUSAGE_NOT_FILLED,
+                ).enabled,
+
+            enablersNotFilledEnabled =
+                properties.getRequiredRule(
+                    InitiativeDeviationCode.ENABLERS_NOT_FILLED,
+                ).enabled,
+
+            stageDeadlineTomorrowEnabled =
+                properties.getRequiredRule(
+                    InitiativeDeviationCode.STAGE_DEADLINE_TOMORROW,
+                ).enabled,
+
+            stageDeadlineInTwoDaysEnabled =
+                properties.getRequiredRule(
+                    InitiativeDeviationCode.STAGE_DEADLINE_IN_2_DAYS,
+                ).enabled,
+
+            stageDeadlineInThreeDaysEnabled =
+                properties.getRequiredRule(
+                    InitiativeDeviationCode.STAGE_DEADLINE_IN_3_DAYS,
+                ).enabled,
+
+            checkCurrentPeriodMetrics =
+                properties.getRequiredRule(
+                    InitiativeDeviationCode
+                        .CURRENT_PERIOD_METRICS_NOT_FILLED,
+                ).enabled &&
+                    today.dayOfMonth >
+                    properties.currentPeriodMetricsDeadlineDay,
+        )
+
+        val count =
+            initiativeDeviationCountRepository
+                .countInitiativesWithDeviations(params)
+
+        return InitiativeDeviationCountResponse(
+            totalInitiativeWithDeviations = count,
+        )
+    }
+
+    private companion object {
+        const val GIGAUSAGE_PROJECT = "gigausage"
+    }
+}
+
+@GetMapping("/initiative/deviations/count")
+@PreAuthorize(
+    "hasAnyAuthority(" +
+        "'PROJECT_OFFICE', " +
+        "'CMS_ADMIN', " +
+        "'TRANSFORMATION_OFFICE'" +
+        ")"
+)
+@Operation(
+    summary = "Получение количества инициатив с отклонениями",
+    responses = [
+        ApiResponse(
+            responseCode = "200",
+            description = "Количество инициатив успешно рассчитано",
+            content = [
+                Content(
+                    mediaType = "application/json",
+                    schema = Schema(
+                        implementation =
+                            InitiativeDeviationCountResponse::class,
+                    ),
+                ),
+            ],
+        ),
+        ApiResponse(
+            responseCode = "403",
+            description = "Недостаточно прав",
+        ),
+    ],
+)
+fun getInitiativesWithDeviationsCount(
+    @Parameter(
+        description = "Идентификатор пользователя",
+        example = "23561",
+        required = false,
+    )
+    @RequestParam(
+        name = "userId",
+        required = false,
+    )
+    userId: Long?,
+): InitiativeDeviationCountResponse =
+    initiativeDeviationCountService
+        .getInitiativesWithDeviationsCount(
+            userId = userId,
+        )
   ```
