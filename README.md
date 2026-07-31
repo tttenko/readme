@@ -1,356 +1,129 @@
 ```java
-data class InitiativeDeviationCountResponse(
+Как найти подходящий userId
 
-    @field:Schema(
-        description = "Количество инициатив с отклонениями",
-        example = "12",
-    )
-    val totalInitiativeWithDeviations: Long,
-)
+Запусти в DBeaver:
 
-data class InitiativeDeviationCountQueryParams(
-    val userId: Long?,
+SELECT
+    user_id,
+    COUNT(DISTINCT agent_id) AS initiatives_count
+FROM (
+    SELECT
+        a.owner_id AS user_id,
+        a.id AS agent_id
+    FROM ai_agent a
+    WHERE a.disabled = false
+      AND a.owner_id IS NOT NULL
 
-    val todayStart: LocalDateTime,
-    val tomorrowStart: LocalDateTime,
-    val inTwoDaysStart: LocalDateTime,
-    val inThreeDaysStart: LocalDateTime,
-    val inFourDaysStart: LocalDateTime,
+    UNION ALL
 
-    val currentPeriod: LocalDate,
-    val gigaUsageProject: String,
+    SELECT
+        ac.user_id,
+        ac.agent_id
+    FROM agent_contact ac
+    JOIN ai_agent a ON a.id = ac.agent_id
+    WHERE a.disabled = false
+      AND ac.user_id IS NOT NULL
+) users_with_initiatives
+GROUP BY user_id
+ORDER BY initiatives_count DESC;
 
-    val stageDeadlineExpiredEnabled: Boolean,
-    val stageDeadlinesNotFilledEnabled: Boolean,
-    val gigaUsageNotFilledEnabled: Boolean,
-    val enablersNotFilledEnabled: Boolean,
-    val stageDeadlineTomorrowEnabled: Boolean,
-    val stageDeadlineInTwoDaysEnabled: Boolean,
-    val stageDeadlineInThreeDaysEnabled: Boolean,
-    val checkCurrentPeriodMetrics: Boolean,
-)
+Выбери пользователя, у которого, например, 2–10 инициатив, и передай его ID:
 
-interface InitiativeDeviationCountRepository :
-    Repository<AIAgentEntity, Long> {
+GET /api/v1/ai-agent/initiative/deviations/count?userId=12345
+Сначала проверь количество инициатив пользователя
+SELECT COUNT(DISTINCT a.id)
+FROM ai_agent a
+LEFT JOIN agent_contact ac ON ac.agent_id = a.id
+WHERE a.disabled = false
+  AND (
+      a.owner_id = 12345
+      OR ac.user_id = 12345
+  );
 
-    @Query(
-        nativeQuery = true,
-        value = """
-            WITH candidates AS (
-                SELECT agent.id
-                FROM ai_agent agent
-                WHERE agent.disabled = false
-                  AND (
-                      CAST(:#{#params.userId} AS BIGINT) IS NULL
-                      OR agent.owner_id = :#{#params.userId}
-                      OR EXISTS (
-                          SELECT 1
-                          FROM agent_contact contact
-                          WHERE contact.agent_id = agent.id
-                            AND contact.user_id = :#{#params.userId}
-                      )
-                  )
-            ),
+Результат ручки не может быть больше этого числа.
 
-            cheap_deviations AS (
-                SELECT candidate.id
-                FROM candidates candidate
-                WHERE
-                    (
-                        :#{#params.stageDeadlineExpiredEnabled} = true
-                        AND EXISTS (
-                            SELECT 1
-                            FROM agent_status_sla sla
-                            WHERE sla.ai_agent_id = candidate.id
-                              AND sla.completed_date IS NULL
-                              AND sla.planned_date IS NOT NULL
-                              AND sla.planned_date < :#{#params.todayStart}
-                        )
-                    )
+Как проверить результат 44
 
-                    OR
+Важно: 44 — это не количество всех найденных отклонений. Это количество уникальных инициатив, у каждой из которых найдено хотя бы одно отклонение.
 
-                    (
-                        :#{#params.stageDeadlinesNotFilledEnabled} = true
-                        AND EXISTS (
-                            SELECT 1
-                            FROM agent_status_sla sla
-                            WHERE sla.ai_agent_id = candidate.id
-                              AND sla.completed_date IS NULL
-                              AND sla.planned_date IS NULL
-                        )
-                    )
+Сначала проверь общее количество активных инициатив:
 
-                    OR
+SELECT COUNT(*)
+FROM ai_agent
+WHERE disabled = false;
 
-                    (
-                        :#{#params.gigaUsageNotFilledEnabled} = true
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM jira_issue jira
-                            WHERE jira.agent_id = candidate.id
-                              AND LOWER(jira.project) =
-                                  LOWER(:#{#params.gigaUsageProject})
-                              AND NULLIF(BTRIM(jira.jira_key), '') IS NOT NULL
-                        )
-                    )
+Если здесь тоже 44, скорее всего каждая инициатива попала хотя бы под одно массовое правило, например:
 
-                    OR
+не заполнен GigaUsage;
+не указаны энейблеры;
+не заполнены сроки этапов.
 
-                    (
-                        :#{#params.enablersNotFilledEnabled} = true
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM agent_enabler agent_enabler
-                            WHERE agent_enabler.agent_id = candidate.id
-                        )
-                    )
+Проверь самые вероятные правила отдельно.
 
-                    OR
+Нет энейблеров
+SELECT COUNT(*)
+FROM ai_agent a
+WHERE a.disabled = false
+  AND NOT EXISTS (
+      SELECT 1
+      FROM agent_enabler ae
+      WHERE ae.agent_id = a.id
+  );
+Нет GigaUsage
+SELECT COUNT(*)
+FROM ai_agent a
+WHERE a.disabled = false
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jira_issue j
+      WHERE j.agent_id = a.id
+        AND LOWER(j.project) = 'gigausage'
+        AND NULLIF(BTRIM(j.jira_key), '') IS NOT NULL
+  );
+Не заполнены сроки незавершённых этапов
+SELECT COUNT(DISTINCT a.id)
+FROM ai_agent a
+JOIN agent_status_sla sla ON sla.ai_agent_id = a.id
+WHERE a.disabled = false
+  AND sla.completed_date IS NULL
+  AND sla.planned_date IS NULL;
+Есть просроченный этап
+SELECT COUNT(DISTINCT a.id)
+FROM ai_agent a
+JOIN agent_status_sla sla ON sla.ai_agent_id = a.id
+WHERE a.disabled = false
+  AND sla.completed_date IS NULL
+  AND sla.planned_date < CURRENT_DATE;
 
-                    (
-                        :#{#params.stageDeadlineTomorrowEnabled} = true
-                        AND EXISTS (
-                            SELECT 1
-                            FROM agent_status_sla sla
-                            WHERE sla.ai_agent_id = candidate.id
-                              AND sla.completed_date IS NULL
-                              AND sla.planned_date >=
-                                  :#{#params.tomorrowStart}
-                              AND sla.planned_date <
-                                  :#{#params.inTwoDaysStart}
-                        )
-                    )
+Поля planned_date и completed_date действительно используются для SLA этапов.
 
-                    OR
+Самая точная проверка
 
-                    (
-                        :#{#params.stageDeadlineInTwoDaysEnabled} = true
-                        AND EXISTS (
-                            SELECT 1
-                            FROM agent_status_sla sla
-                            WHERE sla.ai_agent_id = candidate.id
-                              AND sla.completed_date IS NULL
-                              AND sla.planned_date >=
-                                  :#{#params.inTwoDaysStart}
-                              AND sla.planned_date <
-                                  :#{#params.inThreeDaysStart}
-                        )
-                    )
+Временно замени в native-запросе финальную часть:
 
-                    OR
+SELECT COUNT(*)
+FROM (
+    SELECT id FROM cheap_deviations
+    UNION ALL
+    SELECT id FROM metric_deviations
+) initiatives_with_deviations
 
-                    (
-                        :#{#params.stageDeadlineInThreeDaysEnabled} = true
-                        AND EXISTS (
-                            SELECT 1
-                            FROM agent_status_sla sla
-                            WHERE sla.ai_agent_id = candidate.id
-                              AND sla.completed_date IS NULL
-                              AND sla.planned_date >=
-                                  :#{#params.inThreeDaysStart}
-                              AND sla.planned_date <
-                                  :#{#params.inFourDaysStart}
-                        )
-                    )
-            ),
+на:
 
-            remaining_candidates AS (
-                SELECT candidate.id
-                FROM candidates candidate
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM cheap_deviations deviation
-                    WHERE deviation.id = candidate.id
-                )
-            ),
+SELECT id
+FROM cheap_deviations
 
-            metric_deviations AS (
-                SELECT candidate.id
-                FROM remaining_candidates candidate
-                WHERE :#{#params.checkCurrentPeriodMetrics} = true
-                  AND EXISTS (
-                      SELECT 1
-                      FROM initiative_metric_type metric_type
-                      INNER JOIN metrics_directory metric
-                          ON metric.is_active IS TRUE
-                         AND (
-                             (
-                                 metric_type.agent_type = 'autonomous'
-                                 AND metric.autonomous_applicability IS TRUE
-                             )
-                             OR
-                             (
-                                 metric_type.agent_type = 'copilot'
-                                 AND metric.copilot_applicability IS TRUE
-                             )
-                             OR
-                             (
-                                 metric_type.agent_type = 'appeals'
-                                 AND metric.requires_appeals_work IS TRUE
-                             )
-                         )
-                      WHERE metric_type.ai_agent_id = candidate.id
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM initiative_metric_value metric_value
-                            WHERE metric_value.initiative_agent_type_id =
-                                  metric_type.id
-                              AND metric_value.metric_directory_id =
-                                  metric.id
-                              AND metric_value.period_month =
-                                  :#{#params.currentPeriod}
-                              AND metric_value.metric_value IS NOT NULL
-                        )
-                  )
-            )
+UNION ALL
 
-            SELECT COUNT(*)
-            FROM (
-                SELECT id
-                FROM cheap_deviations
+SELECT id
+FROM metric_deviations
 
-                UNION ALL
+ORDER BY id;
 
-                SELECT id
-                FROM metric_deviations
-            ) initiatives_with_deviations
-        """,
-    )
-    fun countInitiativesWithDeviations(
-        @Param("params")
-        params: InitiativeDeviationCountQueryParams,
-    ): Long
-}
+И временно сделай метод репозитория возвращающим:
 
-@Service
-class InitiativeDeviationCountService(
-    private val initiativeDeviationCountRepository:
-        InitiativeDeviationCountRepository,
-    private val dateTimeProvider: DateTimeProvider,
-    private val properties: InitiativeDeviationProperties,
-) {
-
-    @Transactional(readOnly = true)
-    fun getInitiativesWithDeviationsCount(
-        userId: Long?,
-    ): InitiativeDeviationCountResponse {
-        val today = dateTimeProvider.currentDate()
-
-        val params = InitiativeDeviationCountQueryParams(
-            userId = userId,
-
-            todayStart = today.atStartOfDay(),
-            tomorrowStart = today.plusDays(1).atStartOfDay(),
-            inTwoDaysStart = today.plusDays(2).atStartOfDay(),
-            inThreeDaysStart = today.plusDays(3).atStartOfDay(),
-            inFourDaysStart = today.plusDays(4).atStartOfDay(),
-
-            currentPeriod = today.withDayOfMonth(1),
-            gigaUsageProject = GIGAUSAGE_PROJECT,
-
-            stageDeadlineExpiredEnabled =
-                properties.getRequiredRule(
-                    InitiativeDeviationCode.STAGE_DEADLINE_EXPIRED,
-                ).enabled,
-
-            stageDeadlinesNotFilledEnabled =
-                properties.getRequiredRule(
-                    InitiativeDeviationCode.STAGE_DEADLINES_NOT_FILLED,
-                ).enabled,
-
-            gigaUsageNotFilledEnabled =
-                properties.getRequiredRule(
-                    InitiativeDeviationCode.GIGAUSAGE_NOT_FILLED,
-                ).enabled,
-
-            enablersNotFilledEnabled =
-                properties.getRequiredRule(
-                    InitiativeDeviationCode.ENABLERS_NOT_FILLED,
-                ).enabled,
-
-            stageDeadlineTomorrowEnabled =
-                properties.getRequiredRule(
-                    InitiativeDeviationCode.STAGE_DEADLINE_TOMORROW,
-                ).enabled,
-
-            stageDeadlineInTwoDaysEnabled =
-                properties.getRequiredRule(
-                    InitiativeDeviationCode.STAGE_DEADLINE_IN_2_DAYS,
-                ).enabled,
-
-            stageDeadlineInThreeDaysEnabled =
-                properties.getRequiredRule(
-                    InitiativeDeviationCode.STAGE_DEADLINE_IN_3_DAYS,
-                ).enabled,
-
-            checkCurrentPeriodMetrics =
-                properties.getRequiredRule(
-                    InitiativeDeviationCode
-                        .CURRENT_PERIOD_METRICS_NOT_FILLED,
-                ).enabled &&
-                    today.dayOfMonth >
-                    properties.currentPeriodMetricsDeadlineDay,
-        )
-
-        val count =
-            initiativeDeviationCountRepository
-                .countInitiativesWithDeviations(params)
-
-        return InitiativeDeviationCountResponse(
-            totalInitiativeWithDeviations = count,
-        )
-    }
-
-    private companion object {
-        const val GIGAUSAGE_PROJECT = "gigausage"
-    }
-}
-
-@GetMapping("/initiative/deviations/count")
-@PreAuthorize(
-    "hasAnyAuthority(" +
-        "'PROJECT_OFFICE', " +
-        "'CMS_ADMIN', " +
-        "'TRANSFORMATION_OFFICE'" +
-        ")"
-)
-@Operation(
-    summary = "Получение количества инициатив с отклонениями",
-    responses = [
-        ApiResponse(
-            responseCode = "200",
-            description = "Количество инициатив успешно рассчитано",
-            content = [
-                Content(
-                    mediaType = "application/json",
-                    schema = Schema(
-                        implementation =
-                            InitiativeDeviationCountResponse::class,
-                    ),
-                ),
-            ],
-        ),
-        ApiResponse(
-            responseCode = "403",
-            description = "Недостаточно прав",
-        ),
-    ],
-)
-fun getInitiativesWithDeviationsCount(
-    @Parameter(
-        description = "Идентификатор пользователя",
-        example = "23561",
-        required = false,
-    )
-    @RequestParam(
-        name = "userId",
-        required = false,
-    )
-    userId: Long?,
-): InitiativeDeviationCountResponse =
-    initiativeDeviationCountService
-        .getInitiativesWithDeviationsCount(
-            userId = userId,
-        )
+fun findInitiativeIdsWithDeviations(
+    @Param("params")
+    params: InitiativeDeviationCountQueryParams,
+): List<Long>
   ```
