@@ -1,70 +1,41 @@
 ```java
+Создание тестовых данных для агента 581
+
+Сначала убедись, что агент существует и посмотри его текущий статус:
+
 SELECT
     a.id,
     s.id AS status_id,
     s.code,
     s.ordering
 FROM prm_ai.ai_agent a
-JOIN prm_ai.status s ON s.id = a.agent_status_id
+JOIN prm_ai.status s
+    ON s.id = a.agent_status_id
 WHERE a.id = 581;
 
-BEGIN;
+Затем удали старые тестовые SLA-записи:
 
--- Предыдущий этап:
--- intentionally planned_date = NULL,
--- чтобы проверить, что прошедший этап не участвует в отклонениях.
+DELETE FROM prm_ai.agent_status_sla
+WHERE ai_agent_id = 581;
+
+Создай строки для всех этапов:
+
 WITH current_stage AS (
-    SELECT current_status.ordering
+    SELECT current_status.ordering AS current_ordering
     FROM prm_ai.ai_agent agent
     JOIN prm_ai.status current_status
         ON current_status.id = agent.agent_status_id
     WHERE agent.id = 581
 ),
-previous_stage AS (
-    SELECT status.id
-    FROM prm_ai.status status
-    CROSS JOIN current_stage
-    WHERE status.disabled = false
-      AND status.ordering < current_stage.ordering
-    ORDER BY status.ordering DESC
-    LIMIT 1
-)
-INSERT INTO prm_ai.agent_status_sla (
-    ai_agent_id,
-    agent_status_id,
-    planned_date,
-    completed_date
-)
-SELECT
-    581,
-    previous_stage.id,
-    NULL,
-    NULL
-FROM previous_stage
-ON CONFLICT (ai_agent_id, agent_status_id)
-DO UPDATE SET
-    planned_date = NULL,
-    completed_date = NULL;
-
-
--- Текущий и все будущие этапы:
--- ставим даты дальше чем через 3 дня,
--- чтобы не получить другие deadline-отклонения.
-WITH current_stage AS (
-    SELECT current_status.ordering
-    FROM prm_ai.ai_agent agent
-    JOIN prm_ai.status current_status
-        ON current_status.id = agent.agent_status_id
-    WHERE agent.id = 581
-),
-current_and_future_stages AS (
+stages AS (
     SELECT
-        status.id,
+        status.id AS status_id,
+        status.ordering,
+        current_stage.current_ordering,
         ROW_NUMBER() OVER (ORDER BY status.ordering) AS stage_number
     FROM prm_ai.status status
     CROSS JOIN current_stage
     WHERE status.disabled = false
-      AND status.ordering >= current_stage.ordering
 )
 INSERT INTO prm_ai.agent_status_sla (
     ai_agent_id,
@@ -74,30 +45,47 @@ INSERT INTO prm_ai.agent_status_sla (
 )
 SELECT
     581,
-    stage.id,
-    (
-        CURRENT_DATE
-        + (10 + stage.stage_number::integer * 10)
-    )::timestamp,
+    stage.status_id,
+    CASE
+        -- Для уже пройденных этапов специально не указываем срок
+        WHEN stage.ordering < stage.current_ordering
+            THEN NULL
+
+        -- Для текущего и будущих этапов указываем сроки
+        ELSE (
+            CURRENT_DATE
+            + (10 + stage.stage_number::integer * 10)
+        )::timestamp
+    END,
     NULL
-FROM current_and_future_stages stage
-ON CONFLICT (ai_agent_id, agent_status_id)
-DO UPDATE SET
-    planned_date = EXCLUDED.planned_date,
-    completed_date = NULL;
+FROM stages stage;
+Что получится
 
-COMMIT;
+Например, если агент находится на третьем этапе:
 
+этап 1 — planned_date = null
+этап 2 — planned_date = null
+этап 3 — planned_date заполнена
+этап 4 — planned_date заполнена
+этап 5 — planned_date заполнена
+этап 6 — planned_date заполнена
+
+То есть прошедшие этапы специально останутся без сроков, а у текущего и будущих сроки будут заполнены.
+
+Проверка данных
 SELECT
     a.id,
-    current_status.id AS current_status_id,
     current_status.code AS current_status,
     current_status.ordering AS current_ordering,
-    stage.id AS stage_id,
-    stage.code AS stage_code,
+    stage.code AS stage,
     stage.ordering AS stage_ordering,
     sla.planned_date,
-    sla.completed_date
+    sla.completed_date,
+    CASE
+        WHEN stage.ordering < current_status.ordering THEN 'PAST'
+        WHEN stage.ordering = current_status.ordering THEN 'CURRENT'
+        ELSE 'FUTURE'
+    END AS stage_type
 FROM prm_ai.ai_agent a
 JOIN prm_ai.status current_status
     ON current_status.id = a.agent_status_id
