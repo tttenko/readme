@@ -1,14 +1,7 @@
 ```java
-@ParameterizedTest
-@MethodSource("strategies")
-fun `should return initiative with unfinished current or future stage on expected date`(
-    strategy: InitiativeDeviationStrategy,
-    daysBeforeDeadline: Long,
-    expectedCode: InitiativeDeviationCode,
-    expectedOrder: Int,
-) {
+@Test
+fun `should return only initiative with expired unfinished current or future stage`() {
     val today = LocalDate.of(2026, 7, 30)
-    val expectedDate = today.plusDays(daysBeforeDeadline)
     val session = mockk<InitiativeDeviationCalculationSession>()
 
     every { session.statusOrderingByInitiativeId } returns mapOf(
@@ -26,31 +19,38 @@ fun `should return initiative with unfinished current or future stage on expecte
     )
 
     every { session.statusSlaByInitiativeId } returns mapOf(
+        // Просроченный незавершённый текущий этап — должен попасть
         1L to listOf(
             createStatusSla(
                 statusId = 20L,
-                plannedDate = expectedDate.atStartOfDay(),
+                plannedDate = today.minusDays(1).atStartOfDay(),
                 completedDate = null,
             )
         ),
+
+        // Просроченный, но завершённый этап — не должен попасть
         2L to listOf(
             createStatusSla(
                 statusId = 20L,
-                plannedDate = expectedDate.atStartOfDay(),
+                plannedDate = today.minusDays(1).atStartOfDay(),
                 completedDate = today.atStartOfDay(),
             )
         ),
+
+        // Дедлайн сегодня — ещё не просрочен
         3L to listOf(
             createStatusSla(
-                statusId = 30L,
-                plannedDate = expectedDate.plusDays(1).atStartOfDay(),
+                statusId = 20L,
+                plannedDate = today.atStartOfDay(),
                 completedDate = null,
             )
         ),
+
+        // Просроченный прошедший этап — не должен учитываться
         5L to listOf(
             createStatusSla(
                 statusId = 10L,
-                plannedDate = expectedDate.atStartOfDay(),
+                plannedDate = today.minusDays(1).atStartOfDay(),
                 completedDate = null,
             )
         ),
@@ -63,7 +63,8 @@ fun `should return initiative with unfinished current or future stage on expecte
     )
 
     assertThat(result).containsExactly(1L)
-    assertThat(strategy.code).isEqualTo(expectedCode)
-    assertThat(strategy.evaluationOrder).isEqualTo(expectedOrder)
+    assertThat(strategy.code)
+        .isEqualTo(InitiativeDeviationCode.STAGE_DEADLINE_EXPIRED)
+    assertThat(strategy.evaluationOrder).isEqualTo(10)
 }
   ```
