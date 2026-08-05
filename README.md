@@ -1,33 +1,17 @@
 ```java
-SELECT
-    id,
-    code,
-    ordering,
-    disabled
-FROM prm_ai.status
-WHERE code = 'release';
-
-Временно отключи release
-UPDATE prm_ai.status
-SET disabled = TRUE
-WHERE code = 'release'
-RETURNING
-    id,
-    code,
-    ordering,
-    disabled;
-
-Если автокоммит выключен:
-
-COMMIT;
-
-Проверь:
-
-SELECT
-    id,
-    code,
-    ordering,
-    disabled
-FROM prm_ai.status
-WHERE code = 'release';
+select
+    a.id,
+    a.agent_id,
+    a.agent_name,
+    a.block_id as agent_block_id,
+    a.division_id,
+    d.short_name as division_name,
+    d.block_id as division_block_id,
+    b.short_name as block_name
+from prm_ai.ai_agent a
+left join prm_ai.division d
+    on d.id = a.division_id
+left join prm_ai.block b
+    on b.id = d.block_id
+where a.id in (1473, 1474, 1475, 1476);
   ```
