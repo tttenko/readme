@@ -1,10 +1,25 @@
 ```java
+Временно отключи release
+UPDATE prm_ai.status
+SET disabled = TRUE
+WHERE code = 'release'
+RETURNING
+    id,
+    code,
+    ordering,
+    disabled;
+
+Если автокоммит выключен:
+
+COMMIT;
+
+Проверь:
+
 SELECT
     id,
     code,
-    name,
     ordering,
     disabled
 FROM prm_ai.status
-ORDER BY ordering;
+WHERE code = 'release';
   ```
