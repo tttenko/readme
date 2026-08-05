@@ -1,4 +1,12 @@
 ```java
+SELECT
+    id,
+    code,
+    ordering,
+    disabled
+FROM prm_ai.status
+WHERE code = 'release';
+
 Временно отключи release
 UPDATE prm_ai.status
 SET disabled = TRUE
