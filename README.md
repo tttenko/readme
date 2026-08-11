@@ -1,123 +1,5 @@
 ```java
 
-@Query(
-        """
-        select
-            a.id as id,
-            a.agentId as agentId
-        from AIAgentEntity a
-        where a.agentId is not null
-          and a.agentId not like '%PULT%'
-        """
-    )
-    fun findAllNonPultAgentRefs(): List<AgentImportRefProjection>
-
-    @Modifying
-    @Query(
-        """
-        update AIAgentEntity a
-        set a.disabled = true
-        where a.id in :ids
-        """
-    )
-    fun disableByIds(@Param("ids") ids: Collection<Long>): Int
-}
-
-interface AgentImportRefProjection {
-    val id: Long
-    val agentId: String
-}
-
-interface AgentContactRepository : JpaRepository<AgentContactEntity, Long> {
-
-    @Transactional
-    @Modifying
-    @Query(
-        value = """
-            delete from agent_contact ac
-            using ai_agent a
-            where ac.agent_id = a.id
-              and a.agent_id not like '%PULT%'
-              and a.import_status is distinct from 'blocked'
-        """,
-        nativeQuery = true
-    )
-    fun deleteAllForImportedNonBlockedAgents(): Int
-}
-
-interface ContactRepository : JpaRepository<ContactEntity, Long> {
-
-    fun findFirstByEmail(email: String): ContactEntity?
-
-    fun findAllByEmailIn(emails: Collection<String>): List<ContactEntity>
-}
-
-@Modifying
-    @Query(
-        value = """
-            with process_stats as (
-                select
-                    ap.process_id,
-                    count(*) as total_count,
-                    count(*) filter (where s.code = 'targetSolution') as target_count
-                from agent_process ap
-                join ai_agent a on a.id = ap.agent_id
-                left join status s on s.id = a.agent_status_id
-                group by ap.process_id
-            ),
-            highest_non_target as (
-                select distinct on (ap.process_id)
-                    ap.process_id,
-                    s.id as status_id
-                from agent_process ap
-                join ai_agent a on a.id = ap.agent_id
-                left join status s on s.id = a.agent_status_id
-                where s.code is distinct from 'targetSolution'
-                order by
-                    ap.process_id,
-                    s.ordering desc nulls last,
-                    s.id desc nulls last
-            ),
-            resolved as (
-                select
-                    ps.process_id,
-                    case
-                        when ps.total_count = ps.target_count then (
-                            select id
-                            from status
-                            where code = 'targetSolution'
-                            order by id
-                            limit 1
-                        )
-                        else h.status_id
-                    end as status_id
-                from process_stats ps
-                left join highest_non_target h on h.process_id = ps.process_id
-            )
-            update process p
-            set status_id = r.status_id
-            from resolved r
-            where p.id = r.process_id
-        """,
-        nativeQuery = true
-    )
-    fun refreshStatusesFromAgents(): Int
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @Suppress("UNUSED_EXPRESSION")
 @Service
 class AgentSheetService(
@@ -145,9 +27,10 @@ class AgentSheetService(
     private val log by logger()
     private val emailRegex = Regex("^[a-zA-Z0-9._%+-]+@(sberbank\\.ru|sber\\.ru)$")
 
+
     private companion object {
         const val AGENT_BATCH_SIZE = 100
-        const val DB_OPERATION_BATCH_SIZE = 500
+        const val BULK_BATCH_SIZE = 500
     }
 
     fun processAgentSheet(
@@ -161,22 +44,34 @@ class AgentSheetService(
             try {
                 log.logBefore(operationDetails)
 
-                // Удаление контактов теперь является частью общей транзакции импорта.
-                // Если импорт упадет на любой строке, удаление тоже откатится.
+                /*
+                 * Удаление старых связей контактов выполняется внутри той же транзакции,
+                 * что и импорт. Если импорт упадет, удаление тоже откатится.
+                 */
                 deleteNotPULTAgents()
-                entityManager.flush()
+
+                /*
+                 * Справочники читаются ОДИН раз на весь файл.
+                 * В snapshot сохраняются только необходимые scalar-поля и идентификаторы.
+                 * После clear() они не становятся detached JPA entity.
+                 *
+                 * ResourceEntity оставлен отдельным read-only snapshot, потому что ниже
+                 * используются только его обычные поля source/type/name и сама сущность
+                 * никогда не присваивается в relation.
+                 */
+                val dictionaries = loadDictionaries()
                 entityManager.clear()
 
+                val sheetStructure = getSheetStructure(agentSheet)
                 val agentsInFile = mutableSetOf<String>()
                 val savedAgentIds = mutableListOf<Long>()
                 val blockedAgents = mutableListOf<BlockedAgent>()
-                val sheetStructure = getSheetStructure(agentSheet)
-
-                val rowIterator = agentSheet.iterator()
-                val batchRows = ArrayList<Row>(AGENT_BATCH_SIZE)
-                var currentRowIndex = 0
 
                 val duration = measureTimeMillis {
+                    val rowIterator = agentSheet.iterator()
+                    val batch = ArrayList<Row>(AGENT_BATCH_SIZE)
+                    var currentRowIndex = 0
+
                     while (rowIterator.hasNext()) {
                         val row = rowIterator.next()
                         currentRowIndex++
@@ -185,56 +80,89 @@ class AgentSheetService(
                             continue
                         }
 
-                        batchRows.add(row)
+                        batch.add(row)
 
-                        if (batchRows.size >= AGENT_BATCH_SIZE) {
+                        if (batch.size == AGENT_BATCH_SIZE) {
                             savedAgentIds += processBatch(
-                                rows = batchRows,
+                                rows = batch,
                                 sheetStructure = sheetStructure,
+                                dictionaries = dictionaries,
                                 context = context,
                                 agentsInFile = agentsInFile,
                                 blockedAgents = blockedAgents,
                                 userId = userId
                             )
-                            flushAndClear()
-                            batchRows.clear()
+
+                            /*
+                             * flush отправляет SQL в PostgreSQL, но НЕ делает commit.
+                             * Поэтому rollback всей загрузки по-прежнему возможен.
+                             *
+                             * clear освобождает first-level cache Hibernate и snapshots
+                             * обработанных сущностей текущего batch.
+                             */
+                            entityManager.flush()
+                            entityManager.clear()
+                            batch.clear()
                         }
                     }
 
-                    if (batchRows.isNotEmpty()) {
+                    if (batch.isNotEmpty()) {
                         savedAgentIds += processBatch(
-                            rows = batchRows,
+                            rows = batch,
                             sheetStructure = sheetStructure,
+                            dictionaries = dictionaries,
                             context = context,
                             agentsInFile = agentsInFile,
                             blockedAgents = blockedAgents,
                             userId = userId
                         )
-                        flushAndClear()
-                        batchRows.clear()
+                        entityManager.flush()
+                        entityManager.clear()
+                        batch.clear()
                     }
 
-                    if (agentsInFile.isEmpty()) {
-                        throw AiFileUploadException(
-                            errorCode = AI_UPLOAD_EMPTY_FILE,
-                            message = MessageFormat.format(messageProvider[AI_UPLOAD_EMPTY_FILE]),
-                            fileId = context.fileUploadId
-                        )
+                    val qualityGateDuration = measureTimeMillis {
+                        savedAgentIds.chunked(BULK_BATCH_SIZE).forEach { ids ->
+                            aiAgentQualityGateService.createOrUpdateByAgent(ids)
+                            aiAgentQualityGateService.removeIrrelevant(ids)
+                        }
                     }
-
-                    refreshQualityGates(savedAgentIds)
-
-                    disableDeletedAgents(agentsInFile)
-                    updateProcessStatus()
-
-                    val fileUploadEntity = fileUploadRepository.getReferenceById(context.fileUploadId)
-                    fileUploadEntity.blockedAgents.clear()
-                    fileUploadEntity.blockedAgents.addAll(blockedAgents)
-                    fileUploadEntity.status = SUCCESS
-                    fileUploadRepository.save(fileUploadEntity)
+                    log.debug("Operation QualityGateRefresh took $qualityGateDuration ms")
                 }
 
                 log.debug("Operation update entity took $duration ms")
+
+                if (agentsInFile.isEmpty()) {
+                    throw AiFileUploadException(
+                        errorCode = AI_UPLOAD_EMPTY_FILE,
+                        message = MessageFormat.format(messageProvider[AI_UPLOAD_EMPTY_FILE]),
+                        fileId = context.fileUploadId
+                    )
+                }
+
+                disableDeletedAgents(agentsInFile)
+
+                /*
+                 * Не загружаем process.agents целиком.
+                 * Статусы процессов пересчитываются bulk-запросом в PostgreSQL.
+                 */
+                updateProcessStatus()
+
+                /*
+                 * После последнего clear() заново получаем только одну FileUploadEntity.
+                 * Это гарантирует, что она managed и изменения blockedAgents/status
+                 * попадут в текущую транзакцию.
+                 */
+                val fileUploadEntity = fileUploadRepository.findById(context.fileUploadId)
+                    .orElseThrow {
+                        IllegalStateException("FileUploadEntity not found: ${context.fileUploadId}")
+                    }
+
+                fileUploadEntity.blockedAgents = blockedAgents
+                fileUploadEntity.status = SUCCESS
+                fileUploadRepository.save(fileUploadEntity)
+
+                entityManager.flush()
                 log.logSuccess(operationDetails)
             } catch (exception: Exception) {
                 status.setRollbackOnly()
@@ -243,16 +171,194 @@ class AgentSheetService(
         }
     }
 
+
+    private fun selectActualAgent(agents: List<AIAgentEntity>): AIAgentEntity {
+        return agents.sortedWith(
+            compareBy<AIAgentEntity> { it.disabled == true }
+                .thenByDescending { it.updated ?: it.created ?: LocalDateTime.MIN }
+                .thenByDescending { it.id ?: 0L }
+        ).first()
+    }
+
+
+
+    private data class AgentImportDictionaries(
+        val statusesByName: Map<String, StatusRef>,
+        val statusesByCode: Map<String, StatusRef>,
+        val statusesById: Map<Long, StatusRef>,
+        val metricsByFileName: Map<String, MetricRef>,
+        val resourcesByName: Map<String, ResourceEntity>,
+        val divisionsByCode: Map<String, DivisionRef>,
+        val blocksByShortName: Map<String, BlockRef>,
+        val processesByShortName: Map<String, ProcessRef>,
+        val programsByFileName: Map<String, ProgramRef>,
+        val initiativeTypesByCode: Map<String, InitiativeTypeRef>,
+        val platformsByName: Map<String, PlatformRef>
+    )
+
+    private data class StatusRef(
+        val id: Long,
+        val code: String?,
+        val name: String?,
+        val ordering: Long?
+    )
+
+    private data class MetricRef(
+        val id: Any,
+        val fileName: String?
+    )
+
+    private data class DivisionRef(
+        val id: Any,
+        val code: String?,
+        val blockId: Any?
+    )
+
+    private data class BlockRef(
+        val id: Any,
+        val shortName: String?
+    )
+
+    private data class ProcessRef(
+        val id: Any,
+        val shortName: String?
+    )
+
+    private data class ProgramRef(
+        val id: Any,
+        val fileName: String?
+    )
+
+    private data class InitiativeTypeRef(
+        val id: Any,
+        val code: String?
+    )
+
+    private data class PlatformRef(
+        val id: Long,
+        val name: String?
+    )
+
+    private fun loadDictionaries(): AgentImportDictionaries {
+        val statuses = statusRepository.findAll().map { status ->
+            StatusRef(
+                id = entityIdentifier(status) as Long,
+                code = status.code,
+                name = status.name,
+                ordering = status.ordering
+            )
+        }
+
+        val metrics = metricRepository.findAll().map { metric ->
+            MetricRef(
+                id = entityIdentifier(metric),
+                fileName = metric.fileName
+            )
+        }
+
+        val divisions = divisionRepository.findAll().map { division ->
+            DivisionRef(
+                id = entityIdentifier(division),
+                code = division.code,
+                blockId = division.block?.let(::entityIdentifier)
+            )
+        }
+
+        val blocks = blockRepository.findAll().map { block ->
+            BlockRef(
+                id = entityIdentifier(block),
+                shortName = block.shortName
+            )
+        }
+
+        val processes = processRepository.findAll().map { process ->
+            ProcessRef(
+                id = entityIdentifier(process),
+                shortName = process.shortName
+            )
+        }
+
+        val programs = programRepository.findAll().map { program ->
+            ProgramRef(
+                id = entityIdentifier(program),
+                fileName = program.fileName
+            )
+        }
+
+        val initiativeTypes = initiativeTypeRepository.findAll().map { initiativeType ->
+            InitiativeTypeRef(
+                id = entityIdentifier(initiativeType),
+                code = initiativeType.code
+            )
+        }
+
+        val platforms = platformRepository.findAll().map { platform ->
+            PlatformRef(
+                id = entityIdentifier(platform) as Long,
+                name = platform.name
+            )
+        }
+
+        /*
+         * ResourceEntity здесь не присваивается в JPA relation.
+         * После clear() мы только читаем basic-поля name/source/type,
+         * поэтому держать этот небольшой read-only список безопасно.
+         */
+        val resourcesByName = resourceRepository.findAll()
+            .filter { !it.name.isNullOrBlank() }
+            .associateFirstBy { it.name!! }
+
+        return AgentImportDictionaries(
+            statusesByName = statuses
+                .filter { !it.name.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.name!!) },
+            statusesByCode = statuses
+                .filter { !it.code.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.code!!) },
+            statusesById = statuses.associateFirstBy { it.id },
+            metricsByFileName = metrics
+                .filter { !it.fileName.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.fileName!!) },
+            resourcesByName = resourcesByName,
+            divisionsByCode = divisions
+                .filter { !it.code.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.code!!) },
+            blocksByShortName = blocks
+                .filter { !it.shortName.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.shortName!!) },
+            processesByShortName = processes
+                .filter { !it.shortName.isNullOrBlank() }
+                .associateFirstBy { it.shortName!! },
+            programsByFileName = programs
+                .filter { !it.fileName.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.fileName!!) },
+            initiativeTypesByCode = initiativeTypes
+                .filter { !it.code.isNullOrBlank() }
+                .associateFirstBy { it.code!! },
+            platformsByName = platforms
+                .filter { !it.name.isNullOrBlank() }
+                .groupBy { it.name!! }
+                .mapValues { (_, items) -> items.maxByOrNull { it.id }!! }
+        )
+    }
+
     private fun processBatch(
         rows: List<Row>,
         sheetStructure: SheetStructure,
+        dictionaries: AgentImportDictionaries,
         context: DictAndProcessContext,
         agentsInFile: MutableSet<String>,
         blockedAgents: MutableList<BlockedAgent>,
         userId: Long
     ): List<Long> {
-        val batchAgentIds = extractAgentIds(rows, sheetStructure.headers)
-        val existingAgents: List<AIAgentEntity> = if (batchAgentIds.isEmpty()) {
+        val batchAgentIds = rows.mapNotNull { row ->
+            sheetStructure.headers[AGENT_ID]
+                ?.takeIf { it >= 0 }
+                ?.let { index -> row.getCell(index)?.let(::getValueOrNull) }
+                ?.takeIf { it.isNotBlank() }
+        }.toSet()
+
+        val existingAgents = if (batchAgentIds.isEmpty()) {
             emptyList()
         } else {
             aIAgentRepository.findAllByAgentIdIn(batchAgentIds)
@@ -274,160 +380,114 @@ class AgentSheetService(
 
         if (duplicatedAgentsToDisable.isNotEmpty()) {
             val now = LocalDateTime.now()
-            duplicatedAgentsToDisable.forEach {
-                it.disabled = true
-                it.updated = now
+            duplicatedAgentsToDisable.forEach { duplicate ->
+                duplicate.disabled = true
+                duplicate.updated = now
             }
-            aIAgentRepository.saveAll(duplicatedAgentsToDisable)
         }
 
         val actualAgentIds = actualAgentsByAgentId.values.mapNotNull { it.id }
+
         val slasByAgentId: MutableMap<Long, MutableList<AgentStatusSlaEntity>> =
             if (actualAgentIds.isEmpty()) {
                 mutableMapOf()
             } else {
-            agentStatusSlaRepository.findAllByAiAgentIdIn(actualAgentIds)
-                .filter { it.aiAgent?.id != null }
-                .groupBy { it.aiAgent!!.id!! }
-                .mapValues { (_, value) -> value.toMutableList() }
-                .toMutableMap()
-        }
-
-        /*
-         * EntityManager очищается после каждого batch, поэтому JPA-справочники
-         * намеренно перечитываются для текущей пачки. Это не дает хранить
-         * detached entity между batch и сохраняет корректную работу Hibernate.
-         */
-        val availableStatuses = statusRepository.findAll().toMutableList()
-        val availableMetrics = metricRepository.findAll().toMutableList()
-        val resourceEntities = resourceRepository.findAll()
-        val availableDivisions = divisionRepository.findAll().toMutableList()
-        val actualBlocks = blockRepository.findAll().toMutableList()
-        val availableProcesses = processRepository.findAll().toMutableList()
-        val availablePrograms = programRepository.findAll().toMutableList()
-        val availableInitiativeTypes = initiativeTypeRepository.findAll().toMutableList()
-
-        val contactEmails = extractContactEmails(rows, sheetStructure.headers)
-        val availableContacts: MutableList<ContactEntity> = if (contactEmails.isEmpty()) {
-            mutableListOf()
-        } else {
-            contactRepository.findAllByEmailIn(contactEmails).toMutableList()
-        }
-
-        val platformsByName: Map<String, PlatformEntity?> = platformRepository.findAll()
-            .filter { !it.name.isNullOrBlank() }
-            .groupBy { it.name!! }
-            .mapValues { (_, items) -> items.maxByOrNull { it.id } }
-
-        return rows.mapNotNull { row ->
-            var savedId: Long? = null
-            val oneEntityDuration = measureTimeMillis {
-                savedId = processSingleRow(
-                row = row,
-                headers = sheetStructure.headers,
-                headerRow = sheetStructure.headerRow,
-                agentsInFile = agentsInFile,
-                availableStatuses = availableStatuses,
-                availableMetrics = availableMetrics,
-                agentsByAgentId = actualAgentsByAgentId,
-                slasByAgentId = slasByAgentId,
-                availableInitiativeTypes = availableInitiativeTypes,
-                availableContacts = availableContacts,
-                resourceEntities = resourceEntities,
-                availableDivisions = availableDivisions,
-                actualBlocks = actualBlocks,
-                availableProcesses = availableProcesses,
-                availablePrograms = availablePrograms,
-                context = context,
-                fileUploadId = context.fileUploadId,
-                blockedAgents = blockedAgents,
-                platformsStartIndex = sheetStructure.platformsStartIndex,
-                platformsEndIndex = sheetStructure.platformsEndIndex,
-                metricsStartIndex = sheetStructure.metricsStartIndex,
-                metricsEndIndex = sheetStructure.metricsEndIndex,
-                resourcesStartIndex = sheetStructure.resourcesStartIndex,
-                platformsByName = platformsByName,
-                userId = userId
-                )
+                agentStatusSlaRepository.findAllByAiAgentIdIn(actualAgentIds)
+                    .filter { it.aiAgent?.id != null }
+                    .groupBy { it.aiAgent!!.id!! }
+                    .mapValues { (_, slas) -> slas.toMutableList() }
+                    .toMutableMap()
             }
 
-            log.debug("Operation update one entity took $oneEntityDuration ms")
-            savedId
-        }
-    }
-
-    private fun extractAgentIds(
-        rows: List<Row>,
-        headers: Map<String, Int>
-    ): Set<String> {
-        val agentIdColumnIndex = headers[AGENT_ID] ?: return emptySet()
-
-        return rows.mapNotNull { row ->
-            row.getCell(agentIdColumnIndex)?.let(::getValueOrNull)
-        }.filter { it.isNotBlank() }
-            .toSet()
-    }
-
-    private fun extractContactEmails(
-        rows: List<Row>,
-        headers: Map<String, Int>
-    ): Set<String> {
-        val contactColumns = listOfNotNull(
-            headers[CUSTOMER_CONTACT],
-            headers[DEVELOPER_CONTACT]
+        val contactsByEmail = loadContactsForBatch(
+            rows = rows,
+            headers = sheetStructure.headers
         )
 
-        if (contactColumns.isEmpty()) return emptySet()
+        val savedIds = ArrayList<Long>(rows.size)
 
-        return rows.asSequence()
+        rows.forEach { row ->
+            val oneEntityDuration = measureTimeMillis {
+                processSingleRow(
+                    row = row,
+                    headers = sheetStructure.headers,
+                    headerRow = sheetStructure.headerRow,
+                    agentsInFile = agentsInFile,
+                    dictionaries = dictionaries,
+                    agentsByAgentId = actualAgentsByAgentId,
+                    slasByAgentId = slasByAgentId,
+                    contactsByEmail = contactsByEmail,
+                    context = context,
+                    fileId = context.fileUploadId,
+                    blockedAgents = blockedAgents,
+                    platformsStartIndex = sheetStructure.platformsStartIndex,
+                    platformsEndIndex = sheetStructure.platformsEndIndex,
+                    metricsStartIndex = sheetStructure.metricsStartIndex,
+                    metricsEndIndex = sheetStructure.metricsEndIndex,
+                    resourcesStartIndex = sheetStructure.resourcesStartIndex,
+                    userId = userId
+                )?.let(savedIds::add)
+            }
+            log.debug("Operation update one entity took $oneEntityDuration ms")
+        }
+
+        return savedIds
+    }
+
+    private fun loadContactsForBatch(
+        rows: List<Row>,
+        headers: Map<String, Int>
+    ): MutableMap<String, ContactEntity> {
+        val emails = rows.asSequence()
             .flatMap { row ->
-                contactColumns.asSequence().mapNotNull { columnIndex ->
-                    row.getCell(columnIndex)
-                        ?.let(::getValueOrNull)
-                        ?.let(::extractContactEmail)
-                }
+                sequenceOf(CUSTOMER_CONTACT, DEVELOPER_CONTACT)
+                    .mapNotNull { header ->
+                        headers[header]
+                            ?.let { row.getCell(it) }
+                            ?.let(::getValueOrNull)
+                            ?.let(::extractContactEmail)
+                    }
             }
             .toSet()
+
+        if (emails.isEmpty()) {
+            return mutableMapOf()
+        }
+
+        return contactRepository.findAllByEmailIn(emails)
+            .filter { !it.email.isNullOrBlank() }
+            .associateByTo(mutableMapOf()) { it.email!! }
     }
 
     private fun extractContactEmail(contact: String): String? {
         if (contact == "0") return null
 
-        val email = contact.split(',', ';')
-            .getOrNull(1)
-            ?.takeIf { it.contains("@") }
-            ?.removeSurrounding("<", ">")
-            ?.trim()
-            ?: return null
+        val email = contact.split(',', ';').getOrNull(1) ?: return null
+        if (!email.contains("@")) return null
 
-        return email.takeIf(emailRegex::matches)
+        val pureEmail = email.removeSurrounding("<", ">").trim()
+        return pureEmail.takeIf(emailRegex::matches)
     }
 
-    private fun refreshQualityGates(savedAgentIds: List<Long>) {
-        savedAgentIds
-            .distinct()
-            .chunked(DB_OPERATION_BATCH_SIZE)
-            .forEach { agentIds ->
-                aiAgentQualityGateService.createOrUpdateByAgent(agentIds)
-                aiAgentQualityGateService.removeIrrelevant(agentIds)
-            }
+    private fun entityIdentifier(entity: Any): Any =
+        requireNotNull(entityManager.entityManagerFactory.persistenceUnitUtil.getIdentifier(entity)) {
+            "Entity identifier is null for ${entity.javaClass.simpleName}"
+        }
+
+    private fun <T : Any> managedReference(type: Class<T>, id: Any): T =
+        entityManager.getReference(type, id)
+
+    private fun normalizeKey(value: String): String = value.trim().lowercase()
+
+    private inline fun <T, K> Iterable<T>.associateFirstBy(
+        keySelector: (T) -> K
+    ): Map<K, T> {
+        val result = LinkedHashMap<K, T>()
+        for (item in this) {
+            result.putIfAbsent(keySelector(item), item)
+        }
+        return result
     }
-
-    private fun flushAndClear() {
-        entityManager.flush()
-        entityManager.clear()
-    }
-
-
-    private fun selectActualAgent(agents: List<AIAgentEntity>): AIAgentEntity {
-        return agents.sortedWith(
-            compareBy<AIAgentEntity> { it.disabled == true }
-                .thenByDescending { it.updated ?: it.created ?: LocalDateTime.MIN }
-                .thenByDescending { it.id ?: 0L }
-        ).first()
-    }
-
-
 
     private fun getSheetStructure(sheet: Sheet): SheetStructure {
         val iterator = sheet.iterator()
@@ -496,58 +556,55 @@ class AgentSheetService(
         headers: Map<String, Int>,
         headerRow: Row?,
         agentsInFile: MutableSet<String>,
-        availableStatuses: MutableList<StatusEntity>,
-        availableMetrics: MutableList<MetricEntity>,
+        dictionaries: AgentImportDictionaries,
         agentsByAgentId: MutableMap<String, AIAgentEntity>,
         slasByAgentId: MutableMap<Long, MutableList<AgentStatusSlaEntity>>,
-        availableInitiativeTypes: MutableList<InitiativeTypeEntity>,
-        availableContacts: MutableList<ContactEntity>,
-        resourceEntities: List<ResourceEntity>,
-        availableDivisions: MutableList<DivisionEntity>,
-        actualBlocks: MutableList<BlockEntity>,
-        availableProcesses: MutableList<ProcessEntity>,
-        availablePrograms: MutableList<ProgramEntity>,
+        contactsByEmail: MutableMap<String, ContactEntity>,
         context: DictAndProcessContext,
-        fileUploadId: Long,
+        fileId: Long,
         blockedAgents: MutableList<BlockedAgent>,
         platformsStartIndex: Int,
         platformsEndIndex: Int,
         metricsStartIndex: Int,
         metricsEndIndex: Int,
         resourcesStartIndex: Int,
-        platformsByName: Map<String, PlatformEntity?>,
         userId: Long
     ): Long? {
         val agentId = headers[AGENT_ID]?.takeIf { it >= 0 }?.let { index ->
-            row.getCell(index)?.let { cell ->
-                getValueOrNull(cell)
-            }
+            row.getCell(index)?.let(::getValueOrNull)
         }
 
         if (agentId.isNullOrBlank()) return null
 
-        checkDoublesAndAdd(agentId, agentsInFile, fileId = fileUploadId)
+        checkDoublesAndAdd(agentId, agentsInFile, fileId = fileId)
 
         var newEntity = false
-        var entity = agentsByAgentId[agentId]?.also {
-            if (it.importStatus == "blocked") {
-                blockedAgents.add(BlockedAgent(it.id.toString(), it.agentName ?: ""))
+
+        var entity = agentsByAgentId[agentId]?.also { existing ->
+            if (existing.importStatus == "blocked") {
+                blockedAgents.add(
+                    BlockedAgent(
+                        agentId = existing.id.toString(),
+                        agentName = existing.agentName ?: ""
+                    )
+                )
                 return null
             }
-            it.agentStatus = updateAgentStatus(
-                headers,
-                row,
-                availableStatuses,
-                fileId = fileUploadId
+
+            existing.agentStatus = updateAgentStatus(
+                headers = headers,
+                row = row,
+                dictionaries = dictionaries,
+                fileId = fileId
             )
-            it.updated = LocalDateTime.now()
-        } ?: AIAgentEntity().also {
-            it.agentId = agentId
-            it.agentStatus = updateAgentStatus(
-                headers,
-                row,
-                availableStatuses,
-                fileId = fileUploadId
+            existing.updated = LocalDateTime.now()
+        } ?: AIAgentEntity().also { created ->
+            created.agentId = agentId
+            created.agentStatus = updateAgentStatus(
+                headers = headers,
+                row = row,
+                dictionaries = dictionaries,
+                fileId = fileId
             )
             newEntity = true
         }
@@ -557,9 +614,8 @@ class AgentSheetService(
             headers = headers,
             row = row,
             divisionsDict = context.divisionsDict,
-            availableDivisions = availableDivisions,
-            availableBlocks = actualBlocks,
-            fileId = fileUploadId
+            dictionaries = dictionaries,
+            fileId = fileId
         )
 
         val entityUpdateDuration = measureTimeMillis {
@@ -567,18 +623,23 @@ class AgentSheetService(
                 entity = entity,
                 headers = headers,
                 row = row,
-                availableInitiativeTypes = availableInitiativeTypes,
-                availableProcesses = availableProcesses,
-                availablePrograms = availablePrograms,
+                dictionaries = dictionaries,
                 processesMappingDtos = context.processData.second,
-                fileId = fileUploadId,
-                availableContacts = availableContacts,
+                contactsByEmail = contactsByEmail,
+                fileId = fileId,
                 userId = userId
             )
         }
         log.debug("Operation entity fields update took $entityUpdateDuration ms")
 
-        entity = aIAgentRepository.save(entity)
+        /*
+         * Для существующего агента save не нужен: он уже managed в текущем batch.
+         * Новый агент сохраняем здесь, потому что его id нужен дочерним сущностям.
+         */
+        if (newEntity) {
+            entity = aIAgentRepository.save(entity)
+        }
+
         agentsByAgentId[agentId] = entity
 
         if (!newEntity) {
@@ -590,21 +651,21 @@ class AgentSheetService(
             metricsStartIndex = metricsStartIndex,
             metricsEndIndex = metricsEndIndex,
             headerRow = headerRow,
-            availableMetrics = availableMetrics,
+            dictionaries = dictionaries,
             entity = entity,
-            fileId = fileUploadId
+            fileId = fileId
         )
 
         val agentSlas = slasByAgentId.getOrPut(entity.id!!) { mutableListOf() }
 
         val pocMvpTargetDecisionMetricDuration = measureTimeMillis {
             updateImplementationStatusesOfAgent(
-                entity,
-                headers,
-                row,
-                availableStatuses,
-                listOf(POC, MVP, TARGET_DECISION, CONFIRM_EFFECT),
-                agentSlas
+                agent = entity,
+                headers = headers,
+                row = row,
+                dictionaries = dictionaries,
+                headerTypes = listOf(POC, MVP, TARGET_DECISION, CONFIRM_EFFECT),
+                agentSlas = agentSlas
             )
         }
         log.debug("Operation pocMvpTargetDecision took $pocMvpTargetDecisionMetricDuration ms")
@@ -613,14 +674,14 @@ class AgentSheetService(
             row = row,
             headerRow = headerRow,
             resourcesStartIndex = resourcesStartIndex,
-            resourcesEntities = resourceEntities,
+            dictionaries = dictionaries,
             entity = entity,
-            fileId = fileUploadId
+            fileId = fileId
         )
 
         updateAgentStatusSla(
             row = row,
-            availableStatuses = availableStatuses,
+            dictionaries = dictionaries,
             entity = entity,
             headers = headers,
             agentStatusesSla = agentSlas
@@ -632,7 +693,7 @@ class AgentSheetService(
                 headers = headers,
                 entity = entity,
                 terBanksRefs = context.terBanksRefs,
-                fileId = fileUploadId
+                fileId = fileId
             )
         }
 
@@ -642,7 +703,7 @@ class AgentSheetService(
             headerRow = headerRow,
             row = row,
             entity = entity,
-            platformsByName = platformsByName
+            dictionaries = dictionaries
         )
 
         return entity.id
@@ -653,8 +714,7 @@ class AgentSheetService(
         headers: Map<String, Int>,
         row: Row,
         divisionsDict: List<DivisionsDto>,
-        availableDivisions: MutableList<DivisionEntity>,
-        availableBlocks: MutableList<BlockEntity>,
+        dictionaries: AgentImportDictionaries,
         fileId: Long
     ) {
         val divisionCellValue = headers[DIVISION]?.let { headerIndex ->
@@ -668,9 +728,11 @@ class AgentSheetService(
                     ?.takeUnless(String::isBlank)
             }
 
-            val block = availableBlocks.find { it.shortName.equals(blockCellValue?.trim(), ignoreCase = true) }
+            val blockRef = blockCellValue
+                ?.let(::normalizeKey)
+                ?.let(dictionaries.blocksByShortName::get)
 
-            if (block == null) {
+            if (blockRef == null) {
                 throw AiFileUploadException(
                     AI_UPLOAD_EMPTY_TRIBE_NAME,
                     messageProvider[AI_UPLOAD_EMPTY_TRIBE_NAME, blockCellValue, row.rowNum.plus(1)],
@@ -679,26 +741,28 @@ class AgentSheetService(
             }
 
             entity.division = null
-            entity.block = block
-
+            entity.block = managedReference(BlockEntity::class.java, blockRef.id)
             return
         }
 
-        val division = divisionsDict
+        val divisionRef = divisionsDict
             .firstOrNull { it.shortName.equals(divisionCellValue.trim(), ignoreCase = true) }
-            ?.let { divisionFromDict ->
-                availableDivisions.find {
-                    it.code.equals(divisionFromDict.code.trim(), ignoreCase = true)
-                }
-            }
+            ?.code
+            ?.let(::normalizeKey)
+            ?.let(dictionaries.divisionsByCode::get)
 
-        if (division == null) {
-            throw AiFileUploadException(AI_UPLOAD_EMPTY_TRIBE_NAME,
-                messageProvider[AI_UPLOAD_EMPTY_TRIBE_NAME, row.rowNum.plus(1)], fileId = fileId)
+        if (divisionRef == null) {
+            throw AiFileUploadException(
+                AI_UPLOAD_EMPTY_TRIBE_NAME,
+                messageProvider[AI_UPLOAD_EMPTY_TRIBE_NAME, row.rowNum.plus(1)],
+                fileId = fileId
+            )
         }
 
-        entity.division = division
-        entity.block = division.block
+        entity.division = managedReference(DivisionEntity::class.java, divisionRef.id)
+        entity.block = divisionRef.blockId?.let { blockId ->
+            managedReference(BlockEntity::class.java, blockId)
+        }
     }
 
     private fun updateProcessStatus() {
@@ -708,141 +772,155 @@ class AgentSheetService(
     private fun updateAgentStatus(
         headers: Map<String, Int>,
         row: Row,
-        availableStatuses: MutableList<StatusEntity>,
+        dictionaries: AgentImportDictionaries,
         fileId: Long
     ): StatusEntity? {
-        return headers[AGENT_STATUS]?.let { row.getCell(it) }?.let { statusCell ->
-            val statusValue = getValueOrNullFromFormula(statusCell)
-            availableStatuses.find {
-                it.name.equals(
-                    statusValue?.trim(),
-                    ignoreCase = true
-                )
-            } ?: throw createException(
-                exceptionType = AI_UPLOAD_UNKNOWN_AGENT_STATUS,
-                row = row,
-                cell = statusCell,
-                fileId = fileId
-            )
-        }
+        return headers[AGENT_STATUS]
+            ?.let(row::getCell)
+            ?.let { statusCell ->
+                val statusValue = getValueOrNullFromFormula(statusCell)
+                val statusRef = statusValue
+                    ?.let(::normalizeKey)
+                    ?.let(dictionaries.statusesByName::get)
+                    ?: throw createException(
+                        exceptionType = AI_UPLOAD_UNKNOWN_AGENT_STATUS,
+                        row = row,
+                        cell = statusCell,
+                        fileId = fileId
+                    )
+
+                managedReference(StatusEntity::class.java, statusRef.id)
+            }
     }
 
     private fun updateBaseEntityFields(
         entity: AIAgentEntity,
         headers: Map<String, Int>,
         row: Row,
-        availableInitiativeTypes: MutableList<InitiativeTypeEntity>,
-        availableProcesses: MutableList<ProcessEntity>,
-        availablePrograms: MutableList<ProgramEntity>,
+        dictionaries: AgentImportDictionaries,
         processesMappingDtos: List<ProcessesMappingDto>,
-        availableContacts: MutableList<ContactEntity>,
+        contactsByEmail: MutableMap<String, ContactEntity>,
         fileId: Long,
         userId: Long
     ) {
         entity.also { currentEntity ->
             currentEntity.processes =
-                headers[PROCESS_CODE]?.let {
-                    row.getCell(it)?.let {
+                headers[PROCESS_CODE]?.let { columnIndex ->
+                    row.getCell(columnIndex)?.let { cell ->
                         mapProcesses(
                             processesMappingDtos = processesMappingDtos,
-                            processCodesFromCell = getProcessCodesFromCell(it),
-                            availableProcesses = availableProcesses,
-                            rowNum = it.rowIndex,
-                            fileId = fileId,
+                            processCodesFromCell = getProcessCodesFromCell(cell),
+                            dictionaries = dictionaries,
+                            rowNum = cell.rowIndex,
+                            fileId = fileId
                         )
                     }
                 } ?: mutableSetOf()
-            currentEntity.program = headers[PROGRAM]?.let {
-                getValueOrNull(row.getCell(it))?.let { programId ->
-                    availablePrograms.firstOrNull {
-                        it.fileName.equals(programId, ignoreCase = true)
-                    } ?: throw AiFileUploadException(
-                        AI_UPLOAD_UNKNOWN_PROGRAM,
+
+            currentEntity.program = headers[PROGRAM]?.let { columnIndex ->
+                getValueOrNull(row.getCell(columnIndex))?.let { programFileName ->
+                    val programRef = dictionaries.programsByFileName[normalizeKey(programFileName)]
+                        ?: throw AiFileUploadException(
+                            AI_UPLOAD_UNKNOWN_PROGRAM,
+                            MessageFormat.format(
+                                messageProvider[AI_UPLOAD_UNKNOWN_PROGRAM],
+                                programFileName,
+                                row.rowNum.plus(1)
+                            ),
+                            fileId = fileId
+                        )
+
+                    managedReference(ProgramEntity::class.java, programRef.id)
+                }
+            }
+
+            currentEntity.agentName = headers[AGENT_NAME]?.let { columnIndex ->
+                row.getCell(columnIndex)?.let(::getValueOrNull)
+                    ?: throw AiFileUploadException(
+                        AI_UPLOAD_AGENT_NAME_EMPTY,
                         MessageFormat.format(
-                            messageProvider[AI_UPLOAD_UNKNOWN_PROGRAM],
-                            programId,
+                            messageProvider[AI_UPLOAD_AGENT_NAME_EMPTY],
                             row.rowNum.plus(1)
                         ),
                         fileId = fileId
                     )
-                }
             }
-            currentEntity.agentName = headers[AGENT_NAME]?.let { columnIndex ->
-                row.getCell(columnIndex)?.let { cell -> getValueOrNull(cell) } ?: throw AiFileUploadException(
-                    AI_UPLOAD_AGENT_NAME_EMPTY,
-                    MessageFormat.format(
-                        messageProvider[AI_UPLOAD_AGENT_NAME_EMPTY],
-                        row.rowNum.plus(1)
-                    ),
-                    fileId = fileId
-                )
-            }
+
             currentEntity.agentDescription =
                 headers[AGENT_DESCRIPTION]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let { cell -> getValueOrNull(cell)?.take(1000) }
+                    row.getCell(columnIndex)?.let(::getValueOrNull)?.take(1000)
                 }
+
             currentEntity.agentProblem =
                 headers[AGENT_PROBLEM]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let { cell -> getValueOrNull(cell)?.take(1000) }
+                    row.getCell(columnIndex)?.let(::getValueOrNull)?.take(1000)
                 }
+
             currentEntity.agentSolution =
                 headers[AGENT_SOLUTION]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let { cell -> getValueOrNull(cell)?.take(1000) }
+                    row.getCell(columnIndex)?.let(::getValueOrNull)?.take(1000)
                 }
+
             currentEntity.agentJiraUrl =
                 headers[AGENT_JIRA_URL]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let { cell -> getValueOrNull(cell) }
+                    row.getCell(columnIndex)?.let(::getValueOrNull)
                 }
+
             currentEntity.initiativeType =
                 headers[AGENT_INITIATIVE_TYPE]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let { cell -> getValueOrNull(cell) }
+                    row.getCell(columnIndex)?.let(::getValueOrNull)
                 }?.let { fieldValue ->
-                    if (fieldValue.lowercase().contains("агент")) {
-                        availableInitiativeTypes.firstOrNull { it.code == "agent" }
+                    val code = if (fieldValue.lowercase().contains("агент")) {
+                        "agent"
                     } else {
-                        availableInitiativeTypes.firstOrNull { it.code == "genAiSolution" }
+                        "genAiSolution"
+                    }
+
+                    dictionaries.initiativeTypesByCode[code]?.let { ref ->
+                        managedReference(InitiativeTypeEntity::class.java, ref.id)
                     }
                 }
 
             val customerContact = headers[CUSTOMER_CONTACT]?.let { columnIndex ->
-                row.getCell(columnIndex)?.let { cell ->
-                    getValueOrNull(cell)?.let { contactValue ->
-                        createContact(
-                            contact = contactValue,
-                            existingContacts = availableContacts,
-                            agent = currentEntity,
-                            userId = userId,
-                            type = "customer"
-                        )
-                    }
+                row.getCell(columnIndex)?.let(::getValueOrNull)?.let { contactValue ->
+                    createContact(
+                        contact = contactValue,
+                        contactsByEmail = contactsByEmail,
+                        agent = currentEntity,
+                        userId = userId,
+                        type = "customer"
+                    )
                 }
             }
-            customerContact?.let { currentEntity.agentContact.add(it) }
+            customerContact?.let(currentEntity.agentContact::add)
 
             val developerContact = headers[DEVELOPER_CONTACT]?.let { columnIndex ->
-                row.getCell(columnIndex)?.let { cell ->
-                    getValueOrNull(cell)?.let { contactValue ->
-                        createContact(
-                            contact = contactValue,
-                            existingContacts = availableContacts,
-                            agent = currentEntity,
-                            userId = userId,
-                            type = "developer"
-                        )
-                    }
+                row.getCell(columnIndex)?.let(::getValueOrNull)?.let { contactValue ->
+                    createContact(
+                        contact = contactValue,
+                        contactsByEmail = contactsByEmail,
+                        agent = currentEntity,
+                        userId = userId,
+                        type = "developer"
+                    )
                 }
             }
-            developerContact?.let { currentEntity.agentContact.add(it) }
+            developerContact?.let(currentEntity.agentContact::add)
 
-            currentEntity.agentEffectOptimization = headers[AGENT_EFFECT_OPTIMIZATION]?.let { columnIndex ->
-                row.getCell(columnIndex)?.let { cell -> getValueOrNull(cell)?.toDouble()?.toBigDecimal() }
-            }
-            currentEntity.agentEffectRevenue = headers[AGENT_EFFECT_REVENUE]?.let { columnIndex ->
-                row.getCell(columnIndex)?.let { cell -> getValueOrNull(cell)?.toDouble()?.toBigDecimal() }
-            }
+            currentEntity.agentEffectOptimization =
+                headers[AGENT_EFFECT_OPTIMIZATION]?.let { columnIndex ->
+                    row.getCell(columnIndex)?.let(::getValueOrNull)?.toDouble()?.toBigDecimal()
+                }
+
+            currentEntity.agentEffectRevenue =
+                headers[AGENT_EFFECT_REVENUE]?.let { columnIndex ->
+                    row.getCell(columnIndex)?.let(::getValueOrNull)?.toDouble()?.toBigDecimal()
+                }
+
             currentEntity.disabled = false
         }
     }
+
 
     data class SlaData(
         val status: String,
@@ -854,7 +932,7 @@ class AgentSheetService(
         agent: AIAgentEntity,
         headers: Map<String, Int>,
         row: Row,
-        availableStatuses: MutableList<StatusEntity>,
+        dictionaries: AgentImportDictionaries,
         headerTypes: List<String>,
         agentSlas: MutableList<AgentStatusSlaEntity>
     ) {
@@ -863,67 +941,87 @@ class AgentSheetService(
                 ?.let { columnIndex -> row.getCell(columnIndex) }
                 ?.let { cell ->
                     SlaData(headerType).apply {
-                        if (cell.cellType == CellType.NUMERIC) dateValue = extractDateTime(cell)
-                        if (cell.cellType == CellType.STRING) stringValue = cell.stringCellValue
+                        if (cell.cellType == CellType.NUMERIC) {
+                            dateValue = extractDateTime(cell)
+                        }
+                        if (cell.cellType == CellType.STRING) {
+                            stringValue = cell.stringCellValue
+                        }
                     }
                 }
         }.associateBy { it.status }
 
         slas.forEach { sla ->
-            val status = availableStatuses.find {
-                it.code.equals(
-                    when (sla.key) {
-                        POC -> "analysis"
-                        MVP -> "development"
-                        TARGET_DECISION -> "pilot"
-                        CONFIRM_EFFECT -> "targetSolution"
-                        else -> null
-                    }, ignoreCase = true
-                )
+            val statusCode = when (sla.key) {
+                POC -> "analysis"
+                MVP -> "development"
+                TARGET_DECISION -> "pilot"
+                CONFIRM_EFFECT -> "targetSolution"
+                else -> null
             }
 
-            val agentSla = agentSlas.find { it.agentStatus?.code == status?.code }
+            val statusRef = statusCode
+                ?.let(::normalizeKey)
+                ?.let(dictionaries.statusesByCode::get)
 
-            if (sla.value.dateValue != null) {
+            val agentSla = statusRef?.let { ref ->
+                agentSlas.find { it.primaryKey.agentStatusId == ref.id }
+            }
+
+            if (sla.value.dateValue != null && statusRef != null) {
                 val saved = agentStatusSlaRepository.save(
                     (agentSla ?: AgentStatusSlaEntity().apply {
-                        agentStatus = status
+                        agentStatus = managedReference(StatusEntity::class.java, statusRef.id)
                         aiAgent = agent
                     }).apply {
                         plannedDate = sla.value.dateValue
                     }
                 )
-                agentSlas.removeIf { it.agentStatus?.code == saved.agentStatus?.code }
+
+                agentSlas.removeIf {
+                    it.primaryKey.agentStatusId == saved.primaryKey.agentStatusId
+                }
                 agentSlas.add(saved)
             }
 
-            if (sla.key == CONFIRM_EFFECT &&
+            if (
+                sla.key == CONFIRM_EFFECT &&
                 !slas[TARGET_DECISION]?.stringValue.equals("Завершен", ignoreCase = true)
             ) {
-                agentSla?.apply { completedDate = null }?.let {
-                    val saved = agentStatusSlaRepository.save(it)
-                    agentSlas.removeIf { old -> old.agentStatus?.code == saved.agentStatus?.code }
+                agentSla?.apply {
+                    completedDate = null
+                }?.let { changed ->
+                    val saved = agentStatusSlaRepository.save(changed)
+                    agentSlas.removeIf {
+                        it.primaryKey.agentStatusId == saved.primaryKey.agentStatusId
+                    }
                     agentSlas.add(saved)
                 }
             }
 
-            if (slas[TARGET_DECISION]?.stringValue.equals("Завершен", ignoreCase = true)
-                && sla.key == CONFIRM_EFFECT
+            if (
+                slas[TARGET_DECISION]?.stringValue.equals("Завершен", ignoreCase = true) &&
+                sla.key == CONFIRM_EFFECT &&
+                statusRef != null
             ) {
                 val saved = agentStatusSlaRepository.save(
                     (agentSla ?: AgentStatusSlaEntity().apply {
-                        agentStatus = status
+                        agentStatus = managedReference(StatusEntity::class.java, statusRef.id)
                         aiAgent = agent
                     }).apply {
                         completedDate = sla.value.dateValue ?: LocalDateTime.now()
                         plannedDate = this.plannedDate ?: sla.value.dateValue ?: LocalDateTime.now()
                     }
                 )
-                agentSlas.removeIf { it.agentStatus?.code == saved.agentStatus?.code }
+
+                agentSlas.removeIf {
+                    it.primaryKey.agentStatusId == saved.primaryKey.agentStatusId
+                }
                 agentSlas.add(saved)
             }
         }
     }
+
 
     private fun extractDateTime(cell: Cell?): LocalDateTime? {
         if (cell == null) return null
@@ -963,41 +1061,58 @@ class AgentSheetService(
         headerRow: Row?,
         row: Row,
         entity: AIAgentEntity,
-        platformsByName: Map<String, PlatformEntity?>
+        dictionaries: AgentImportDictionaries
     ) {
         val implementedPlatformDuration = measureTimeMillis {
             if (platformsStartIndex == -1 || platformsEndIndex == -1 || headerRow == null) return
 
-            val entitiesToSave = row.filter { it.columnIndex in platformsStartIndex..platformsEndIndex }
+            val entitiesToSave = row
+                .filter { it.columnIndex in platformsStartIndex..platformsEndIndex }
                 .mapNotNull { frontalCell ->
-                    val cellHeader = headerRow.getCell(frontalCell.columnIndex)?.stringCellValue?.trim()
+                    val cellHeader = headerRow.getCell(frontalCell.columnIndex)
+                        ?.stringCellValue
+                        ?.trim()
                         ?.takeIf { it.isNotBlank() }
                         ?: return@mapNotNull null
 
                     getValueOrNull(row.getCell(frontalCell.columnIndex))
                         ?.takeIf { it.isNotBlank() }
                         ?.let { rowFrontalValue ->
-                            platformsByName[cellHeader]
-                                ?.let { platformEntity ->
-                                    if (setOf("в разработке", "внедрен").contains(rowFrontalValue.lowercase())) {
+                            dictionaries.platformsByName[cellHeader]
+                                ?.let { platformRef ->
+                                    if (
+                                        setOf("в разработке", "внедрен")
+                                            .contains(rowFrontalValue.lowercase())
+                                    ) {
                                         ImplementedPlatformEntity().apply {
                                             primaryKey = AIAgentPlatformPK().apply {
                                                 aiAgentId = entity.id
-                                                platformId = platformEntity.id
+                                                platformId = platformRef.id
                                             }
-                                            platform = platformEntity
+                                            platform = managedReference(
+                                                PlatformEntity::class.java,
+                                                platformRef.id
+                                            )
                                             aiAgent = entity
-                                            released = rowFrontalValue.equals("Внедрен", ignoreCase = true)
+                                            released = rowFrontalValue.equals(
+                                                "Внедрен",
+                                                ignoreCase = true
+                                            )
                                         }
-                                    } else null
+                                    } else {
+                                        null
+                                    }
                                 }
                         }
                 }
+
             entity.platforms.clear()
             entity.platforms.addAll(entitiesToSave)
         }
+
         log.debug("Operation implemented platforms took $implementedPlatformDuration ms")
     }
+
 
     private fun updateTerBanks(
         row: Row,
@@ -1028,7 +1143,7 @@ class AgentSheetService(
 
     private fun updateAgentStatusSla(
         row: Row,
-        availableStatuses: MutableList<StatusEntity>,
+        dictionaries: AgentImportDictionaries,
         entity: AIAgentEntity,
         headers: Map<String, Int>,
         agentStatusesSla: List<AgentStatusSlaEntity>
@@ -1036,33 +1151,49 @@ class AgentSheetService(
         val agentStatusSlaDuration = measureTimeMillis {
             headers[AGENT_STATUS]?.let { headerIndex ->
                 var expirationDate: DeadlineExpiredType? = DeadlineExpiredType.ontime
+
                 getValueOrNullFromFormula(row.getCell(headerIndex))?.let { status ->
-                    val statusEntity =
-                        availableStatuses.find { it.name.equals(status.trim(), ignoreCase = true) }
-                    if (statusEntity != null) {
-                        val filtredStatusSlas =
-                            agentStatusesSla.filter { (it.agentStatus?.ordering ?: Long.MIN_VALUE) > (statusEntity.ordering ?: Long.MIN_VALUE) }
-                        if (filtredStatusSlas.isNotEmpty()) {
-                            filtredStatusSlas.forEach { statusSla ->
-                                statusSla.plannedDate?.let { plannedDate ->
-                                    if (plannedDate.toLocalDate().minusDays(14) < dateTimeProvider.currentDate()) {
-                                        expirationDate = DeadlineExpiredType.expiration
-                                    }
-                                    if (plannedDate.toLocalDate() < dateTimeProvider.currentDate()) {
-                                        expirationDate = DeadlineExpiredType.expired
-                                    }
+                    val statusRef = dictionaries.statusesByName[normalizeKey(status)]
+
+                    if (statusRef != null) {
+                        val filteredStatusSlas = agentStatusesSla.filter { statusSla ->
+                            val slaOrdering = statusSla.primaryKey.agentStatusId
+                                ?.let(dictionaries.statusesById::get)
+                                ?.ordering
+                                ?: Long.MIN_VALUE
+
+                            slaOrdering > (statusRef.ordering ?: Long.MIN_VALUE)
+                        }
+
+                        filteredStatusSlas.forEach { statusSla ->
+                            statusSla.plannedDate?.let { plannedDate ->
+                                if (
+                                    plannedDate.toLocalDate().minusDays(14) <
+                                    dateTimeProvider.currentDate()
+                                ) {
+                                    expirationDate = DeadlineExpiredType.expiration
+                                }
+
+                                if (
+                                    plannedDate.toLocalDate() <
+                                    dateTimeProvider.currentDate()
+                                ) {
+                                    expirationDate = DeadlineExpiredType.expired
                                 }
                             }
                         }
-                    } else {
-                        if (expirationDate != DeadlineExpiredType.expired && expirationDate != DeadlineExpiredType.expiration) {
-                            expirationDate = DeadlineExpiredType.ontime
-                        }
+                    } else if (
+                        expirationDate != DeadlineExpiredType.expired &&
+                        expirationDate != DeadlineExpiredType.expiration
+                    ) {
+                        expirationDate = DeadlineExpiredType.ontime
                     }
+
                     entity.deadlineExpired = expirationDate
                 }
             }
         }
+
         log.debug("Operation agent status took $agentStatusSlaDuration ms")
     }
 
@@ -1070,7 +1201,7 @@ class AgentSheetService(
         row: Row,
         headerRow: Row?,
         resourcesStartIndex: Int,
-        resourcesEntities: List<ResourceEntity>,
+        dictionaries: AgentImportDictionaries,
         entity: AIAgentEntity,
         fileId: Long
     ) {
@@ -1079,9 +1210,12 @@ class AgentSheetService(
 
             val resourcesEndIndex = resourcesStartIndex + 3
 
-            val entitiesToSave = row.filter { it.columnIndex in resourcesStartIndex..resourcesEndIndex }
+            val entitiesToSave = row
+                .filter { it.columnIndex in resourcesStartIndex..resourcesEndIndex }
                 .mapNotNull { resource ->
-                    val resourceName = headerRow.getCell(resource.columnIndex)?.stringCellValue?.trim()
+                    val resourceName = headerRow.getCell(resource.columnIndex)
+                        ?.stringCellValue
+                        ?.trim()
                         ?.takeIf { it.isNotBlank() }
                         ?: return@mapNotNull null
 
@@ -1090,26 +1224,29 @@ class AgentSheetService(
                         ?.let { rawValue ->
                             try {
                                 val numericValue = rawValue.replace(',', '.').toBigDecimal()
-                                resourcesEntities.firstOrNull { it.name == resourceName }?.let { resourceEntity ->
-                                    InvolvedResourceEntity().apply {
-                                        this.id = InvolvedResourceEmbeddedId(
-                                            aiAgentId = entity.id,
-                                            source = resourceEntity.source,
-                                            type = resourceEntity.type,
-                                        )
-                                        this.value = numericValue
-                                        this.aiAgent = entity
-                                        this.updated = LocalDateTime.now()
+
+                                dictionaries.resourcesByName[resourceName]
+                                    ?.let { resourceEntity ->
+                                        InvolvedResourceEntity().apply {
+                                            id = InvolvedResourceEmbeddedId(
+                                                aiAgentId = entity.id,
+                                                source = resourceEntity.source,
+                                                type = resourceEntity.type
+                                            )
+                                            value = numericValue
+                                            aiAgent = entity
+                                            updated = LocalDateTime.now()
+                                        }
                                     }
-                                } ?: throw AiFileUploadException(
-                                    AI_UPLOAD_UNKNOWN_METRIC_NAME,
-                                    MessageFormat.format(
-                                        messageProvider[AI_UPLOAD_UNKNOWN_METRIC_NAME],
-                                        resource.columnIndex.plus(1),
-                                        row.rowNum.plus(1)
-                                    ),
-                                    fileId = fileId
-                                )
+                                    ?: throw AiFileUploadException(
+                                        AI_UPLOAD_UNKNOWN_METRIC_NAME,
+                                        MessageFormat.format(
+                                            messageProvider[AI_UPLOAD_UNKNOWN_METRIC_NAME],
+                                            resource.columnIndex.plus(1),
+                                            row.rowNum.plus(1)
+                                        ),
+                                        fileId = fileId
+                                    )
                             } catch (e: NumberFormatException) {
                                 throw AiFileUploadException(
                                     AI_UPLOAD_UNKNOWN_METRIC_NAME,
@@ -1123,9 +1260,11 @@ class AgentSheetService(
                             }
                         }
                 }
+
             entity.involvedResource.clear()
             entity.involvedResource.addAll(entitiesToSave)
         }
+
         log.debug("Operation involved Resource took $involvedResourceDuration ms")
     }
 
@@ -1134,7 +1273,7 @@ class AgentSheetService(
         metricsStartIndex: Int,
         metricsEndIndex: Int,
         headerRow: Row?,
-        availableMetrics: MutableList<MetricEntity>,
+        dictionaries: AgentImportDictionaries,
         entity: AIAgentEntity,
         fileId: Long
     ) {
@@ -1145,36 +1284,47 @@ class AgentSheetService(
 
             row.filter { it.columnIndex in metricsStartIndex..metricsEndIndex }
                 .forEach { metricValue ->
-                    val metricName = headerRow.getCell(metricValue.columnIndex)?.stringCellValue?.trim()
+                    val metricName = headerRow.getCell(metricValue.columnIndex)
+                        ?.stringCellValue
+                        ?.trim()
+
                     if (metricName.equals("Индивидуальная метрика", ignoreCase = true)) {
                         return@forEach
                     }
+
                     getValueOrNull(row.getCell(metricValue.columnIndex))
                         ?.takeIf { it.isNotBlank() }
                         ?.let { rawValue ->
                             try {
                                 val normalizedValue = rawValue.replace(',', '.').toDouble()
-                                availableMetrics.firstOrNull {
-                                    it.fileName.equals(metricName, ignoreCase = true)
-                                }?.let { existingMetric ->
-                                    metricsToSave.add(
-                                        AppliedMetricsEntity().also {
-                                            it.aiAgent = entity
-                                            it.metric = existingMetric
-                                            it.currentValue = BigDecimal.valueOf(normalizedValue)
-                                            it.type = STANDARD
-                                            it.updated = LocalDateTime.now()
-                                        }
+
+                                metricName
+                                    ?.let(::normalizeKey)
+                                    ?.let(dictionaries.metricsByFileName::get)
+                                    ?.let { metricRef ->
+                                        metricsToSave.add(
+                                            AppliedMetricsEntity().also { appliedMetric ->
+                                                appliedMetric.aiAgent = entity
+                                                appliedMetric.metric = managedReference(
+                                                    MetricEntity::class.java,
+                                                    metricRef.id
+                                                )
+                                                appliedMetric.currentValue =
+                                                    BigDecimal.valueOf(normalizedValue)
+                                                appliedMetric.type = STANDARD
+                                                appliedMetric.updated = LocalDateTime.now()
+                                            }
+                                        )
+                                    }
+                                    ?: throw AiFileUploadException(
+                                        AI_UPLOAD_UNKNOWN_METRIC_NAME,
+                                        MessageFormat.format(
+                                            messageProvider[AI_UPLOAD_UNKNOWN_METRIC_NAME],
+                                            metricValue.columnIndex.plus(1),
+                                            row.rowNum.plus(1)
+                                        ),
+                                        fileId = fileId
                                     )
-                                } ?: throw AiFileUploadException(
-                                    AI_UPLOAD_UNKNOWN_METRIC_NAME,
-                                    MessageFormat.format(
-                                        messageProvider[AI_UPLOAD_UNKNOWN_METRIC_NAME],
-                                        metricValue.columnIndex.plus(1),
-                                        row.rowNum.plus(1)
-                                    ),
-                                    fileId = fileId
-                                )
                             } catch (e: NumberFormatException) {
                                 throw AiFileUploadException(
                                     AI_UPLOAD_UNKNOWN_METRIC_NAME,
@@ -1193,19 +1343,21 @@ class AgentSheetService(
                 appliedMetricRepository.saveAll(metricsToSave)
             }
         }
+
         log.debug("Operation applied Metric took $appliedMetricDuration ms")
     }
 
     private fun disableDeletedAgents(agentsInFile: Set<String>) {
-        val agentIdsToDisable = aIAgentRepository.findAllNonPultAgentRefs()
+        aIAgentRepository.findAllNonPultAgentRefs()
             .asSequence()
             .filter { it.agentId !in agentsInFile }
             .map { it.id }
-            .toList()
-
-        agentIdsToDisable
-            .chunked(DB_OPERATION_BATCH_SIZE)
-            .forEach(aIAgentRepository::disableByIds)
+            .chunked(BULK_BATCH_SIZE)
+            .forEach { ids ->
+                if (ids.isNotEmpty()) {
+                    aIAgentRepository.disableByIds(ids)
+                }
+            }
     }
 
     private fun deleteNotPULTAgents() {
@@ -1214,48 +1366,45 @@ class AgentSheetService(
 
     private fun createContact(
         contact: String,
-        existingContacts: MutableList<ContactEntity>,
+        contactsByEmail: MutableMap<String, ContactEntity>,
         agent: AIAgentEntity?,
         type: String,
         userId: Long
     ): AgentContactEntity? {
-        if (contact == "0") return null
-        else contact.split(',', ';').let { fields ->
-            val email = fields.getOrNull(1)
-            val contactEntity = email?.let {
-                if (it.contains("@")) {
-                    val pureEmail = email.removeSurrounding("<", ">").trim()
-                    if (!emailRegex.matches(pureEmail)) {
-                        return null
-                    }
-                    val existingContact = existingContacts.firstOrNull { contact -> contact.email == pureEmail }
-                    existingContact?.apply {
-                        this.fio = fields.getOrNull(0)
-                    } ?: createAndSaveContactEntity(existingContacts, fields, pureEmail)
-                } else {
-                    return null
-                }
-            } ?: return null
-            return AgentContactEntity(
-                agent = agent,
-                type = type,
-                contact = contactEntity
-            )
-        }
+        val pureEmail = extractContactEmail(contact) ?: return null
+        val fields = contact.split(',', ';')
+
+        val contactEntity = contactsByEmail[pureEmail]?.apply {
+            fio = fields.getOrNull(0)
+        } ?: createAndSaveContactEntity(
+            contactsByEmail = contactsByEmail,
+            fields = fields,
+            pureEmail = pureEmail
+        )
+
+        return AgentContactEntity(
+            agent = agent,
+            type = type,
+            contact = contactEntity
+        )
     }
 
     private fun createAndSaveContactEntity(
-        existingContacts: MutableList<ContactEntity>,
+        contactsByEmail: MutableMap<String, ContactEntity>,
         fields: List<String>,
-        pureEmail: String,
+        pureEmail: String
     ): ContactEntity {
-        val contactEntity = contactRepository.save(ContactEntity().apply {
-            this.fio = fields.getOrNull(0)
-            this.email = pureEmail
-        })
-        existingContacts.add(contactEntity)
+        val contactEntity = contactRepository.save(
+            ContactEntity().apply {
+                fio = fields.getOrNull(0)
+                email = pureEmail
+            }
+        )
+
+        contactsByEmail[pureEmail] = contactEntity
         return contactEntity
     }
+
 
     private fun getValueOrNull(cell: Cell): String? {
         return when (cell.cellType) {
@@ -1282,25 +1431,37 @@ class AgentSheetService(
     private fun mapProcesses(
         processesMappingDtos: List<ProcessesMappingDto>,
         processCodesFromCell: List<String>,
-        availableProcesses: MutableList<ProcessEntity>,
+        dictionaries: AgentImportDictionaries,
         rowNum: Int,
         fileId: Long
     ): MutableSet<ProcessEntity> {
-        val resultProcessesIds = mutableSetOf<ProcessEntity>()
-        processCodesFromCell.forEach { codeFormCell ->
-            var dpssCode = findDpssCode(processesMappingDtos = processesMappingDtos, searchString = codeFormCell)
+        val resultProcesses = mutableSetOf<ProcessEntity>()
+
+        processCodesFromCell.forEach { codeFromCell ->
+            var dpssCode = findDpssCode(
+                processesMappingDtos = processesMappingDtos,
+                searchString = codeFromCell
+            )
+
             if (dpssCode.isNullOrBlank()) {
-                dpssCode = codeFormCell
+                dpssCode = codeFromCell
             }
-            resultProcessesIds.add(availableProcesses.firstOrNull { it.shortName == dpssCode }
+
+            val processRef = dictionaries.processesByShortName[dpssCode]
                 ?: throw AiFileUploadException(
                     AI_UPLOAD_UNKNOWN_PROCESS_CODE,
-                    messageProvider[AI_UPLOAD_UNKNOWN_PROCESS_CODE, codeFormCell, rowNum],
+                    messageProvider[AI_UPLOAD_UNKNOWN_PROCESS_CODE, codeFromCell, rowNum],
                     fileId = fileId
-                ))
+                )
+
+            resultProcesses.add(
+                managedReference(ProcessEntity::class.java, processRef.id)
+            )
         }
-        return resultProcessesIds
+
+        return resultProcesses
     }
+
 
     fun findDpssCode(processesMappingDtos: List<ProcessesMappingDto>, searchString: String): String? {
         return processesMappingDtos
@@ -1388,4 +1549,5 @@ class AgentSheetService(
         )
     }
 }
+
 ```
