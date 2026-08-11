@@ -1,28 +1,20 @@
 ```java
-
 @Suppress("UNUSED_EXPRESSION")
 @Service
 class AgentSheetService(
     private val aIAgentRepository: AIAgentRepository,
-    private val statusRepository: StatusRepository,
     private val agentStatusSlaRepository: AgentStatusSlaRepository,
-    private val divisionRepository: DivisionRepository,
-    private val metricRepository: MetricRepository,
-    private val blockRepository: BlockRepository,
     private val appliedMetricRepository: AppliedMetricRepository,
-    private val resourceRepository: ResourceRepository,
     private val contactRepository: ContactRepository,
-    private val platformRepository: PlatformRepository,
-    private val programRepository: ProgramRepository,
     private val processRepository: ProcessRepository,
     private val fileUploadRepository: FileUploadRepository,
-    private val initiativeTypeRepository: InitiativeTypeRepository,
     private val aiAgentQualityGateService: AiAgentQualityGateService,
     private val dateTimeProvider: DateTimeProvider,
     private val messageProvider: MessageProvider,
     private val transactionTemplate: TransactionTemplate,
     private val agentContactRepository: AgentContactRepository,
     private val entityManager: EntityManager,
+    private val dictionariesProvider: AgentImportDictionariesProvider,
 ) {
     private val log by logger()
     private val emailRegex = Regex("^[a-zA-Z0-9._%+-]+@(sberbank\\.ru|sber\\.ru)$")
@@ -51,15 +43,11 @@ class AgentSheetService(
                 deleteNotPULTAgents()
 
                 /*
-                 * Справочники читаются ОДИН раз на весь файл.
-                 * В snapshot сохраняются только необходимые scalar-поля и идентификаторы.
-                 * После clear() они не становятся detached JPA entity.
-                 *
-                 * ResourceEntity оставлен отдельным read-only snapshot, потому что ниже
-                 * используются только его обычные поля source/type/name и сама сущность
-                 * никогда не присваивается в relation.
+                 * Provider строит immutable snapshot справочников один раз на весь импорт.
+                 * После этого persistence context очищается, а внутри batch используются
+                 * только id/scalar snapshot и managed references текущей пачки.
                  */
-                val dictionaries = loadDictionaries()
+                val dictionaries = dictionariesProvider.load()
                 entityManager.clear()
 
                 val sheetStructure = getSheetStructure(agentSheet)
@@ -181,166 +169,6 @@ class AgentSheetService(
     }
 
 
-
-    private data class AgentImportDictionaries(
-        val statusesByName: Map<String, StatusRef>,
-        val statusesByCode: Map<String, StatusRef>,
-        val statusesById: Map<Long, StatusRef>,
-        val metricsByFileName: Map<String, MetricRef>,
-        val resourcesByName: Map<String, ResourceEntity>,
-        val divisionsByCode: Map<String, DivisionRef>,
-        val blocksByShortName: Map<String, BlockRef>,
-        val processesByShortName: Map<String, ProcessRef>,
-        val programsByFileName: Map<String, ProgramRef>,
-        val initiativeTypesByCode: Map<String, InitiativeTypeRef>,
-        val platformsByName: Map<String, PlatformRef>
-    )
-
-    private data class StatusRef(
-        val id: Long,
-        val code: String?,
-        val name: String?,
-        val ordering: Long?
-    )
-
-    private data class MetricRef(
-        val id: Any,
-        val fileName: String?
-    )
-
-    private data class DivisionRef(
-        val id: Any,
-        val code: String?,
-        val blockId: Any?
-    )
-
-    private data class BlockRef(
-        val id: Any,
-        val shortName: String?
-    )
-
-    private data class ProcessRef(
-        val id: Any,
-        val shortName: String?
-    )
-
-    private data class ProgramRef(
-        val id: Any,
-        val fileName: String?
-    )
-
-    private data class InitiativeTypeRef(
-        val id: Any,
-        val code: String?
-    )
-
-    private data class PlatformRef(
-        val id: Long,
-        val name: String?
-    )
-
-    private fun loadDictionaries(): AgentImportDictionaries {
-        val statuses = statusRepository.findAll().map { status ->
-            StatusRef(
-                id = entityIdentifier(status) as Long,
-                code = status.code,
-                name = status.name,
-                ordering = status.ordering
-            )
-        }
-
-        val metrics = metricRepository.findAll().map { metric ->
-            MetricRef(
-                id = entityIdentifier(metric),
-                fileName = metric.fileName
-            )
-        }
-
-        val divisions = divisionRepository.findAll().map { division ->
-            DivisionRef(
-                id = entityIdentifier(division),
-                code = division.code,
-                blockId = division.block?.let(::entityIdentifier)
-            )
-        }
-
-        val blocks = blockRepository.findAll().map { block ->
-            BlockRef(
-                id = entityIdentifier(block),
-                shortName = block.shortName
-            )
-        }
-
-        val processes = processRepository.findAll().map { process ->
-            ProcessRef(
-                id = entityIdentifier(process),
-                shortName = process.shortName
-            )
-        }
-
-        val programs = programRepository.findAll().map { program ->
-            ProgramRef(
-                id = entityIdentifier(program),
-                fileName = program.fileName
-            )
-        }
-
-        val initiativeTypes = initiativeTypeRepository.findAll().map { initiativeType ->
-            InitiativeTypeRef(
-                id = entityIdentifier(initiativeType),
-                code = initiativeType.code
-            )
-        }
-
-        val platforms = platformRepository.findAll().map { platform ->
-            PlatformRef(
-                id = entityIdentifier(platform) as Long,
-                name = platform.name
-            )
-        }
-
-        /*
-         * ResourceEntity здесь не присваивается в JPA relation.
-         * После clear() мы только читаем basic-поля name/source/type,
-         * поэтому держать этот небольшой read-only список безопасно.
-         */
-        val resourcesByName = resourceRepository.findAll()
-            .filter { !it.name.isNullOrBlank() }
-            .associateFirstBy { it.name!! }
-
-        return AgentImportDictionaries(
-            statusesByName = statuses
-                .filter { !it.name.isNullOrBlank() }
-                .associateFirstBy { normalizeKey(it.name!!) },
-            statusesByCode = statuses
-                .filter { !it.code.isNullOrBlank() }
-                .associateFirstBy { normalizeKey(it.code!!) },
-            statusesById = statuses.associateFirstBy { it.id },
-            metricsByFileName = metrics
-                .filter { !it.fileName.isNullOrBlank() }
-                .associateFirstBy { normalizeKey(it.fileName!!) },
-            resourcesByName = resourcesByName,
-            divisionsByCode = divisions
-                .filter { !it.code.isNullOrBlank() }
-                .associateFirstBy { normalizeKey(it.code!!) },
-            blocksByShortName = blocks
-                .filter { !it.shortName.isNullOrBlank() }
-                .associateFirstBy { normalizeKey(it.shortName!!) },
-            processesByShortName = processes
-                .filter { !it.shortName.isNullOrBlank() }
-                .associateFirstBy { it.shortName!! },
-            programsByFileName = programs
-                .filter { !it.fileName.isNullOrBlank() }
-                .associateFirstBy { normalizeKey(it.fileName!!) },
-            initiativeTypesByCode = initiativeTypes
-                .filter { !it.code.isNullOrBlank() }
-                .associateFirstBy { it.code!! },
-            platformsByName = platforms
-                .filter { !it.name.isNullOrBlank() }
-                .groupBy { it.name!! }
-                .mapValues { (_, items) -> items.maxByOrNull { it.id }!! }
-        )
-    }
 
     private fun processBatch(
         rows: List<Row>,
@@ -469,25 +297,12 @@ class AgentSheetService(
         return pureEmail.takeIf(emailRegex::matches)
     }
 
-    private fun entityIdentifier(entity: Any): Any =
-        requireNotNull(entityManager.entityManagerFactory.persistenceUnitUtil.getIdentifier(entity)) {
-            "Entity identifier is null for ${entity.javaClass.simpleName}"
-        }
 
     private fun <T : Any> managedReference(type: Class<T>, id: Any): T =
         entityManager.getReference(type, id)
 
     private fun normalizeKey(value: String): String = value.trim().lowercase()
 
-    private inline fun <T, K> Iterable<T>.associateFirstBy(
-        keySelector: (T) -> K
-    ): Map<K, T> {
-        val result = LinkedHashMap<K, T>()
-        for (item in this) {
-            result.putIfAbsent(keySelector(item), item)
-        }
-        return result
-    }
 
     private fun getSheetStructure(sheet: Sheet): SheetStructure {
         val iterator = sheet.iterator()
@@ -1550,4 +1365,230 @@ class AgentSheetService(
     }
 }
 
+
+
+@Component
+class AgentImportDictionariesProvider(
+    private val statusRepository: StatusRepository,
+    private val metricRepository: MetricRepository,
+    private val resourceRepository: ResourceRepository,
+    private val divisionRepository: DivisionRepository,
+    private val blockRepository: BlockRepository,
+    private val processRepository: ProcessRepository,
+    private val programRepository: ProgramRepository,
+    private val initiativeTypeRepository: InitiativeTypeRepository,
+    private val platformRepository: PlatformRepository,
+    private val entityManager: EntityManager,
+) {
+
+    /**
+     * Строит актуальный snapshot справочников для одного запуска импорта.
+     *
+     * Provider сам является singleton Spring-компонентом, но состояние между
+     * загрузками не хранит. На каждый вызов создается новый immutable snapshot.
+     */
+    fun load(): AgentImportDictionaries {
+        val statuses = statusRepository.findAll().map { status ->
+            StatusRef(
+                id = entityIdentifier(status) as Long,
+                code = status.code,
+                name = status.name,
+                ordering = status.ordering
+            )
+        }
+
+        val metrics = metricRepository.findAll().map { metric ->
+            MetricRef(
+                id = entityIdentifier(metric),
+                fileName = metric.fileName
+            )
+        }
+
+        val divisions = divisionRepository.findAll().map { division ->
+            DivisionRef(
+                id = entityIdentifier(division),
+                code = division.code,
+                blockId = division.block?.let(::entityIdentifier)
+            )
+        }
+
+        val blocks = blockRepository.findAll().map { block ->
+            BlockRef(
+                id = entityIdentifier(block),
+                shortName = block.shortName
+            )
+        }
+
+        val processes = processRepository.findAll().map { process ->
+            ProcessRef(
+                id = entityIdentifier(process),
+                shortName = process.shortName
+            )
+        }
+
+        val programs = programRepository.findAll().map { program ->
+            ProgramRef(
+                id = entityIdentifier(program),
+                fileName = program.fileName
+            )
+        }
+
+        val initiativeTypes = initiativeTypeRepository.findAll().map { initiativeType ->
+            InitiativeTypeRef(
+                id = entityIdentifier(initiativeType),
+                code = initiativeType.code
+            )
+        }
+
+        val platforms = platformRepository.findAll().map { platform ->
+            PlatformRef(
+                id = entityIdentifier(platform) as Long,
+                name = platform.name
+            )
+        }
+
+        val resourcesByName = resourceRepository.findAll()
+            .filter { !it.name.isNullOrBlank() }
+            .map { resource ->
+                ResourceRef(
+                    name = resource.name!!,
+                    source = resource.source,
+                    type = resource.type
+                )
+            }
+            .associateFirstBy { it.name }
+
+        return AgentImportDictionaries(
+            statusesByName = statuses
+                .filter { !it.name.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.name!!) },
+
+            statusesByCode = statuses
+                .filter { !it.code.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.code!!) },
+
+            statusesById = statuses.associateFirstBy { it.id },
+
+            metricsByFileName = metrics
+                .filter { !it.fileName.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.fileName!!) },
+
+            resourcesByName = resourcesByName,
+
+            divisionsByCode = divisions
+                .filter { !it.code.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.code!!) },
+
+            blocksByShortName = blocks
+                .filter { !it.shortName.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.shortName!!) },
+
+            processesByShortName = processes
+                .filter { !it.shortName.isNullOrBlank() }
+                .associateFirstBy { it.shortName!! },
+
+            programsByFileName = programs
+                .filter { !it.fileName.isNullOrBlank() }
+                .associateFirstBy { normalizeKey(it.fileName!!) },
+
+            initiativeTypesByCode = initiativeTypes
+                .filter { !it.code.isNullOrBlank() }
+                .associateFirstBy { it.code!! },
+
+            platformsByName = platforms
+                .filter { !it.name.isNullOrBlank() }
+                .groupBy { it.name!! }
+                .mapValues { (_, items) ->
+                    items.maxByOrNull { it.id }!!
+                }
+        )
+    }
+
+    private fun entityIdentifier(entity: Any): Any =
+        requireNotNull(
+            entityManager.entityManagerFactory
+                .persistenceUnitUtil
+                .getIdentifier(entity)
+        ) {
+            "Entity identifier is null for ${entity.javaClass.simpleName}"
+        }
+
+    private fun normalizeKey(value: String): String =
+        value.trim().lowercase()
+
+    private inline fun <T, K> Iterable<T>.associateFirstBy(
+        keySelector: (T) -> K
+    ): Map<K, T> {
+        val result = LinkedHashMap<K, T>()
+
+        for (item in this) {
+            result.putIfAbsent(keySelector(item), item)
+        }
+
+        return result
+    }
+}
+
+data class AgentImportDictionaries(
+    val statusesByName: Map<String, StatusRef>,
+    val statusesByCode: Map<String, StatusRef>,
+    val statusesById: Map<Long, StatusRef>,
+    val metricsByFileName: Map<String, MetricRef>,
+    val resourcesByName: Map<String, ResourceRef>,
+    val divisionsByCode: Map<String, DivisionRef>,
+    val blocksByShortName: Map<String, BlockRef>,
+    val processesByShortName: Map<String, ProcessRef>,
+    val programsByFileName: Map<String, ProgramRef>,
+    val initiativeTypesByCode: Map<String, InitiativeTypeRef>,
+    val platformsByName: Map<String, PlatformRef>
+)
+
+data class StatusRef(
+    val id: Long,
+    val code: String?,
+    val name: String?,
+    val ordering: Long?
+)
+
+data class MetricRef(
+    val id: Any,
+    val fileName: String?
+)
+
+data class ResourceRef(
+    val name: String,
+    val source: String?,
+    val type: String?
+)
+
+data class DivisionRef(
+    val id: Any,
+    val code: String?,
+    val blockId: Any?
+)
+
+data class BlockRef(
+    val id: Any,
+    val shortName: String?
+)
+
+data class ProcessRef(
+    val id: Any,
+    val shortName: String?
+)
+
+data class ProgramRef(
+    val id: Any,
+    val fileName: String?
+)
+
+data class InitiativeTypeRef(
+    val id: Any,
+    val code: String?
+)
+
+data class PlatformRef(
+    val id: Long,
+    val name: String?
+)
 ```
