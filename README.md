@@ -1,15 +1,39 @@
 ```java
 
-SELECT COUNT(DISTINCT a.id)
-FROM ai_agent a
-JOIN status current_status
-    ON current_status.id = a.agent_status_id
-JOIN status future_status
-    ON future_status.disabled = false
-    AND future_status.ordering >= current_status.ordering
-LEFT JOIN agent_status_sla sla
-    ON sla.ai_agent_id = a.id
-    AND sla.agent_status_id = future_status.id
-WHERE a.disabled = false
-  AND sla.ai_agent_id IS NULL;
+У инициативы есть текущий и будущие активные статусы, но для хотя бы одного из них вообще отсутствует запись в agent_status_sla. showcase трактует statusSla == null как незаполненный дедлайн, а count сейчас умеет находить только существующую SLA-запись, где одновременно completed_date IS NULL и planned_date IS NULL.
+
+Например:
+
+Текущий статус инициативы: analysis
+
+analysis:
+    SLA существует
+    planned_date = 2026-08-20
+
+development:
+    SLA существует
+    planned_date = 2026-09-01
+
+pilot:
+    записи в agent_status_sla НЕТ
+
+Результат:
+
+showcase -> отклонение ЕСТЬ
+count    -> отклонения НЕТ
+
+Почему: showcase проходит по всем текущим и будущим активным статусам и на pilot получает:
+
+statusSla == null
+
+что считается отклонением.
+
+А count ищет только такую существующую строку:
+
+completed_date = NULL
+planned_date   = NULL
+
+Если такой строки нет, а строки для pilot нет вообще — EXISTS возвращает false.
+
+То есть искать нужно инициативы, у которых отсутствуют строки agent_status_sla для какого-либо текущего или будущего активного статуса.
 ```
