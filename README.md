@@ -1,6 +1,15 @@
 ```java
 
-Сначала выбираются инициативы для проверки: без userId — все активные, с userId — только привязанные к пользователю. Затем у них ищется любое «быстрое» отклонение, и если оно найдено, инициатива сразу попадает в счётчик и дальше не проверяется; только для оставшихся в последнюю очередь выполняется более тяжёлая проверка незаполненных метрик текущего периода.
-
-В итоге каждая инициатива учитывается в счётчике только один раз, даже если у неё есть несколько отклонений.
+SELECT COUNT(DISTINCT a.id)
+FROM ai_agent a
+JOIN status current_status
+    ON current_status.id = a.agent_status_id
+JOIN status future_status
+    ON future_status.disabled = false
+    AND future_status.ordering >= current_status.ordering
+LEFT JOIN agent_status_sla sla
+    ON sla.ai_agent_id = a.id
+    AND sla.agent_status_id = future_status.id
+WHERE a.disabled = false
+  AND sla.ai_agent_id IS NULL;
 ```
