@@ -1,20 +1,21 @@
 ```java
-@ExtendWith(MockitoExtension::class)
+
+@ExtendWith(MockKExtension::class)
 class JiraNewInitiativeSearchSchedulerServiceTest {
 
-    @Mock
+    @MockK
     private lateinit var optionsService: OptionsService
 
-    @Mock
+    @MockK
     private lateinit var referenceDataProvider: JiraImportReferenceDataProvider
 
-    @Mock
+    @MockK
     private lateinit var searchRequestFactory: JiraInitiativeSearchRequestFactory
 
-    @Mock
+    @MockK
     private lateinit var jiraSearchPaginator: JiraSearchPaginator
 
-    @Mock
+    @MockK
     private lateinit var existingJiraInitiativeRepository: ExistingJiraInitiativeRepository
 
     private lateinit var service: JiraNewInitiativeSearchSchedulerService
@@ -29,16 +30,17 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
             existingJiraInitiativeRepository = existingJiraInitiativeRepository,
         )
 
-        whenever(referenceDataProvider.load())
-            .thenReturn(createReferenceData())
+        every {
+            referenceDataProvider.load()
+        } returns createReferenceData()
 
-        whenever(
+        every {
             searchRequestFactory.createNewInitiativesRequest(
-                any(),
-                any(),
-                any(),
+                newDepth = any(),
+                maxResults = any(),
+                startAt = any(),
             )
-        ).thenReturn(mock())
+        } returns mockk()
     }
 
     @Test
@@ -58,23 +60,22 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
             ),
         )
 
-        whenever(optionsService.getCurrent())
-            .thenReturn(
-                OptionsDto(
-                    newDepth = 7,
-                    maxResults = 30,
-                )
-            )
+        every {
+            optionsService.getCurrent()
+        } returns OptionsDto(
+            newDepth = 7,
+            maxResults = 30,
+        )
 
-        whenever(
+        every {
             existingJiraInitiativeRepository.findExistingJiraKeys(
                 setOf(
                     "CROSSGOAL-100",
                     "CROSSGOAL-200",
                 )
             )
-        ).thenReturn(
-            listOf("CROSSGOAL-100")
+        } returns listOf(
+            "CROSSGOAL-100"
         )
 
         mockPaginator(
@@ -84,23 +85,30 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
 
         service.importNewInitiatives()
 
-        verify(optionsService).getCurrent()
-        verify(referenceDataProvider).load()
+        verify(exactly = 1) {
+            optionsService.getCurrent()
+        }
 
-        verify(searchRequestFactory)
-            .createNewInitiativesRequest(
+        verify(exactly = 1) {
+            referenceDataProvider.load()
+        }
+
+        verify(exactly = 1) {
+            searchRequestFactory.createNewInitiativesRequest(
                 newDepth = 7,
                 maxResults = 30,
                 startAt = 0,
             )
+        }
 
-        verify(existingJiraInitiativeRepository)
-            .findExistingJiraKeys(
+        verify(exactly = 1) {
+            existingJiraInitiativeRepository.findExistingJiraKeys(
                 setOf(
                     "CROSSGOAL-100",
                     "CROSSGOAL-200",
                 )
             )
+        }
     }
 
     @Test
@@ -114,19 +122,18 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
             issues = listOf(issue),
         )
 
-        whenever(optionsService.getCurrent())
-            .thenReturn(
-                OptionsDto(
-                    newDepth = 7,
-                    maxResults = 30,
-                )
-            )
+        every {
+            optionsService.getCurrent()
+        } returns OptionsDto(
+            newDepth = 7,
+            maxResults = 30,
+        )
 
-        whenever(
+        every {
             existingJiraInitiativeRepository.findExistingJiraKeys(
                 setOf("CROSSGOAL-100")
             )
-        ).thenReturn(emptyList())
+        } returns emptyList()
 
         mockPaginator(
             maxResults = 30,
@@ -135,10 +142,11 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
 
         service.importNewInitiatives()
 
-        verify(existingJiraInitiativeRepository)
-            .findExistingJiraKeys(
+        verify(exactly = 1) {
+            existingJiraInitiativeRepository.findExistingJiraKeys(
                 setOf("CROSSGOAL-100")
             )
+        }
     }
 
     @Test
@@ -153,13 +161,12 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
             issues = listOf(cancelledIssue),
         )
 
-        whenever(optionsService.getCurrent())
-            .thenReturn(
-                OptionsDto(
-                    newDepth = 7,
-                    maxResults = 30,
-                )
-            )
+        every {
+            optionsService.getCurrent()
+        } returns OptionsDto(
+            newDepth = 7,
+            maxResults = 30,
+        )
 
         mockPaginator(
             maxResults = 30,
@@ -168,7 +175,9 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
 
         service.importNewInitiatives()
 
-        verifyNoInteractions(existingJiraInitiativeRepository)
+        verify {
+            existingJiraInitiativeRepository wasNot Called
+        }
     }
 
     @Test
@@ -186,13 +195,12 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
             issues = listOf(classicMlIssue),
         )
 
-        whenever(optionsService.getCurrent())
-            .thenReturn(
-                OptionsDto(
-                    newDepth = 7,
-                    maxResults = 30,
-                )
-            )
+        every {
+            optionsService.getCurrent()
+        } returns OptionsDto(
+            newDepth = 7,
+            maxResults = 30,
+        )
 
         mockPaginator(
             maxResults = 30,
@@ -201,7 +209,9 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
 
         service.importNewInitiatives()
 
-        verifyNoInteractions(existingJiraInitiativeRepository)
+        verify {
+            existingJiraInitiativeRepository wasNot Called
+        }
     }
 
     @Test
@@ -225,13 +235,12 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
             ),
         )
 
-        whenever(optionsService.getCurrent())
-            .thenReturn(
-                OptionsDto(
-                    newDepth = 7,
-                    maxResults = 30,
-                )
-            )
+        every {
+            optionsService.getCurrent()
+        } returns OptionsDto(
+            newDepth = 7,
+            maxResults = 30,
+        )
 
         mockPaginator(
             maxResults = 30,
@@ -240,7 +249,9 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
 
         service.importNewInitiatives()
 
-        verifyNoInteractions(existingJiraInitiativeRepository)
+        verify {
+            existingJiraInitiativeRepository wasNot Called
+        }
     }
 
     @Test
@@ -250,13 +261,12 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
             issues = emptyList(),
         )
 
-        whenever(optionsService.getCurrent())
-            .thenReturn(
-                OptionsDto(
-                    newDepth = 7,
-                    maxResults = 30,
-                )
-            )
+        every {
+            optionsService.getCurrent()
+        } returns OptionsDto(
+            newDepth = 7,
+            maxResults = 30,
+        )
 
         mockPaginator(
             maxResults = 30,
@@ -265,16 +275,21 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
 
         service.importNewInitiatives()
 
-        verify(referenceDataProvider).load()
+        verify(exactly = 1) {
+            referenceDataProvider.load()
+        }
 
-        verify(searchRequestFactory)
-            .createNewInitiativesRequest(
+        verify(exactly = 1) {
+            searchRequestFactory.createNewInitiativesRequest(
                 newDepth = 7,
                 maxResults = 30,
                 startAt = 0,
             )
+        }
 
-        verifyNoInteractions(existingJiraInitiativeRepository)
+        verify {
+            existingJiraInitiativeRepository wasNot Called
+        }
     }
 
     @Test
@@ -295,25 +310,24 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
             issues = listOf(secondPageIssue),
         )
 
-        whenever(optionsService.getCurrent())
-            .thenReturn(
-                OptionsDto(
-                    newDepth = 7,
-                    maxResults = 30,
-                )
-            )
+        every {
+            optionsService.getCurrent()
+        } returns OptionsDto(
+            newDepth = 7,
+            maxResults = 30,
+        )
 
-        whenever(
+        every {
             existingJiraInitiativeRepository.findExistingJiraKeys(
                 setOf("CROSSGOAL-100")
             )
-        ).thenReturn(emptyList())
+        } returns emptyList()
 
-        whenever(
+        every {
             existingJiraInitiativeRepository.findExistingJiraKeys(
                 setOf("CROSSGOAL-200")
             )
-        ).thenReturn(emptyList())
+        } returns emptyList()
 
         mockPaginator(
             maxResults = 30,
@@ -325,88 +339,97 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
 
         service.importNewInitiatives()
 
-        verify(referenceDataProvider, times(1))
-            .load()
+        verify(exactly = 1) {
+            referenceDataProvider.load()
+        }
 
-        verify(searchRequestFactory)
-            .createNewInitiativesRequest(
+        verify(exactly = 1) {
+            searchRequestFactory.createNewInitiativesRequest(
                 newDepth = 7,
                 maxResults = 30,
                 startAt = 0,
             )
+        }
 
-        verify(searchRequestFactory)
-            .createNewInitiativesRequest(
+        verify(exactly = 1) {
+            searchRequestFactory.createNewInitiativesRequest(
                 newDepth = 7,
                 maxResults = 30,
                 startAt = 30,
             )
+        }
 
-        verify(existingJiraInitiativeRepository)
-            .findExistingJiraKeys(
+        verify(exactly = 1) {
+            existingJiraInitiativeRepository.findExistingJiraKeys(
                 setOf("CROSSGOAL-100")
             )
+        }
 
-        verify(existingJiraInitiativeRepository)
-            .findExistingJiraKeys(
+        verify(exactly = 1) {
+            existingJiraInitiativeRepository.findExistingJiraKeys(
                 setOf("CROSSGOAL-200")
             )
+        }
     }
 
     @Test
     fun `importNewInitiatives should fail when newDepth is not configured`() {
-        whenever(optionsService.getCurrent())
-            .thenReturn(
-                OptionsDto(
-                    newDepth = null,
-                    maxResults = 30,
-                )
-            )
+        every {
+            optionsService.getCurrent()
+        } returns OptionsDto(
+            newDepth = null,
+            maxResults = 30,
+        )
 
         assertThrows<IllegalArgumentException> {
             service.importNewInitiatives()
         }
 
-        verifyNoInteractions(
-            referenceDataProvider,
-            searchRequestFactory,
-            jiraSearchPaginator,
-            existingJiraInitiativeRepository,
-        )
+        verify {
+            referenceDataProvider wasNot Called
+            searchRequestFactory wasNot Called
+            jiraSearchPaginator wasNot Called
+            existingJiraInitiativeRepository wasNot Called
+        }
     }
 
     @Test
     fun `importNewInitiatives should fail when maxResults is not configured`() {
-        whenever(optionsService.getCurrent())
-            .thenReturn(
-                OptionsDto(
-                    newDepth = 7,
-                    maxResults = null,
-                )
-            )
+        every {
+            optionsService.getCurrent()
+        } returns OptionsDto(
+            newDepth = 7,
+            maxResults = null,
+        )
 
         assertThrows<IllegalArgumentException> {
             service.importNewInitiatives()
         }
 
-        verifyNoInteractions(
-            referenceDataProvider,
-            searchRequestFactory,
-            jiraSearchPaginator,
-            existingJiraInitiativeRepository,
-        )
+        verify {
+            referenceDataProvider wasNot Called
+            searchRequestFactory wasNot Called
+            jiraSearchPaginator wasNot Called
+            existingJiraInitiativeRepository wasNot Called
+        }
     }
 
     private fun mockPaginator(
         maxResults: Int,
         responses: List<SearchIssueResponseDto>,
     ) {
-        doAnswer { invocation ->
+        every {
+            jiraSearchPaginator.processPages(
+                maxResults = maxResults,
+                requestFactory = any(),
+                pageProcessor = any(),
+            )
+        } answers {
             val requestFactory =
-                invocation.getArgument<(Int) -> SearchIssueRequestDto>(1)
+                secondArg<(Int) -> SearchIssueRequestDto>()
 
             val pageProcessor =
-                invocation.getArgument<(SearchIssueResponseDto) -> Unit>(2)
+                thirdArg<(SearchIssueResponseDto) -> Unit>()
 
             responses.forEachIndexed { pageIndex, response ->
                 val startAt = pageIndex * maxResults
@@ -414,26 +437,16 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
                 requestFactory(startAt)
                 pageProcessor(response)
             }
-
-            null
-        }.whenever(jiraSearchPaginator)
-            .processPages(
-                eq(maxResults),
-                any(),
-                any(),
-            )
+        }
     }
 
     private fun createSearchResponse(
         total: Int,
         issues: List<SearchIssueDto>,
     ): SearchIssueResponseDto {
-        return mock<SearchIssueResponseDto>().also { response ->
-            whenever(response.total)
-                .thenReturn(total)
-
-            whenever(response.issues)
-                .thenReturn(issues)
+        return mockk<SearchIssueResponseDto> {
+            every { this@mockk.total } returns total
+            every { this@mockk.issues } returns issues
         }
     }
 
@@ -442,19 +455,21 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
         statusName: String? = null,
         labels: List<String> = emptyList(),
     ): SearchIssueDto {
-        val issue = Mockito.mock(
-            SearchIssueDto::class.java,
-            Answers.RETURNS_DEEP_STUBS,
+        val issue = mockk<SearchIssueDto>(
+            relaxed = true
         )
 
-        whenever(issue.key)
-            .thenReturn(key)
+        every {
+            issue.key
+        } returns key
 
-        whenever(issue.fields?.status?.name)
-            .thenReturn(statusName)
+        every {
+            issue.fields?.status?.name
+        } returns statusName
 
-        whenever(issue.fields?.labels)
-            .thenReturn(labels)
+        every {
+            issue.fields?.labels
+        } returns labels
 
         return issue
     }
@@ -468,6 +483,5 @@ class JiraNewInitiativeSearchSchedulerServiceTest {
         )
     }
 }
-
 
 ```
