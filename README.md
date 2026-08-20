@@ -1,7 +1,9 @@
 ```java
-every { enablerNameNormalizer.normalize("GIGACHAT") } returns "gigachat"
-    every { enablerNameNormalizer.normalize("DATA_LENS") } returns "data_lens"
+Для коммита я бы взял:
 
-every { enablerNameNormalizer.normalize("GIGACHAT") } returns "gigachat"
-    every { enablerNameNormalizer.normalize("  ") } returns null
+Реализован первый этап FR1 поиска новых инициатив из Jira
+
+Для PR description коротко:
+
+Реализован первый этап FR1: поиск новых инициатив в Jira, пагинация, загрузка справочников, фильтрация отменённых/ClassicML инициатив и batch-проверка существования инициатив по CROSSGOAL-ключу.
 ```
