@@ -1,6 +1,6 @@
 ```java
 @Test
-fun `syncFromJira should handle null enabler name`() {
+fun `syncFromJira should handle involved resources with null and numeric values`() {
     // Given
     val status = StatusEntity().apply {
         code = "research"
@@ -14,16 +14,6 @@ fun `syncFromJira should handle null enabler name`() {
         agentJiraUrl = "CROSSGOAL-123"
         agentStatus = status
     }
-
-    val enabler1 = GetCheckboxOptionItem(
-        name = "GIGACHAT",
-        checked = true,
-    )
-
-    val enabler2 = GetCheckboxOptionItem(
-        name = "  ",
-        checked = true,
-    )
 
     val jiraResponse = IssueDto(
         id = "10001",
@@ -40,8 +30,12 @@ fun `syncFromJira should handle null enabler name`() {
             labels = emptyList(),
             customfield_34300 = null,
             customfield_30401 = null,
+            customfield_31304 = "10",
+            customfield_31305 = null,
+            customfield_31306 = "5",
+            customfield_31307 = " ",
             issuelinks = emptyList(),
-            customfield_15903 = listOf(enabler1, enabler2),
+            customfield_15903 = emptyList(),
             assignee = null,
             reporter = null,
             customfield_29202 = null,
@@ -54,12 +48,6 @@ fun `syncFromJira should handle null enabler name`() {
         ),
     )
 
-    val enablerEntity = EnablerEntity().apply {
-        id = 10L
-        name = "GIGACHAT"
-        disabled = false
-    }
-
     val agentsPage = PageImpl(listOf(agent))
 
     every { strategyService.findAll() } returns emptyList()
@@ -67,18 +55,22 @@ fun `syncFromJira should handle null enabler name`() {
     every { divisionRepository.findAll() } returns emptyList()
     every { blockRepository.findAllByDisabledIsFalse() } returns emptyList()
     every { initiativeTypeRepository.findAll() } returns emptyList()
-    every { enablerRepository.findAll() } returns listOf(enablerEntity)
+    every { enablerRepository.findAll() } returns emptyList()
 
     every {
-        enablerNameNormalizer.normalize("GIGACHAT")
-    } returns "gigachat"
+        jiraNumericValueParser.parseFirst("10")
+    } returns BigDecimal("10")
 
     every {
-        enablerNameNormalizer.normalize("  ")
-    } returns null
+        jiraNumericValueParser.parseFirst("5")
+    } returns BigDecimal("5")
 
     every {
         jiraNumericValueParser.parseFirst(null)
+    } returns null
+
+    every {
+        jiraNumericValueParser.parseFirst(" ")
     } returns null
 
     every {
@@ -136,15 +128,19 @@ fun `syncFromJira should handle null enabler name`() {
     }
 
     every {
-        involvedResourceRepository.deleteAllByAiAgentId(any())
+        involvedResourceRepository.deleteAllByAiAgentId(1L)
     } just Runs
+
+    val savedResources = slot<List<InvolvedResourceEntity>>()
+
+    every {
+        involvedResourceRepository.saveAll(capture(savedResources))
+    } answers {
+        firstArg()
+    }
 
     every {
         enablerRepository.deleteAllByAgentId(any())
-    } just Runs
-
-    every {
-        enablerRepository.addAllToAgent(any(), any())
     } just Runs
 
     every {
@@ -156,18 +152,31 @@ fun `syncFromJira should handle null enabler name`() {
 
     // Then
     verify(exactly = 1) {
-        enablerRepository.deleteAllByAgentId(1L)
+        involvedResourceRepository.deleteAllByAiAgentId(1L)
     }
 
     verify(exactly = 1) {
-        enablerRepository.addAllToAgent(
-            1L,
-            listOf(10L),
-        )
+        involvedResourceRepository.saveAll(any<List<InvolvedResourceEntity>>())
     }
 
-    verify(exactly = 1) {
-        enablerNameNormalizer.normalize("  ")
+    val resources = savedResources.captured
+
+    assertEquals(2, resources.size)
+
+    val withoutSteerCoBusiness = resources.single {
+        it.id.source == "without_steerCo" &&
+            it.id.type == "business"
     }
+
+    assertEquals(1L, withoutSteerCoBusiness.id.aiAgentId)
+    assertEquals(BigDecimal("10"), withoutSteerCoBusiness.value)
+
+    val steerCoBusiness = resources.single {
+        it.id.source == "steerCo" &&
+            it.id.type == "business"
+    }
+
+    assertEquals(1L, steerCoBusiness.id.aiAgentId)
+    assertEquals(BigDecimal("5"), steerCoBusiness.value)
 }
 ```
