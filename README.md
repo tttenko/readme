@@ -1,63 +1,61 @@
 ```java
 @Test
-fun `should log error when searchTasksByEpicKey throw`() {
+fun `syncFromJira should process agents in batches and update them from Jira`() {
     // Given
+    val initiativeType = InitiativeTypeEntity().apply {
+        code = "agent"
+        name = "Agent"
+        description = "AI Agent"
+    }
+
     val status = StatusEntity().apply {
         code = "research"
         ordering = 1L
         name = "Research"
     }
 
+    val block = BlockEntity().apply {
+        code = "dev"
+        shortName = "Dev"
+        name = "Development"
+        label = "Dev"
+        disabled = false
+    }
+
+    val division = DivisionEntity().apply {
+        code = "dev"
+        shortName = "Dev"
+        name = "Development"
+        label = "Dev"
+        disabled = false
+        this.block = block
+    }
+
     val agent = AIAgentEntity().apply {
         id = 1L
         agentId = "CROSSGOAL-123"
         agentJiraUrl = "CROSSGOAL-123"
+        agentName = "Old Name"
         agentStatus = status
+        this.initiativeType = initiativeType
     }
-
-    val qualityGate = QualityGateEntity().apply {
-        code = "QG1"
-        name = "QG1"
-        disabled = false
-        type = QualityGateType.quality_gate
-    }
-
-    val monitoringLink = GetIssueLinkResponse(
-        id = "1",
-        outwardIssue = null,
-        inwardIssue = GetIssueSimpleResponse(
-            id = "30001",
-            key = "MONITORING-789",
-            fields = GetIssueFieldsSimple(
-                summary = "AI мониторинг Epic",
-                status = null,
-                priority = null,
-                issuetype = null,
-            ),
-        ),
-        type = null,
-    )
 
     val jiraResponse = IssueDto(
         id = "10001",
         key = "CROSSGOAL-123",
         fields = GetIssueFields(
-            summary = "Test Agent",
+            summary = "Test Agent Summary",
             status = GetIssueStatusResponse(
                 id = "1",
                 name = "In Progress",
             ),
-            customfield_30000 = emptyList(),
-            customfield_30001 = emptyList(),
+            customfield_30000 = listOf("Dev"),
+            customfield_30001 = listOf("Dev-Team"),
             customfield_30002 = emptyList(),
-            labels = listOf("AI-не-эффективность"),
-            customfield_34300 = null,
-            customfield_30401 = null,
-            customfield_31304 = null,
-            customfield_31305 = null,
-            customfield_31306 = null,
-            customfield_31307 = null,
-            issuelinks = listOf(monitoringLink),
+            labels = listOf("Агент"),
+            customfield_34300 = "100.50",
+            customfield_30401 = "200.75",
+            issuelinks = emptyList(),
             customfield_15903 = emptyList(),
             assignee = null,
             reporter = null,
@@ -74,12 +72,19 @@ fun `should log error when searchTasksByEpicKey throw`() {
     val agentsPage = PageImpl(listOf(agent))
 
     every { strategyService.findAll() } returns emptyList()
-    every { statusRepository.findFirstByCode(any()) } returns status
-    every { qualityGateRepository.findAllByDisabledIsFalse() } returns listOf(qualityGate)
-    every { divisionRepository.findAll() } returns emptyList()
-    every { blockRepository.findAllByDisabledIsFalse() } returns emptyList()
-    every { initiativeTypeRepository.findAll() } returns emptyList()
+    every { qualityGateRepository.findAllByDisabledIsFalse() } returns emptyList()
+    every { divisionRepository.findAll() } returns listOf(division)
+    every { blockRepository.findAllByDisabledIsFalse() } returns listOf(block)
+    every { initiativeTypeRepository.findAll() } returns listOf(initiativeType)
     every { enablerRepository.findAll() } returns emptyList()
+
+    every {
+        jiraNumericValueParser.parseFirst("100.50")
+    } returns BigDecimal("100.50")
+
+    every {
+        jiraNumericValueParser.parseFirst("200.75")
+    } returns BigDecimal("200.75")
 
     every {
         jiraNumericValueParser.parseFirst(null)
@@ -94,10 +99,6 @@ fun `should log error when searchTasksByEpicKey throw`() {
     } returns jiraResponse
 
     every {
-        jiraService.searchTasksByEpicKey("MONITORING-789", 100)
-    } throws RuntimeException("Jira search error")
-
-    every {
         jiraService.getJiraSigmaUrl()
     } returns "https://jira/"
 
@@ -108,14 +109,6 @@ fun `should log error when searchTasksByEpicKey throw`() {
     )
 
     every {
-        jiraErrorTracker.increment()
-    } returns 1
-
-    every {
-        jiraErrorTracker.reset()
-    } just Runs
-
-    every {
         syncFromJiraAgentTransactionRunner.execute(eq(agent), any())
     } answers {
         val action = secondArg<(AIAgentEntity) -> Boolean>()
@@ -124,7 +117,9 @@ fun `should log error when searchTasksByEpicKey throw`() {
 
     every {
         agentRepository.save(any<AIAgentEntity>())
-    } returns agent
+    } answers {
+        firstArg()
+    }
 
     every {
         jiraIssueRepository.findByAgentIdAndTypeAndProject(
@@ -141,7 +136,7 @@ fun `should log error when searchTasksByEpicKey throw`() {
     }
 
     every {
-        agentStrategyRepository.findAllByAgentId(any())
+        agentStrategyRepository.findAllByAgentId(1L)
     } returns emptyList()
 
     every {
@@ -151,39 +146,35 @@ fun `should log error when searchTasksByEpicKey throw`() {
     }
 
     every {
-        involvedResourceRepository.deleteAllByAiAgentId(any())
+        involvedResourceRepository.deleteAllByAiAgentId(1L)
     } just Runs
 
     every {
-        enablerRepository.deleteAllByAgentId(any())
+        enablerRepository.deleteAllByAgentId(1L)
     } just Runs
 
     every {
-        agentStatusSlaRepository.save(any())
-    } answers {
-        firstArg()
-    }
+        jiraErrorTracker.reset()
+    } just Runs
 
     // When
     syncScheduler.syncFromJira()
 
     // Then
     verify(exactly = 1) {
-        jiraService.searchTasksByEpicKey(
-            "MONITORING-789",
-            100,
-        )
+        agentRepository.findAllWithPultIdAndCrossgoalPageable(any<Pageable>())
     }
 
-    verify(exactly = 1) {
-        jiraErrorTracker.increment()
-    }
-
-    // Ошибка загрузки tasks не прерывает обработку:
-    // сохраняется jira_issue инициативы и monitoring epic.
     verify(exactly = 2) {
-        jiraIssueRepository.save(any<JiraIssueEntity>())
+        agentRepository.save(agent)
     }
-}
 
+    assertEquals("Test Agent Summary", agent.agentName)
+    assertEquals(division, agent.division)
+    assertEquals(block, agent.block)
+    assertEquals(initiativeType, agent.initiativeType)
+    assertEquals(BigDecimal("100.50"), agent.agentEffectOptimization)
+    assertEquals(BigDecimal("200.75"), agent.agentEffectRevenue)
+    assertNotNull(agent.updated)
+}
 ```
