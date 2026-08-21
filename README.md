@@ -1,6 +1,6 @@
 ```java
 @Test
-fun `syncFromJira should update jira issues for tasks`() {
+fun `should log error when searchTasksByEpicKey throw`() {
     // Given
     val status = StatusEntity().apply {
         code = "research"
@@ -17,14 +17,15 @@ fun `syncFromJira should update jira issues for tasks`() {
 
     val qualityGate = QualityGateEntity().apply {
         code = "QG1"
-        name = "Test Task 1"
+        name = "QG1"
         disabled = false
         type = QualityGateType.quality_gate
     }
 
     val monitoringLink = GetIssueLinkResponse(
         id = "1",
-        outwardIssue = GetIssueSimpleResponse(
+        outwardIssue = null,
+        inwardIssue = GetIssueSimpleResponse(
             id = "30001",
             key = "MONITORING-789",
             fields = GetIssueFieldsSimple(
@@ -34,25 +35,14 @@ fun `syncFromJira should update jira issues for tasks`() {
                 issuetype = null,
             ),
         ),
-        inwardIssue = null,
         type = null,
     )
-
-    val monitoringEpic = JiraIssueEntity(
-        agent = agent,
-        type = "epic",
-        project = "crossgoal",
-        jiraKey = "MONITORING-789",
-        jiraId = "30001",
-    ).apply {
-        id = 2L
-    }
 
     val jiraResponse = IssueDto(
         id = "10001",
         key = "CROSSGOAL-123",
         fields = GetIssueFields(
-            summary = "Test Task 1",
+            summary = "Test Agent",
             status = GetIssueStatusResponse(
                 id = "1",
                 name = "In Progress",
@@ -63,6 +53,10 @@ fun `syncFromJira should update jira issues for tasks`() {
             labels = listOf("AI-не-эффективность"),
             customfield_34300 = null,
             customfield_30401 = null,
+            customfield_31304 = null,
+            customfield_31305 = null,
+            customfield_31306 = null,
+            customfield_31307 = null,
             issuelinks = listOf(monitoringLink),
             customfield_15903 = emptyList(),
             assignee = null,
@@ -74,20 +68,6 @@ fun `syncFromJira should update jira issues for tasks`() {
             resolutiondate = null,
             created = null,
             updated = null,
-        ),
-    )
-
-    val task = SearchIssueDto(
-        id = "20001",
-        key = "TASK-1",
-        fields = SearchIssueFieldsDto(
-            summary = "Test Task 1",
-            status = SearchIssueStatusDto(
-                id = "1",
-                name = "In Progress",
-            ),
-            labels = emptyList(),
-            customfield_15903 = emptyList(),
         ),
     )
 
@@ -115,7 +95,7 @@ fun `syncFromJira should update jira issues for tasks`() {
 
     every {
         jiraService.searchTasksByEpicKey("MONITORING-789", 100)
-    } returns listOf(task)
+    } throws RuntimeException("Jira search error")
 
     every {
         jiraService.getJiraSigmaUrl()
@@ -128,6 +108,14 @@ fun `syncFromJira should update jira issues for tasks`() {
     )
 
     every {
+        jiraErrorTracker.increment()
+    } returns 1
+
+    every {
+        jiraErrorTracker.reset()
+    } just Runs
+
+    every {
         syncFromJiraAgentTransactionRunner.execute(eq(agent), any())
     } answers {
         val action = secondArg<(AIAgentEntity) -> Boolean>()
@@ -138,42 +126,16 @@ fun `syncFromJira should update jira issues for tasks`() {
         agentRepository.save(any<AIAgentEntity>())
     } returns agent
 
-    // jira_issue самой инициативы
     every {
         jiraIssueRepository.findByAgentIdAndTypeAndProject(
-            1L,
-            JiraIssueType.initiative.name,
-            "crossgoal",
+            any(),
+            any(),
+            any(),
         )
     } returns emptyList()
-
-    // monitoring epic
-    every {
-        jiraIssueRepository.findByAgentIdAndTypeAndProject(
-            1L,
-            JiraIssueType.epic.name,
-            "crossgoal",
-        )
-    } returns listOf(monitoringEpic)
 
     every {
         jiraIssueRepository.save(any<JiraIssueEntity>())
-    } answers {
-        firstArg()
-    }
-
-    // TASK-1 ещё не существует в БД
-    every {
-        jiraIssueRepository.findAllByAgentIdAndJiraKeyIn(
-            1L,
-            setOf("TASK-1"),
-        )
-    } returns emptyList()
-
-    val savedJiraIssues = slot<Iterable<JiraIssueEntity>>()
-
-    every {
-        jiraIssueRepository.saveAll(capture(savedJiraIssues))
     } answers {
         firstArg()
     }
@@ -202,34 +164,26 @@ fun `syncFromJira should update jira issues for tasks`() {
         firstArg()
     }
 
-    every {
-        aiagentQualityGateService.updateState(any(), any())
-    } just Runs
-
-    every {
-        jiraErrorTracker.reset()
-    } just Runs
-
     // When
     syncScheduler.syncFromJira()
 
     // Then
     verify(exactly = 1) {
-        jiraIssueRepository.saveAll(any<Iterable<JiraIssueEntity>>())
+        jiraService.searchTasksByEpicKey(
+            "MONITORING-789",
+            100,
+        )
     }
 
-    val savedTaskIssues = savedJiraIssues.captured.toList()
-
-    assertEquals(1, savedTaskIssues.size)
-
-    with(savedTaskIssues.single()) {
-        assertEquals("TASK-1", jiraKey)
-        assertEquals("20001", jiraId)
-        assertEquals("task", type)
-        assertEquals("crossgoal", project)
-        assertEquals(2L, parentId)
-        assertEquals(qualityGate, this.qualityGate)
-        assertEquals("https://jira/TASK-1", jiraUrl)
+    verify(exactly = 1) {
+        jiraErrorTracker.increment()
     }
+
+    // Ошибка загрузки tasks не прерывает обработку:
+    // сохраняется jira_issue инициативы и monitoring epic.
+    verify(exactly = 2) {
+        jiraIssueRepository.save(any<JiraIssueEntity>())
+    }
+}
 
 ```
