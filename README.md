@@ -1,240 +1,66 @@
 ```java
 
-@ExtendWith(MockKExtension::class)
-class JiraNewInitiativeImportServiceTest {
+@Test
+fun `should keep created initiative and monitoring epic when monitoring task search fails`() {
+    jiraStub.failMonitoringTaskSearch()
 
-    @MockK
-    private lateinit var optionsService: OptionsService
+    jiraNewInitiativeImportService.importNewInitiatives()
 
-    @MockK
-    private lateinit var jiraIssueKeyExtractor: JiraIssueKeyExtractor
+    val agent = agentRepository.findFirstByAgentId(NEW_INITIATIVE_KEY)
 
-    @MockK
-    private lateinit var referenceDataProvider: JiraImportReferenceDataProvider
+    assertThat(agent)
+        .withFailMessage("New Jira initiative must remain persisted after monitoring Task search error")
+        .isNotNull
 
-    @MockK
-    private lateinit var searchRequestFactory: JiraInitiativeSearchRequestFactory
+    requireNotNull(agent)
 
-    @MockK
-    private lateinit var jiraSearchPaginator: JiraSearchPaginator
+    assertThat(agent.agentStatus?.code).isEqualTo(ANALYSIS_STATUS_CODE)
+    assertThat(agent.jiraFromStatus).isEqualTo(JIRA_FROM_STATUS_ERROR)
+    assertThat(agent.jiraUpdated).isNotNull
 
-    @MockK
-    private lateinit var existingJiraInitiativeRepository: ExistingJiraInitiativeRepository
-
-    @MockK
-    private lateinit var jiraNewInitiativeCreator: JiraNewInitiativeCreationService
-
-    @MockK
-    private lateinit var jiraNewInitiativeMonitoringService: JiraNewInitiativeMonitoringService
-
-    @InjectMockKs
-    private lateinit var service: JiraNewInitiativeImportService
-
-    private val referenceData = JiraImportReferenceData(
-        strategiesByJiraKey = emptyMap(),
-        enablersByNormalizedName = emptyMap(),
-        statusesByCode = emptyMap(),
-        qualityGates = emptyList(),
-        divisionsByLabel = emptyMap(),
-        blocksByLabel = emptyMap(),
-        initiativeTypesByCode = emptyMap(),
+    val initiativeIssues = jiraIssueRepository.findByAgentIdAndTypeAndProject(
+        agent.id,
+        JiraIssueType.initiative.name,
+        CROSSGOAL_PROJECT,
     )
 
-    @BeforeEach
-    fun setUp() {
-        val options = mockk<OptionsDto> {
-            every { newDepth } returns 7
-            every { maxResults } returns 30
+    assertThat(initiativeIssues)
+        .anySatisfy { issue ->
+            assertThat(issue.jiraKey).isEqualTo(NEW_INITIATIVE_KEY)
         }
 
-        every {
-            optionsService.getCurrent()
-        } returns options
+    val monitoringEpicIssues = jiraIssueRepository.findByAgentIdAndTypeAndProject(
+        agent.id,
+        JiraIssueType.epic.name,
+        CROSSGOAL_PROJECT,
+    )
 
-        every {
-            referenceDataProvider.load()
-        } returns referenceData
-    }
+    assertThat(monitoringEpicIssues).hasSize(1)
+    assertThat(monitoringEpicIssues.single().jiraKey).isEqualTo(MONITORING_EPIC_KEY)
 
-    @Test
-    fun `should skip cancelled Jira initiative`() {
-        val issue = jiraIssue(
-            jiraKey = "CROSSGOAL-200",
-            statusName = "Отменена",
-        )
+    val monitoringTaskIssues = jiraIssueRepository.findAllByAgentIdAndType(
+        agent.id,
+        JiraIssueType.task.name,
+    )
 
-        every {
-            jiraIssueKeyExtractor.extractCrossgoalKey(
-                "CROSSGOAL-200"
-            )
-        } returns "CROSSGOAL-200"
+    assertThat(monitoringTaskIssues).isEmpty()
 
-        returnSinglePage(issue)
+    val statusSlas = agentStatusSlaRepository.findAllByAiAgentId(agent.id)
 
-        service.importNewInitiatives()
+    assertThat(statusSlas).isEmpty()
 
-        verify(exactly = 0) {
-            existingJiraInitiativeRepository.findExistingJiraKeys(any())
-        }
+    val qualityGates = jdbcTemplate.queryForMap(
+        """
+        select quality_gate_code, state
+        from agent_quality_gate
+        where ai_agent_id = ?
+        """.trimIndent(),
+        agent.id,
+    )
 
-        verify(exactly = 0) {
-            jiraNewInitiativeCreator.createInitiativeFromJira(
-                any(),
-                any(),
-            )
-        }
+    assertThat(qualityGates).isNotEmpty
+    assertThat(qualityGates.values).allMatch { state -> state == "unchecked" }
 
-        verify(exactly = 0) {
-            jiraNewInitiativeMonitoringService.synchronizeMonitoring(
-                agentId = any(),
-                issue = any(),
-                referenceData = any(),
-                maxResults = any(),
-                jiraErrorTracker = any(),
-            )
-        }
-    }
-
-    @Test
-    fun `should skip ClassicML Jira initiative`() {
-        val issue = jiraIssue(
-            jiraKey = "CROSSGOAL-201",
-            statusName = "В работе",
-            labels = listOf(
-                "AI_Native_портфель",
-                "ClassicML",
-            ),
-        )
-
-        every {
-            jiraIssueKeyExtractor.extractCrossgoalKey(
-                "CROSSGOAL-201"
-            )
-        } returns "CROSSGOAL-201"
-
-        returnSinglePage(issue)
-
-        service.importNewInitiatives()
-
-        verify(exactly = 0) {
-            existingJiraInitiativeRepository.findExistingJiraKeys(any())
-        }
-
-        verify(exactly = 0) {
-            jiraNewInitiativeCreator.createInitiativeFromJira(
-                any(),
-                any(),
-            )
-        }
-
-        verify(exactly = 0) {
-            jiraNewInitiativeMonitoringService.synchronizeMonitoring(
-                agentId = any(),
-                issue = any(),
-                referenceData = any(),
-                maxResults = any(),
-                jiraErrorTracker = any(),
-            )
-        }
-    }
-
-    @Test
-    fun `should not start monitoring when initiative creation was skipped`() {
-        val issue = jiraIssue(
-            jiraKey = "CROSSGOAL-202",
-            statusName = "В работе",
-            labels = listOf("AI_Native_портфель"),
-        )
-
-        every {
-            jiraIssueKeyExtractor.extractCrossgoalKey(
-                "CROSSGOAL-202"
-            )
-        } returns "CROSSGOAL-202"
-
-        every {
-            existingJiraInitiativeRepository.findExistingJiraKeys(
-                listOf("CROSSGOAL-202")
-            )
-        } returns emptyList()
-
-        every {
-            jiraNewInitiativeCreator.createInitiativeFromJira(
-                issue = issue,
-                referenceData = referenceData,
-            )
-        } returns null
-
-        returnSinglePage(issue)
-
-        service.importNewInitiatives()
-
-        verify(exactly = 1) {
-            jiraNewInitiativeCreator.createInitiativeFromJira(
-                issue = issue,
-                referenceData = referenceData,
-            )
-        }
-
-        verify(exactly = 0) {
-            jiraNewInitiativeMonitoringService.synchronizeMonitoring(
-                agentId = any(),
-                issue = any(),
-                referenceData = any(),
-                maxResults = any(),
-                jiraErrorTracker = any(),
-            )
-        }
-    }
-
-    private fun returnSinglePage(
-        issue: SearchIssueDto,
-    ) {
-        every {
-            jiraSearchPaginator.processPages(
-                maxResults = any(),
-                jiraErrorTracker = any(),
-                requestFactory = any(),
-                pageProcessor = any(),
-            )
-        } answers {
-            val pageProcessor =
-                arg<(SearchIssueResponseDto) -> Unit>(3)
-
-            pageProcessor(
-                SearchIssueResponseDto(
-                    startAt = 0,
-                    maxResults = 30,
-                    total = 1,
-                    issues = listOf(issue),
-                )
-            )
-        }
-    }
-
-    private fun jiraIssue(
-        jiraKey: String,
-        statusName: String?,
-        labels: List<String> = emptyList(),
-    ): SearchIssueDto {
-
-        val status =
-            statusName?.let { value ->
-                mockk<SearchIssueStatusDto> {
-                    every { name } returns value
-                }
-            }
-
-        val fields =
-            mockk<SearchIssueFieldsDto> {
-                every { this@mockk.status } returns status
-                every { this@mockk.labels } returns labels
-            }
-
-        return mockk {
-            every { key } returns jiraKey
-            every { this@mockk.fields } returns fields
-        }
-    }
+    assertThat(jiraStub.monitoringTaskSearchRequestCount()).isGreaterThanOrEqualTo(1)
 }
 ```
