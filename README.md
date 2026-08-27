@@ -1,15 +1,17 @@
 ```java
 
-delete from division
-where code = 'integration-division';
+select
+    code,
+    name,
+    type,
+    regexp,
+    status_code,
+    ordering,
+    disabled
+from quality_gate
+where disabled is not true
+order by type, ordering;
 
-delete from block
-where code = 'integration-block';
-
-delete from quality_gate
-where code in (
-    'QG_ARCHITECTURE',
-    'QG_SECURITY',
-    'DEVELOPMENT_STAGE'
-);
+select new_depth, update_depth, max_results
+from options;
 ```
