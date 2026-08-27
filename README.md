@@ -1,172 +1,240 @@
 ```java
 
-import io.mockk.MockK
-import io.mockk.every
-import io.mockk.junit5.MockKExtension
-import io.mockk.verify
-import org.junit.jupiter.api.Assertions.assertNull
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.extension.ExtendWith
-import ru.sber.prm.repository.AIAgentRepository
-import ru.sber.prm.repository.AgentStrategyRepository
-import ru.sber.prm.repository.InvolvedResourceRepository
-
 @ExtendWith(MockKExtension::class)
-class JiraNewInitiativeCreationServiceTest {
+class JiraNewInitiativeImportServiceTest {
 
     @MockK
-    private lateinit var agentRepository: AIAgentRepository
+    private lateinit var optionsService: OptionsService
 
     @MockK
-    private lateinit var agentStrategyRepository: AgentStrategyRepository
+    private lateinit var jiraIssueKeyExtractor: JiraIssueKeyExtractor
 
     @MockK
-    private lateinit var involvedResourceRepository: InvolvedResourceRepository
+    private lateinit var referenceDataProvider: JiraImportReferenceDataProvider
 
     @MockK
-    private lateinit var organizationResolver: JiraInitiativeOrganizationResolver
+    private lateinit var searchRequestFactory: JiraInitiativeSearchRequestFactory
 
     @MockK
-    private lateinit var initiativeTypeResolver: JiraInitiativeTypeResolver
+    private lateinit var jiraSearchPaginator: JiraSearchPaginator
 
     @MockK
-    private lateinit var numericValueParser: JiraNumericValueParser
+    private lateinit var existingJiraInitiativeRepository: ExistingJiraInitiativeRepository
 
     @MockK
-    private lateinit var strategyResolver: JiraStrategyResolver
+    private lateinit var jiraNewInitiativeCreator: JiraNewInitiativeCreationService
 
     @MockK
-    private lateinit var involvedResourceResolver: JiraInvolvedResourceResolver
+    private lateinit var jiraNewInitiativeMonitoringService: JiraNewInitiativeMonitoringService
 
-    @MockK
-    private lateinit var contactCreator: JiraInitiativeContactCreator
+    @InjectMockKs
+    private lateinit var service: JiraNewInitiativeImportService
 
-    @MockK
-    private lateinit var enablerCreator: JiraInitiativeEnablerCreator
-
-    @MockK
-    private lateinit var qualityGateCreator: JiraInitiativeQualityGateCreator
-
-    @MockK
-    private lateinit var issueRelationCreator: JiraInitiativeIssueRelationCreator
-
-    private lateinit var service: JiraNewInitiativeCreationService
+    private val referenceData = JiraImportReferenceData(
+        strategiesByJiraKey = emptyMap(),
+        enablersByNormalizedName = emptyMap(),
+        statusesByCode = emptyMap(),
+        qualityGates = emptyList(),
+        divisionsByLabel = emptyMap(),
+        blocksByLabel = emptyMap(),
+        initiativeTypesByCode = emptyMap(),
+    )
 
     @BeforeEach
     fun setUp() {
-        service = JiraNewInitiativeCreationService(
-            agentRepository = agentRepository,
-            agentStrategyRepository = agentStrategyRepository,
-            involvedResourceRepository = involvedResourceRepository,
-            organizationResolver = organizationResolver,
-            initiativeTypeResolver = initiativeTypeResolver,
-            numericValueParser = numericValueParser,
-            strategyResolver = strategyResolver,
-            involvedResourceResolver = involvedResourceResolver,
-            contactCreator = contactCreator,
-            enablerCreator = enablerCreator,
-            qualityGateCreator = qualityGateCreator,
-            issueRelationCreator = issueRelationCreator,
-        )
+        val options = mockk<OptionsDto> {
+            every { newDepth } returns 7
+            every { maxResults } returns 30
+        }
+
+        every {
+            optionsService.getCurrent()
+        } returns options
+
+        every {
+            referenceDataProvider.load()
+        } returns referenceData
     }
 
     @Test
-    fun `should skip initiative when block and division cannot be resolved`() {
-        val initiatorUnits = listOf("UNKNOWN_INITIATOR")
-        val executorUnits = listOf("UNKNOWN_EXECUTOR")
-
-        val fields = mockk<SearchIssueFieldsDto> {
-            every { customfield_30000 } returns initiatorUnits
-            every { customfield_30001 } returns executorUnits
-        }
-
-        val issue = mockk<SearchIssueDto> {
-            every { key } returns JIRA_KEY
-            every { this@mockk.fields } returns fields
-        }
-
-        val referenceData = JiraImportReferenceData(
-            strategiesByJiraKey = emptyMap(),
-            enablersByNormalizedName = emptyMap(),
-            statusesByCode = emptyMap(),
-            qualityGates = emptyList(),
-            divisionsByLabel = emptyMap(),
-            blocksByLabel = emptyMap(),
-            initiativeTypesByCode = emptyMap(),
+    fun `should skip cancelled Jira initiative`() {
+        val issue = jiraIssue(
+            jiraKey = "CROSSGOAL-200",
+            statusName = "Отменена",
         )
 
         every {
-            organizationResolver.resolveOrganization(
-                initiatorUnits = initiatorUnits,
-                executorUnits = executorUnits,
-                referenceData = referenceData,
+            jiraIssueKeyExtractor.extractCrossgoalKey(
+                "CROSSGOAL-200"
             )
-        } returns JiraInitiativeOrganization(
-            division = null,
-            block = null,
-        )
+        } returns "CROSSGOAL-200"
 
-        val result = service.createInitiativeFromJira(
-            issue = issue,
-            referenceData = referenceData,
-        )
+        returnSinglePage(issue)
 
-        assertNull(result)
+        service.importNewInitiatives()
 
-        verify(exactly = 1) {
-            organizationResolver.resolveOrganization(
-                initiatorUnits = initiatorUnits,
-                executorUnits = executorUnits,
-                referenceData = referenceData,
+        verify(exactly = 0) {
+            existingJiraInitiativeRepository.findExistingJiraKeys(any())
+        }
+
+        verify(exactly = 0) {
+            jiraNewInitiativeCreator.createInitiativeFromJira(
+                any(),
+                any(),
             )
         }
 
         verify(exactly = 0) {
-            agentRepository.save(any())
-        }
-
-        verify(exactly = 0) {
-            initiativeTypeResolver.resolveInitiativeType(
-                labels = any(),
-                initiativeTypesByCode = any(),
-            )
-        }
-
-        verify(exactly = 0) {
-            contactCreator.createContacts(
-                agent = any(),
-                issue = any(),
-            )
-        }
-
-        verify(exactly = 0) {
-            enablerCreator.createEnablers(
-                agent = any(),
+            jiraNewInitiativeMonitoringService.synchronizeMonitoring(
+                agentId = any(),
                 issue = any(),
                 referenceData = any(),
-            )
-        }
-
-        verify(exactly = 0) {
-            qualityGateCreator.createQualityGates(
-                agent = any(),
-                referenceData = any(),
-                currentDateTime = any(),
-            )
-        }
-
-        verify(exactly = 0) {
-            issueRelationCreator.createIssueRelations(
-                agent = any(),
-                issue = any(),
-                currentDateTime = any(),
+                maxResults = any(),
+                jiraErrorTracker = any(),
             )
         }
     }
 
-    private companion object {
-        const val JIRA_KEY = "CROSSGOAL-300"
+    @Test
+    fun `should skip ClassicML Jira initiative`() {
+        val issue = jiraIssue(
+            jiraKey = "CROSSGOAL-201",
+            statusName = "В работе",
+            labels = listOf(
+                "AI_Native_портфель",
+                "ClassicML",
+            ),
+        )
+
+        every {
+            jiraIssueKeyExtractor.extractCrossgoalKey(
+                "CROSSGOAL-201"
+            )
+        } returns "CROSSGOAL-201"
+
+        returnSinglePage(issue)
+
+        service.importNewInitiatives()
+
+        verify(exactly = 0) {
+            existingJiraInitiativeRepository.findExistingJiraKeys(any())
+        }
+
+        verify(exactly = 0) {
+            jiraNewInitiativeCreator.createInitiativeFromJira(
+                any(),
+                any(),
+            )
+        }
+
+        verify(exactly = 0) {
+            jiraNewInitiativeMonitoringService.synchronizeMonitoring(
+                agentId = any(),
+                issue = any(),
+                referenceData = any(),
+                maxResults = any(),
+                jiraErrorTracker = any(),
+            )
+        }
+    }
+
+    @Test
+    fun `should not start monitoring when initiative creation was skipped`() {
+        val issue = jiraIssue(
+            jiraKey = "CROSSGOAL-202",
+            statusName = "В работе",
+            labels = listOf("AI_Native_портфель"),
+        )
+
+        every {
+            jiraIssueKeyExtractor.extractCrossgoalKey(
+                "CROSSGOAL-202"
+            )
+        } returns "CROSSGOAL-202"
+
+        every {
+            existingJiraInitiativeRepository.findExistingJiraKeys(
+                listOf("CROSSGOAL-202")
+            )
+        } returns emptyList()
+
+        every {
+            jiraNewInitiativeCreator.createInitiativeFromJira(
+                issue = issue,
+                referenceData = referenceData,
+            )
+        } returns null
+
+        returnSinglePage(issue)
+
+        service.importNewInitiatives()
+
+        verify(exactly = 1) {
+            jiraNewInitiativeCreator.createInitiativeFromJira(
+                issue = issue,
+                referenceData = referenceData,
+            )
+        }
+
+        verify(exactly = 0) {
+            jiraNewInitiativeMonitoringService.synchronizeMonitoring(
+                agentId = any(),
+                issue = any(),
+                referenceData = any(),
+                maxResults = any(),
+                jiraErrorTracker = any(),
+            )
+        }
+    }
+
+    private fun returnSinglePage(
+        issue: SearchIssueDto,
+    ) {
+        every {
+            jiraSearchPaginator.processPages(
+                maxResults = any(),
+                jiraErrorTracker = any(),
+                requestFactory = any(),
+                pageProcessor = any(),
+            )
+        } answers {
+            val pageProcessor =
+                arg<(SearchIssueResponseDto) -> Unit>(3)
+
+            pageProcessor(
+                SearchIssueResponseDto(
+                    startAt = 0,
+                    maxResults = 30,
+                    total = 1,
+                    issues = listOf(issue),
+                )
+            )
+        }
+    }
+
+    private fun jiraIssue(
+        jiraKey: String,
+        statusName: String?,
+        labels: List<String> = emptyList(),
+    ): SearchIssueDto {
+
+        val status =
+            statusName?.let { value ->
+                mockk<SearchIssueStatusDto> {
+                    every { name } returns value
+                }
+            }
+
+        val fields =
+            mockk<SearchIssueFieldsDto> {
+                every { this@mockk.status } returns status
+                every { this@mockk.labels } returns labels
+            }
+
+        return mockk {
+            every { key } returns jiraKey
+            every { this@mockk.fields } returns fields
+        }
     }
 }
 ```
