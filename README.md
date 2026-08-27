@@ -1,17 +1,15 @@
 ```java
 
-private fun sendMonitoringTaskSearchError(exchange: HttpExchange) {
-    val response = """
-        {
-          "message": "Integration test monitoring Task search failure"
-        }
-    """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+delete from division
+where code = 'integration-division';
 
-    exchange.responseHeaders.set("Content-Type", "application/json")
-    exchange.sendResponseHeaders(500, response.size.toLong())
+delete from block
+where code = 'integration-block';
 
-    exchange.responseBody.use { output ->
-        output.write(response)
-    }
-}
+delete from quality_gate
+where code in (
+    'QG_ARCHITECTURE',
+    'QG_SECURITY',
+    'DEVELOPMENT_STAGE'
+);
 ```
