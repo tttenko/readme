@@ -1,11 +1,17 @@
 ```java
 
-if (request.jql.contains("\"Epic Link\"", ignoreCase = true)) {
-    monitoringTaskSearchRequests.incrementAndGet()
+private fun sendMonitoringTaskSearchError(exchange: HttpExchange) {
+    val response = """
+        {
+          "message": "Integration test monitoring Task search failure"
+        }
+    """.trimIndent().toByteArray(StandardCharsets.UTF_8)
 
-    if (monitoringTaskSearchShouldFail) {
-        sendMonitoringTaskSearchError(exchange)
-        return
+    exchange.responseHeaders.set("Content-Type", "application/json")
+    exchange.sendResponseHeaders(500, response.size.toLong())
+
+    exchange.responseBody.use { output ->
+        output.write(response)
     }
 }
 ```
