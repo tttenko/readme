@@ -1,740 +1,753 @@
 ```java
 
 @ExtendWith(MockKExtension::class)
-class InitiativeMetricResponseBuilderTest {
+class InitiativeMetricValueReaderTest {
 
-    private lateinit var builder: InitiativeMetricResponseBuilder
-    private lateinit var metricApplicabilityPolicy: InitiativeMetricApplicabilityPolicy
+    @MockK
+    private lateinit var messageProvider: MessageProvider
 
-    @BeforeEach
-    fun setUp() {
-        metricApplicabilityPolicy = InitiativeMetricApplicabilityPolicy()
+    @MockK
+    private lateinit var initiativeMetricTypeRepository: InitiativeMetricTypeRepository
 
-        builder = InitiativeMetricResponseBuilder(
-            metricApplicabilityPolicy = metricApplicabilityPolicy,
-            planExecutionCalculator = InitiativeMetricPlanExecutionCalculator(),
+    @MockK
+    private lateinit var initiativeMetricValueRepository: InitiativeMetricValueRepository
+
+    @MockK
+    private lateinit var metricsDirectoryRepository: MetricsDirectoryRepository
+
+    @MockK
+    private lateinit var metricResponseBuilder: InitiativeMetricResponseBuilder
+
+    @InjectMockKs
+    private lateinit var service: InitiativeMetricValueReader
+
+    @Test
+    fun `getInitiativeMetricValues should throw bad request when agent type is unknown`() {
+        val initiativeId = 1L
+        val metricType = createMetricType(agentType = "wrong")
+
+        every {
+            initiativeMetricTypeRepository.findAllByAiAgentId(
+                initiativeId = initiativeId,
+            )
+        } returns listOf(metricType)
+
+        every {
+            messageProvider[WRONG_INITIATIVE_METRIC_AGENT_TYPE]
+        } returns "Недопустимый режим работы инициативы: {0}"
+
+        val exception =
+            assertThrows<AiBadRequestException> {
+                service.getInitiativeMetricValues(
+                    initiativeId = initiativeId,
+                )
+            }
+
+        assertEquals(
+            "Недопустимый режим работы инициативы: wrong",
+            exception.message,
         )
+
+        verify(exactly = 0) {
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = any(),
+                copilotSelected = any(),
+                appealsSelected = any(),
+            )
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .existsByInitiativeMetricTypeAiAgentIdAndPeriodMonth(
+                    initiativeId = any(),
+                    periodMonth = any(),
+                )
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetricsInPeriodRange(
+                    initiativeId = any(),
+                    agentTypes = any(),
+                    metricDirectoryIds = any(),
+                    periodFrom = any(),
+                    periodTo = any(),
+                )
+        }
+
+        verify(exactly = 0) {
+            metricResponseBuilder.build(
+                metrics = any(),
+                requestedAgentTypes = any(),
+                metricValues = any(),
+                reportingMonth = any(),
+                clearRegularMetricValue = any(),
+            )
+        }
     }
 
     @Test
-    fun `build should return response only for applicable agent types`() {
-        // Given
+    fun `getInitiativeMetricValues should throw bad request when agent type is null`() {
+        val initiativeId = 1L
+        val metricType = createMetricType(agentType = null)
+
+        every {
+            initiativeMetricTypeRepository.findAllByAiAgentId(
+                initiativeId = initiativeId,
+            )
+        } returns listOf(metricType)
+
+        every {
+            messageProvider[WRONG_INITIATIVE_METRIC_AGENT_TYPE]
+        } returns "Недопустимый режим работы инициативы: {0}"
+
+        val exception =
+            assertThrows<AiBadRequestException> {
+                service.getInitiativeMetricValues(
+                    initiativeId = initiativeId,
+                )
+            }
+
+        assertEquals(
+            "Недопустимый режим работы инициативы: null",
+            exception.message,
+        )
+
+        verify(exactly = 0) {
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = any(),
+                copilotSelected = any(),
+                appealsSelected = any(),
+            )
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .existsByInitiativeMetricTypeAiAgentIdAndPeriodMonth(
+                    initiativeId = any(),
+                    periodMonth = any(),
+                )
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetricsInPeriodRange(
+                    initiativeId = any(),
+                    agentTypes = any(),
+                    metricDirectoryIds = any(),
+                    periodFrom = any(),
+                    periodTo = any(),
+                )
+        }
+
+        verify(exactly = 0) {
+            metricResponseBuilder.build(
+                metrics = any(),
+                requestedAgentTypes = any(),
+                metricValues = any(),
+                reportingMonth = any(),
+                clearRegularMetricValue = any(),
+            )
+        }
+    }
+
+    @Test
+    fun `getInitiativeMetricValues should return empty list when metric types not found`() {
+        val initiativeId = 1L
+
+        every {
+            initiativeMetricTypeRepository.findAllByAiAgentId(
+                initiativeId = initiativeId,
+            )
+        } returns emptyList()
+
+        val result =
+            service.getInitiativeMetricValues(
+                initiativeId = initiativeId,
+            )
+
+        assertTrue(result.isEmpty())
+
+        verify(exactly = 0) {
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = any(),
+                copilotSelected = any(),
+                appealsSelected = any(),
+            )
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .existsByInitiativeMetricTypeAiAgentIdAndPeriodMonth(
+                    initiativeId = any(),
+                    periodMonth = any(),
+                )
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetricsInPeriodRange(
+                    initiativeId = any(),
+                    agentTypes = any(),
+                    metricDirectoryIds = any(),
+                    periodFrom = any(),
+                    periodTo = any(),
+                )
+        }
+
+        verify(exactly = 0) {
+            metricResponseBuilder.build(
+                metrics = any(),
+                requestedAgentTypes = any(),
+                metricValues = any(),
+                reportingMonth = any(),
+                clearRegularMetricValue = any(),
+            )
+        }
+    }
+
+    @Test
+    fun `getInitiativeMetricValues should return empty list when applicable metrics not found`() {
+        val initiativeId = 1L
+
+        val metricTypes =
+            listOf(
+                createMetricType(
+                    agentType = InitiativeMetricAgentType.AUTONOMOUS.value,
+                ),
+                createMetricType(
+                    agentType = InitiativeMetricAgentType.COPILOT.value,
+                ),
+                createMetricType(
+                    agentType = InitiativeMetricAgentType.APPEALS.value,
+                ),
+            )
+
+        every {
+            initiativeMetricTypeRepository.findAllByAiAgentId(
+                initiativeId = initiativeId,
+            )
+        } returns metricTypes
+
+        every {
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = true,
+                copilotSelected = true,
+                appealsSelected = true,
+            )
+        } returns emptyList()
+
+        val result =
+            service.getInitiativeMetricValues(
+                initiativeId = initiativeId,
+            )
+
+        assertEquals(
+            emptyList<InitiativeMetricResponse>(),
+            result,
+        )
+
+        verify(exactly = 1) {
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = true,
+                copilotSelected = true,
+                appealsSelected = true,
+            )
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .existsByInitiativeMetricTypeAiAgentIdAndPeriodMonth(
+                    initiativeId = any(),
+                    periodMonth = any(),
+                )
+        }
+
+        verify(exactly = 0) {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetricsInPeriodRange(
+                    initiativeId = any(),
+                    agentTypes = any(),
+                    metricDirectoryIds = any(),
+                    periodFrom = any(),
+                    periodTo = any(),
+                )
+        }
+
+        verify(exactly = 0) {
+            metricResponseBuilder.build(
+                metrics = any(),
+                requestedAgentTypes = any(),
+                metricValues = any(),
+                reportingMonth = any(),
+                clearRegularMetricValue = any(),
+            )
+        }
+    }
+
+    @Test
+    fun `getInitiativeMetricValues should use previous period and reporting month when reporting values exist`() {
+        val initiativeId = 1L
         val metricId = UUID.randomUUID()
-        val reportingMonth = YearMonth.now().minusMonths(1)
+
+        val reportingMonth =
+            YearMonth.now()
+                .minusMonths(1)
+
+        val previousPeriodMonth =
+            reportingMonth.minusMonths(1)
+
+        val metricType =
+            createMetricType(
+                agentType = InitiativeMetricAgentType.AUTONOMOUS.value,
+            )
 
         val metric =
             createMetric(
-                id = metricId,
-                autonomousApplicability = false,
-                copilotApplicability = true,
-                requiresAppealsWork = false,
+                metricId = metricId,
             )
 
-        val copilotMetricType =
-            InitiativeMetricTypeEntity(
-                aiAgent = createInitiative(initiativeId = 1L),
-                agentType = "copilot",
-            ).apply {
-                id = 10L
-            }
+        val metricValue = mockkMetricValue()
+        val expectedResponse =
+            listOf(mockkInitiativeMetricResponse())
 
-        val metricValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = copilotMetricType,
-                metricDirectory = metric,
-                periodMonth = reportingMonth.atDay(1),
-                metricValue = BigDecimal.TEN,
-                targetValue = BigDecimal.valueOf(20),
-            ).apply {
-                id = 100L
-            }
+        every {
+            metricValue.metricValue
+        } returns BigDecimal.ONE
 
-        // When
-        val result =
-            builder.build(
+        every {
+            metricValue.metricDirectory
+        } returns metric
+
+        every {
+            expectedResponse.single().isActive
+        } returns true
+
+        val periodMonthSlot = slot<LocalDate>()
+        val periodFromSlot = slot<LocalDate>()
+        val periodToSlot = slot<LocalDate>()
+
+        every {
+            initiativeMetricTypeRepository.findAllByAiAgentId(
+                initiativeId = initiativeId,
+            )
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = true,
+                copilotSelected = false,
+                appealsSelected = false,
+            )
+        } returns listOf(metric)
+
+        every {
+            initiativeMetricValueRepository
+                .existsByInitiativeMetricTypeAiAgentIdAndPeriodMonth(
+                    initiativeId = initiativeId,
+                    periodMonth = capture(periodMonthSlot),
+                )
+        } returns true
+
+        every {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetricsInPeriodRange(
+                    initiativeId = initiativeId,
+                    agentTypes =
+                        setOf(
+                            InitiativeMetricAgentType.AUTONOMOUS.value,
+                        ),
+                    metricDirectoryIds = setOf(metricId),
+                    periodFrom = capture(periodFromSlot),
+                    periodTo = capture(periodToSlot),
+                )
+        } returns listOf(metricValue)
+
+        every {
+            metricResponseBuilder.build(
                 metrics = listOf(metric),
-                requestedAgentTypes = setOf(
-                    InitiativeMetricAgentType.AUTONOMOUS,
-                    InitiativeMetricAgentType.COPILOT,
-                ),
+                requestedAgentTypes =
+                    setOf(
+                        InitiativeMetricAgentType.AUTONOMOUS,
+                    ),
                 metricValues = listOf(metricValue),
                 reportingMonth = reportingMonth,
+                clearRegularMetricValue = false,
             )
+        } returns expectedResponse
 
-        // Then
-        assertEquals(1, result.size)
-
-        val response = result.first()
-
-        assertEquals(metricId, response.id)
-        assertEquals("Метрика", response.name)
-        assertEquals("шт", response.unit)
-        assertEquals("growth", response.direction)
-        assertEquals("copilot", response.agentType)
-        assertEquals(true, response.isActive)
-        assertEquals("Описание", response.description)
-        assertEquals("monthly", response.frequency)
-        assertEquals(BigDecimal.TEN, response.metricValue)
-        assertEquals(BigDecimal.valueOf(20), response.targetValue)
-        assertNull(response.planExecution)
-        assertTrue(response.periods.isEmpty())
-    }
-
-    @Test
-    fun `build should return separate responses for same metric with different agent types`() {
-        // Given
-        val metricId = UUID.randomUUID()
-        val initiative = createInitiative(initiativeId = 1L)
-        val reportingMonth = YearMonth.now().minusMonths(1)
-
-        val metric =
-            createMetric(
-                id = metricId,
-                autonomousApplicability = true,
-                copilotApplicability = true,
-            )
-
-        val autonomousMetricType =
-            InitiativeMetricTypeEntity(
-                aiAgent = initiative,
-                agentType = "autonomous",
-            ).apply {
-                id = 10L
-            }
-
-        val copilotMetricType =
-            InitiativeMetricTypeEntity(
-                aiAgent = initiative,
-                agentType = "copilot",
-            ).apply {
-                id = 20L
-            }
-
-        val autonomousValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = autonomousMetricType,
-                metricDirectory = metric,
-                periodMonth = reportingMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(100),
-                targetValue = BigDecimal.valueOf(200),
-            ).apply {
-                id = 100L
-            }
-
-        val copilotValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = copilotMetricType,
-                metricDirectory = metric,
-                periodMonth = reportingMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(300),
-                targetValue = BigDecimal.valueOf(400),
-            ).apply {
-                id = 200L
-            }
-
-        // When
         val result =
-            builder.build(
-                metrics = listOf(metric),
-                requestedAgentTypes = setOf(
-                    InitiativeMetricAgentType.AUTONOMOUS,
-                    InitiativeMetricAgentType.COPILOT,
-                ),
-                metricValues = listOf(
-                    autonomousValue,
-                    copilotValue,
-                ),
-                reportingMonth = reportingMonth,
+            service.getInitiativeMetricValues(
+                initiativeId = initiativeId,
             )
 
-        // Then
-        assertEquals(2, result.size)
-
-        val autonomousResponse =
-            result.first { response ->
-                response.agentType == "autonomous"
-            }
-
-        val copilotResponse =
-            result.first { response ->
-                response.agentType == "copilot"
-            }
+        assertEquals(
+            expectedResponse,
+            result,
+        )
 
         assertEquals(
-            BigDecimal.valueOf(100),
-            autonomousResponse.metricValue,
+            reportingMonth.atDay(1),
+            periodMonthSlot.captured,
         )
-        assertEquals(
-            BigDecimal.valueOf(200),
-            autonomousResponse.targetValue,
-        )
-        assertNull(autonomousResponse.planExecution)
-        assertTrue(autonomousResponse.periods.isEmpty())
 
         assertEquals(
-            BigDecimal.valueOf(300),
-            copilotResponse.metricValue,
+            previousPeriodMonth.atDay(1),
+            periodFromSlot.captured,
         )
+
         assertEquals(
-            BigDecimal.valueOf(400),
-            copilotResponse.targetValue,
+            reportingMonth.atDay(1),
+            periodToSlot.captured,
         )
-        assertNull(copilotResponse.planExecution)
-        assertTrue(copilotResponse.periods.isEmpty())
-    }
 
-    @Test
-    fun `build should use reporting period value as main value and previous period as history`() {
-        // Given
-        val metricId = UUID.randomUUID()
-        val initiative = createInitiative(initiativeId = 1L)
-
-        val reportingMonth = YearMonth.now().minusMonths(1)
-        val previousPeriodMonth = reportingMonth.minusMonths(1)
-
-        val metric =
-            createMetric(
-                id = metricId,
-                copilotApplicability = true,
-            )
-
-        val metricType =
-            InitiativeMetricTypeEntity(
-                aiAgent = initiative,
-                agentType = "copilot",
-            ).apply {
-                id = 10L
-            }
-
-        val previousPeriodValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = metricType,
-                metricDirectory = metric,
-                periodMonth = previousPeriodMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(10),
-                targetValue = BigDecimal.valueOf(20),
-            ).apply {
-                id = 100L
-            }
-
-        val reportingPeriodValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = metricType,
-                metricDirectory = metric,
-                periodMonth = reportingMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(30),
-                targetValue = BigDecimal.valueOf(40),
-            ).apply {
-                id = 200L
-            }
-
-        // When
-        val result =
-            builder.build(
+        verify(exactly = 1) {
+            metricResponseBuilder.build(
                 metrics = listOf(metric),
                 requestedAgentTypes =
-                    setOf(InitiativeMetricAgentType.COPILOT),
-                metricValues = listOf(
-                    previousPeriodValue,
-                    reportingPeriodValue,
-                ),
-                reportingMonth = reportingMonth,
-            )
-
-        // Then
-        assertEquals(1, result.size)
-
-        val response = result.first()
-
-        assertEquals(
-            BigDecimal.valueOf(30),
-            response.metricValue,
-        )
-        assertEquals(
-            BigDecimal.valueOf(40),
-            response.targetValue,
-        )
-        assertNull(response.planExecution)
-
-        assertEquals(1, response.periods.size)
-
-        val previousPeriod = response.periods.single()
-
-        assertEquals(
-            previousPeriodMonth
-                .atDay(1)
-                .atStartOfDay(ZoneOffset.UTC)
-                .toInstant(),
-            previousPeriod.period,
-        )
-
-        assertEquals(
-            BigDecimal.valueOf(10),
-            previousPeriod.value,
-        )
-    }
-
-    @Test
-    fun `build should not use older period as history when previous period is absent`() {
-        // Given
-        val metricId = UUID.randomUUID()
-        val initiative = createInitiative(initiativeId = 1L)
-
-        val reportingMonth = YearMonth.now().minusMonths(1)
-        val olderMonth = reportingMonth.minusMonths(2)
-
-        val metric =
-            createMetric(
-                id = metricId,
-                copilotApplicability = true,
-            )
-
-        val metricType =
-            InitiativeMetricTypeEntity(
-                aiAgent = initiative,
-                agentType = "copilot",
-            ).apply {
-                id = 10L
-            }
-
-        val olderValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = metricType,
-                metricDirectory = metric,
-                periodMonth = olderMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(10),
-                targetValue = BigDecimal.valueOf(20),
-            ).apply {
-                id = 100L
-            }
-
-        val reportingPeriodValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = metricType,
-                metricDirectory = metric,
-                periodMonth = reportingMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(30),
-                targetValue = BigDecimal.valueOf(40),
-            ).apply {
-                id = 200L
-            }
-
-        // When
-        val result =
-            builder.build(
-                metrics = listOf(metric),
-                requestedAgentTypes =
-                    setOf(InitiativeMetricAgentType.COPILOT),
-                metricValues = listOf(
-                    olderValue,
-                    reportingPeriodValue,
-                ),
-                reportingMonth = reportingMonth,
-            )
-
-        // Then
-        val response = result.single()
-
-        assertEquals(
-            BigDecimal.valueOf(30),
-            response.metricValue,
-        )
-        assertEquals(
-            BigDecimal.valueOf(40),
-            response.targetValue,
-        )
-
-        assertTrue(response.periods.isEmpty())
-    }
-
-    @Test
-    fun `build should return only previous reporting period in history`() {
-        // Given
-        val metricId = UUID.randomUUID()
-        val initiative = createInitiative(initiativeId = 1L)
-
-        val reportingMonth = YearMonth.now().minusMonths(1)
-        val previousPeriodMonth = reportingMonth.minusMonths(1)
-        val olderMonth = reportingMonth.minusMonths(2)
-
-        val metric =
-            createMetric(
-                id = metricId,
-                copilotApplicability = true,
-            )
-
-        val metricType =
-            InitiativeMetricTypeEntity(
-                aiAgent = initiative,
-                agentType = "copilot",
-            ).apply {
-                id = 10L
-            }
-
-        val olderValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = metricType,
-                metricDirectory = metric,
-                periodMonth = olderMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(5),
-                targetValue = BigDecimal.valueOf(15),
-            ).apply {
-                id = 50L
-            }
-
-        val previousPeriodValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = metricType,
-                metricDirectory = metric,
-                periodMonth = previousPeriodMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(10),
-                targetValue = BigDecimal.valueOf(20),
-            ).apply {
-                id = 100L
-            }
-
-        val reportingPeriodValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = metricType,
-                metricDirectory = metric,
-                periodMonth = reportingMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(30),
-                targetValue = BigDecimal.valueOf(40),
-            ).apply {
-                id = 200L
-            }
-
-        // When
-        val response =
-            builder.build(
-                metrics = listOf(metric),
-                requestedAgentTypes =
-                    setOf(InitiativeMetricAgentType.COPILOT),
-                metricValues = listOf(
-                    olderValue,
-                    previousPeriodValue,
-                    reportingPeriodValue,
-                ),
-                reportingMonth = reportingMonth,
-            ).single()
-
-        // Then
-        assertEquals(1, response.periods.size)
-
-        val period = response.periods.single()
-
-        assertEquals(
-            previousPeriodMonth
-                .atDay(1)
-                .atStartOfDay(ZoneOffset.UTC)
-                .toInstant(),
-            period.period,
-        )
-
-        assertEquals(
-            BigDecimal.valueOf(10),
-            period.value,
-        )
-    }
-
-    @Test
-    fun `build should calculate planExecute for increase metric`() {
-        // Given
-        val metricId = UUID.randomUUID()
-        val initiative = createInitiative(initiativeId = 1L)
-        val reportingMonth = YearMonth.now().minusMonths(1)
-
-        val metric =
-            createMetric(
-                id = metricId,
-                copilotApplicability = true,
-                direction = "increase",
-                frequency = "regular",
-            )
-
-        val metricType =
-            InitiativeMetricTypeEntity(
-                aiAgent = initiative,
-                agentType = "copilot",
-            ).apply {
-                id = 10L
-            }
-
-        val metricValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = metricType,
-                metricDirectory = metric,
-                periodMonth = reportingMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(30),
-                targetValue = BigDecimal.valueOf(20),
-            ).apply {
-                id = 100L
-            }
-
-        // When
-        val result =
-            builder.build(
-                metrics = listOf(metric),
-                requestedAgentTypes =
-                    setOf(InitiativeMetricAgentType.COPILOT),
+                    setOf(
+                        InitiativeMetricAgentType.AUTONOMOUS,
+                    ),
                 metricValues = listOf(metricValue),
                 reportingMonth = reportingMonth,
+                clearRegularMetricValue = false,
             )
-
-        // Then
-        val response = result.first()
-
-        assertEquals(true, response.planExecution)
-        assertTrue(response.periods.isEmpty())
+        }
     }
 
     @Test
-    fun `build should not return target value and planExecute for constant metric`() {
-        // Given
+    fun `getInitiativeMetricValues should clear regular metric value when reporting month values do not exist`() {
+        val initiativeId = 1L
         val metricId = UUID.randomUUID()
-        val initiative = createInitiative(initiativeId = 1L)
-        val reportingMonth = YearMonth.now().minusMonths(1)
+
+        val reportingMonth =
+            YearMonth.now()
+                .minusMonths(1)
+
+        val previousPeriodMonth =
+            reportingMonth.minusMonths(1)
+
+        val metricType =
+            createMetricType(
+                agentType = InitiativeMetricAgentType.APPEALS.value,
+            )
 
         val metric =
             createMetric(
-                id = metricId,
-                copilotApplicability = true,
-                direction = "increase",
-                frequency = "constant",
+                metricId = metricId,
             )
 
-        val metricType =
-            InitiativeMetricTypeEntity(
-                aiAgent = initiative,
-                agentType = "copilot",
-            ).apply {
-                id = 10L
-            }
+        val metricValue = mockkMetricValue()
+        val expectedResponse =
+            listOf(mockkInitiativeMetricResponse())
 
-        val metricValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = metricType,
-                metricDirectory = metric,
-                periodMonth = reportingMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(30),
-                targetValue = BigDecimal.valueOf(20),
-            ).apply {
-                id = 100L
-            }
+        every {
+            metricValue.metricValue
+        } returns BigDecimal.ONE
 
-        // When
-        val result =
-            builder.build(
+        every {
+            metricValue.metricDirectory
+        } returns metric
+
+        every {
+            expectedResponse.single().isActive
+        } returns true
+
+        val periodMonthSlot = slot<LocalDate>()
+        val periodFromSlot = slot<LocalDate>()
+        val periodToSlot = slot<LocalDate>()
+
+        every {
+            initiativeMetricTypeRepository.findAllByAiAgentId(
+                initiativeId = initiativeId,
+            )
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = false,
+                copilotSelected = false,
+                appealsSelected = true,
+            )
+        } returns listOf(metric)
+
+        every {
+            initiativeMetricValueRepository
+                .existsByInitiativeMetricTypeAiAgentIdAndPeriodMonth(
+                    initiativeId = initiativeId,
+                    periodMonth = capture(periodMonthSlot),
+                )
+        } returns false
+
+        every {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetricsInPeriodRange(
+                    initiativeId = initiativeId,
+                    agentTypes =
+                        setOf(
+                            InitiativeMetricAgentType.APPEALS.value,
+                        ),
+                    metricDirectoryIds = setOf(metricId),
+                    periodFrom = capture(periodFromSlot),
+                    periodTo = capture(periodToSlot),
+                )
+        } returns listOf(metricValue)
+
+        every {
+            metricResponseBuilder.build(
                 metrics = listOf(metric),
                 requestedAgentTypes =
-                    setOf(InitiativeMetricAgentType.COPILOT),
-                metricValues = listOf(metricValue),
-                reportingMonth = reportingMonth,
-            )
-
-        // Then
-        val response = result.first()
-
-        assertEquals(
-            BigDecimal.valueOf(30),
-            response.metricValue,
-        )
-        assertNull(response.targetValue)
-        assertNull(response.planExecution)
-        assertTrue(response.periods.isEmpty())
-    }
-
-    @Test
-    fun `build should clear regular metric value when clearRegularMetricValue is true`() {
-        // Given
-        val metricId = UUID.randomUUID()
-        val initiative = createInitiative(initiativeId = 1L)
-        val reportingMonth = YearMonth.now().minusMonths(1)
-
-        val metric =
-            createMetric(
-                id = metricId,
-                copilotApplicability = true,
-                frequency = "regular",
-            )
-
-        val metricType =
-            InitiativeMetricTypeEntity(
-                aiAgent = initiative,
-                agentType = "copilot",
-            ).apply {
-                id = 10L
-            }
-
-        val metricValue =
-            InitiativeMetricValueEntity(
-                initiativeMetricType = metricType,
-                metricDirectory = metric,
-                periodMonth = reportingMonth.atDay(1),
-                metricValue = BigDecimal.valueOf(30),
-                targetValue = BigDecimal.valueOf(20),
-            ).apply {
-                id = 100L
-            }
-
-        // When
-        val response =
-            builder.build(
-                metrics = listOf(metric),
-                requestedAgentTypes =
-                    setOf(InitiativeMetricAgentType.COPILOT),
+                    setOf(
+                        InitiativeMetricAgentType.APPEALS,
+                    ),
                 metricValues = listOf(metricValue),
                 reportingMonth = reportingMonth,
                 clearRegularMetricValue = true,
-            ).single()
+            )
+        } returns expectedResponse
 
-        // Then
-        assertNull(response.metricValue)
+        val result =
+            service.getInitiativeMetricValues(
+                initiativeId = initiativeId,
+            )
+
         assertEquals(
-            BigDecimal.valueOf(20),
-            response.targetValue,
+            expectedResponse,
+            result,
         )
-        assertNull(response.planExecution)
+
+        assertEquals(
+            reportingMonth.atDay(1),
+            periodMonthSlot.captured,
+        )
+
+        assertEquals(
+            previousPeriodMonth.atDay(1),
+            periodFromSlot.captured,
+        )
+
+        assertEquals(
+            reportingMonth.atDay(1),
+            periodToSlot.captured,
+        )
+
+        verify(exactly = 1) {
+            metricResponseBuilder.build(
+                metrics = listOf(metric),
+                requestedAgentTypes =
+                    setOf(
+                        InitiativeMetricAgentType.APPEALS,
+                    ),
+                metricValues = listOf(metricValue),
+                reportingMonth = reportingMonth,
+                clearRegularMetricValue = true,
+            )
+        }
     }
 
     @Test
-    fun `buildWithoutValues should build responses with null metric values`() {
-        // Given
+    fun `getInitiativeMetricValues should pass copilot flag when only copilot is selected`() {
+        val initiativeId = 1L
+
+        val metricType =
+            createMetricType(
+                agentType = InitiativeMetricAgentType.COPILOT.value,
+            )
+
+        every {
+            initiativeMetricTypeRepository.findAllByAiAgentId(
+                initiativeId = initiativeId,
+            )
+        } returns listOf(metricType)
+
+        every {
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = false,
+                copilotSelected = true,
+                appealsSelected = false,
+            )
+        } returns emptyList()
+
+        val result =
+            service.getInitiativeMetricValues(
+                initiativeId = initiativeId,
+            )
+
+        assertEquals(
+            emptyList<InitiativeMetricResponse>(),
+            result,
+        )
+
+        verify(exactly = 1) {
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = false,
+                copilotSelected = true,
+                appealsSelected = false,
+            )
+        }
+    }
+
+    @Test
+    fun `getInitiativeMetricValues should remove duplicate agent types`() {
+        val initiativeId = 1L
         val metricId = UUID.randomUUID()
+
+        val reportingMonth =
+            YearMonth.now()
+                .minusMonths(1)
+
+        val previousPeriodMonth =
+            reportingMonth.minusMonths(1)
+
+        val firstMetricType =
+            createMetricType(
+                agentType = InitiativeMetricAgentType.COPILOT.value,
+            )
+
+        val secondMetricType =
+            createMetricType(
+                agentType = InitiativeMetricAgentType.COPILOT.value,
+            )
 
         val metric =
             createMetric(
-                id = metricId,
-                autonomousApplicability = true,
-                copilotApplicability = true,
-                requiresAppealsWork = false,
+                metricId = metricId,
             )
 
-        val requestedAgentTypes =
-            setOf(
-                InitiativeMetricAgentType.AUTONOMOUS,
-            )
+        val expectedResponse =
+            emptyList<InitiativeMetricResponse>()
 
-        // When
-        val result =
-            builder.buildWithoutValues(
+        every {
+            initiativeMetricTypeRepository.findAllByAiAgentId(
+                initiativeId = initiativeId,
+            )
+        } returns listOf(
+            firstMetricType,
+            secondMetricType,
+        )
+
+        every {
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = false,
+                copilotSelected = true,
+                appealsSelected = false,
+            )
+        } returns listOf(metric)
+
+        every {
+            initiativeMetricValueRepository
+                .existsByInitiativeMetricTypeAiAgentIdAndPeriodMonth(
+                    initiativeId = initiativeId,
+                    periodMonth = reportingMonth.atDay(1),
+                )
+        } returns true
+
+        every {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetricsInPeriodRange(
+                    initiativeId = initiativeId,
+                    agentTypes =
+                        setOf(
+                            InitiativeMetricAgentType.COPILOT.value,
+                        ),
+                    metricDirectoryIds = setOf(metricId),
+                    periodFrom = previousPeriodMonth.atDay(1),
+                    periodTo = reportingMonth.atDay(1),
+                )
+        } returns emptyList()
+
+        every {
+            metricResponseBuilder.build(
                 metrics = listOf(metric),
-                requestedAgentTypes = requestedAgentTypes,
+                requestedAgentTypes =
+                    setOf(
+                        InitiativeMetricAgentType.COPILOT,
+                    ),
+                metricValues = emptyList(),
+                reportingMonth = reportingMonth,
+                clearRegularMetricValue = false,
             )
+        } returns expectedResponse
 
-        // Then
-        assertEquals(1, result.size)
-
-        val response = result.first()
-
-        assertEquals(metricId, response.id)
-        assertEquals("Метрика", response.name)
-        assertEquals("шт", response.unit)
-        assertEquals("growth", response.direction)
-        assertEquals("autonomous", response.agentType)
-        assertEquals(true, response.isActive)
-        assertEquals("Описание", response.description)
-        assertEquals("monthly", response.frequency)
-        assertNull(response.metricValue)
-        assertNull(response.targetValue)
-        assertNull(response.planExecution)
-        assertTrue(response.periods.isEmpty())
-    }
-
-    @Test
-    fun `buildWithoutValues should return empty list when metrics are empty`() {
-        // Given
-        val requestedAgentTypes =
-            setOf(
-                InitiativeMetricAgentType.AUTONOMOUS,
-                InitiativeMetricAgentType.COPILOT,
-            )
-
-        // When
         val result =
-            builder.buildWithoutValues(
-                metrics = emptyList(),
-                requestedAgentTypes = requestedAgentTypes,
+            service.getInitiativeMetricValues(
+                initiativeId = initiativeId,
             )
 
-        // Then
-        assertTrue(result.isEmpty())
-    }
+        assertSame(
+            expectedResponse,
+            result,
+        )
 
-    @Test
-    fun `buildWithoutValues should build response for each applicable metric`() {
-        // Given
-        val firstMetric =
-            createMetric(
-                id = UUID.randomUUID(),
-                autonomousApplicability = true,
+        verify(exactly = 1) {
+            metricsDirectoryRepository.findApplicableMetrics(
+                autonomousSelected = false,
+                copilotSelected = true,
+                appealsSelected = false,
             )
-
-        val secondMetric =
-            createMetric(
-                id = UUID.randomUUID(),
-                copilotApplicability = true,
-            )
-
-        val requestedAgentTypes =
-            setOf(
-                InitiativeMetricAgentType.AUTONOMOUS,
-            )
-
-        // When
-        val result =
-            builder.buildWithoutValues(
-                metrics = listOf(
-                    firstMetric,
-                    secondMetric,
-                ),
-                requestedAgentTypes = requestedAgentTypes,
-            )
-
-        // Then
-        assertEquals(1, result.size)
-
-        val response = result.single()
-
-        assertEquals("autonomous", response.agentType)
-        assertEquals(firstMetric.id, response.id)
-        assertNull(response.metricValue)
-        assertNull(response.targetValue)
-        assertNull(response.planExecution)
-        assertTrue(response.periods.isEmpty())
-    }
-
-    private fun createInitiative(
-        initiativeId: Long,
-    ): AIAgentEntity {
-        return AIAgentEntity().apply {
-            id = initiativeId
         }
+
+        verify(exactly = 1) {
+            initiativeMetricValueRepository
+                .findValuesForInitiativeMetricsInPeriodRange(
+                    initiativeId = initiativeId,
+                    agentTypes =
+                        setOf(
+                            InitiativeMetricAgentType.COPILOT.value,
+                        ),
+                    metricDirectoryIds = setOf(metricId),
+                    periodFrom = previousPeriodMonth.atDay(1),
+                    periodTo = reportingMonth.atDay(1),
+                )
+        }
+
+        verify(exactly = 1) {
+            metricResponseBuilder.build(
+                metrics = listOf(metric),
+                requestedAgentTypes =
+                    setOf(
+                        InitiativeMetricAgentType.COPILOT,
+                    ),
+                metricValues = emptyList(),
+                reportingMonth = reportingMonth,
+                clearRegularMetricValue = false,
+            )
+        }
+    }
+
+    private fun createMetricType(
+        agentType: String?,
+    ): InitiativeMetricTypeEntity {
+        val metricType =
+            mockk<InitiativeMetricTypeEntity>()
+
+        every {
+            metricType.agentType
+        } returns agentType
+
+        return metricType
     }
 
     private fun createMetric(
-        id: UUID,
-        autonomousApplicability: Boolean = false,
-        copilotApplicability: Boolean = false,
-        requiresAppealsWork: Boolean = false,
-        direction: String = "growth",
-        frequency: String = "monthly",
+        metricId: UUID,
     ): MetricsDirectoryEntity {
-        return MetricsDirectoryEntity(
-            name = "Метрика",
-            unit = "шт",
-            direction = direction,
-            description = "Описание",
-            frequency = frequency,
-            autonomousApplicability = autonomousApplicability,
-            copilotApplicability = copilotApplicability,
-            requiresAppealsWork = requiresAppealsWork,
-            active = true,
-            updatedBy = 1L,
-            updatedAt = LocalDateTime.now(),
-        ).apply {
-            this.id = id
-        }
+        val metric =
+            mockk<MetricsDirectoryEntity>()
+
+        every {
+            metric.id
+        } returns metricId
+
+        return metric
+    }
+
+    private fun mockkMetricValue(): InitiativeMetricValueEntity {
+        return mockk()
+    }
+
+    private fun mockkInitiativeMetricResponse(): InitiativeMetricResponse {
+        return mockk()
     }
 }
+
 ```
