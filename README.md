@@ -1,64 +1,40 @@
 ```java
--- 1. agent_quality_gate
-select
-    ai_agent_id,
-    quality_gate_code,
-    state,
-    created,
-    updated
-from agent_quality_gate
-where ai_agent_id = 739
-order by quality_gate_code;
+private fun <T> findByLabel(
+    values: List<String>?,
+    entitiesByLabel: Map<String, T>,
+): T? {
+    return values
+        .orEmpty()
+        .asSequence()
+        .flatMap { value ->
+            entitiesByLabel
+                .asSequence()
+                .filter { (label, _) ->
+                    label.isNotBlank() &&
+                        value.contains(label, ignoreCase = true)
+                }
+        }
+        .maxByOrNull { (label, _) -> label.length }
+        ?.value
+}
 
+А дальше:
 
--- 2. jira_issue
-select
-    id,
-    agent_id,
-    project,
-    type,
-    jira_id,
-    jira_key,
-    jira_url,
-    parent_id,
-    quality_gate_code,
-    jira_link,
-    jira_transition,
-    created,
-    updated
-from jira_issue
-where agent_id = 739
-order by id;
+private fun findDivision(
+    values: List<String>?,
+    divisionsByLabel: Map<String, DivisionEntity>,
+): DivisionEntity? =
+    findByLabel(
+        values = values,
+        entitiesByLabel = divisionsByLabel,
+    )
 
-По логам ожидается:
-
-в agent_quality_gate — 25 записей со state = 'unchecked';
-в jira_issue — 2 записи:
-CROSSGOAL-999901;
-GIGAUSAGE-7631.
-
-Можно сразу проверить количества:
-
-select count(*)
-from agent_quality_gate
-where ai_agent_id = 739;
-
-select count(*)
-from jira_issue
-where agent_id = 739;
-
-Ожидаемо:
-
-agent_quality_gate = 25
-jira_issue = 2
-
-И более строгая проверка jira_issue:
-
-select jira_key, project, type
-from jira_issue
-where agent_id = 739
-  and jira_key in (
-      'CROSSGOAL-999901',
-      'GIGAUSAGE-7631'
-  );
+private fun findBlock(
+    values: List<String>?,
+    blocksByLabel: Map<String, BlockEntity>,
+): BlockEntity? =
+    findByLabel(
+        values = values,
+        entitiesByLabel = blocksByLabel,
+    )
 ```
