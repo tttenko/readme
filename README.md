@@ -1,13 +1,10 @@
 ```java
-select
-    d.id as division_id,
-    d.code as division_code,
-    d.label as division_label,
-    b.id as block_id,
-    b.code as block_code,
-    b.label as block_label
-from division d
-left join block b on b.id = d.block_id
-where lower(d.label) = lower('РГС');
+select id, agent_id, agent_name, agent_jira_url
+from ai_agent
+where agent_id = 'CROSSGOAL-150657'
+   or agent_jira_url ilike '%CROSSGOAL-150657%';
 
+select *
+from jira_issue
+where jira_key = 'CROSSGOAL-150657';
 ```
