@@ -1,5 +1,13 @@
 ```java
-
-Новые баги которые ты зарегестрировала связаны с тем, что некорректно заполнен блок/трайб и поэтому до создания стратегий и контактов код не доходит. То что мы вчера с тобой в дейле обсуждали
+select
+    d.id as division_id,
+    d.code as division_code,
+    d.label as division_label,
+    b.id as block_id,
+    b.code as block_code,
+    b.label as block_label
+from division d
+left join block b on b.id = d.block_id
+where lower(d.label) = lower('РГС');
 
 ```
