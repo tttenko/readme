@@ -1,65 +1,35 @@
 ```java
--- Сам агент
-select
-    id,
-    agent_id,
-    block_id,
-    division_id,
-    agent_initiative_type,
-    import_status,
-    jira_from_status
-from ai_agent
-where id = 740;
+Изучи AGENTS.md, rules и документацию feature `docs/features/initiative-catalog/`.
 
+Необходимо отразить постановку по выгрузке полного каталога AI-инициатив для роли TRANSFORMATION_OFFICE.
 
--- Стратегия
-select *
-from agent_strategy
-where ai_agent_id = 740;
+Все документы feature сейчас имеют статус draft, поэтому внеси изменения непосредственно в целевые документы feature, если локальные правила AGENTS.md/change-management не требуют иного.
 
+Обнови:
 
--- Ресурсы
-select *
-from involved_resource
-where ai_agent_id = 740;
+* product.md — продуктовый сценарий, scope, business value и ограничения;
+* requirements.md — функциональные требования, business rules, acceptance criteria и traceability;
+* ui.md — кнопку «Скачать каталог», role-based visibility, скачивание и обработку ошибок;
+* api.md — новый GET `/api/v1/ai-agent/initiatives/export`, авторизацию, response XLSX, имя файла и коды ошибок;
+* technical.md — техническое решение для новой выгрузки с учётом существующего `/api/v1/admin/ai-agent-download`.
 
+Требования постановки:
 
--- Контакты
-select
-    ac.*,
-    c.email,
-    c.fio
-from agent_contact ac
-join contact c on c.id = ac.contact_id
-where ac.agent_id = 740;
+* новая возможность доступна только TRANSFORMATION_OFFICE;
+* выгружается полный реестр независимо от фильтров, поиска и пагинации каталога;
+* существующий `/api/v1/admin/ai-agent-download` остаётся без изменений;
+* файл называется `Портфель AI-инициатив.xlsx`;
+* 26 столбцов: 17 существующих без изменения + 9 новых;
+* новые поля: email всех контактов через `;`, статус и дедлайн этапов Концепция, PoC, MVP, Целевое решение;
+* статус этапа принимает значения `Завершён`, `В работе`, `План`;
+* отсутствующий дедлайн формирует пустую ячейку;
+* ошибки API: 403, 408, 500, 503;
+* макет кнопки — Pixso.
 
+Не придумывай отсутствующую информацию. Зафиксируй как TBD как минимум неопределённости по включению disabled-инициатив, порядку строк выгрузки, правилам дедупликации/порядка email, точному алгоритму вычисления жизненного статуса этапов и подтверждению лимита формирования 30 секунд.
 
--- Enablers
-select
-    ae.*,
-    e.name
-from agent_enabler ae
-join enabler e on e.id = ae.enabler_id
-where ae.agent_id = 740;
+Сохраняй существующие ID. Для новых требований продолжай существующую нумерацию без переиспользования ID. Обнови cross-reference и traceability.
 
+После изменений выполни documentation review и `node scripts/validate-docs.mjs`.
 
--- Quality Gates
-select *
-from agent_quality_gate
-where ai_agent_id = 740
-order by quality_gate_code;
-
-
--- Jira relations
-select
-    id,
-    agent_id,
-    project,
-    type,
-    jira_id,
-    jira_key,
-    jira_url
-from jira_issue
-where agent_id = 740
-order by id;
 ```
