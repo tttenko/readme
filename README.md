@@ -1,10 +1,17 @@
 ```java
-select id, agent_id, agent_name, agent_jira_url
-from ai_agent
-where agent_id = 'CROSSGOAL-150657'
-   or agent_jira_url ilike '%CROSSGOAL-150657%';
+select *
+from agent_strategy
+where ai_agent_id = 739;
+
+select *
+from contact
+where lower(email) = lower('NIBubentsova@sberbank.ru');
+
+select *
+from agent_contact
+where agent_id = 739;
 
 select *
 from jira_issue
-where jira_key = 'CROSSGOAL-150657';
+where agent_id = 739;
 ```
