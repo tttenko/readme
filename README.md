@@ -1,22 +1,22 @@
 ```java
-Изучи AGENTS.md и skills/change-management.
+Изучи актуальную SDD-спецификацию initiative-catalog после apply change initiative-export-portfolio.
 
-Примени approved change proposal docs/changes/initiative-export-portfolio/proposal.md согласно локальному change-management workflow.
+Основные требования реализации:
+FR-027, FR-028, FR-029, FR-030, BR-006, NFR-004, API-014.
 
-Перед изменениями покажи план apply.
+Особенно изучи requirements.md, api.md и technical.md.
 
-Во время apply:
+Затем полностью проанализируй существующую реализацию GET /api/v1/admin/ai-agent-download: controller → service → получение данных → DTO/model → формирование XLSX.
 
-назначь placeholders реальные ID на основании актуального состояния целевых документов;
-примени изменения в product.md, requirements.md, ui.md, api.md, technical.md;
-обнови все cross-reference и Traceability;
-для technical.md следуй tasks.md;
-перед фиксацией технического решения изучи существующий admin-export в services/prm-ai-backend, если сервис подключён;
-не придумывай классы, properties или архитектуру, которых нет в коде;
-существующий GET /api/v1/admin/ai-agent-download не менять по контракту и поведению;
-заполни Assigned IDs в proposal;
-выполни documentation-review и validation;
-после успешного apply выполни действия по архивированию proposal согласно change-management.
+Также найди:
 
-Код backend не изменять — сейчас выполняется только apply документации
+источник statusSla, plannedDate, completedDate;
+текущий витринный status инициативы и его порядок;
+модель контактов;
+поле disabled;
+существующую конфигурацию URL Пульта, если она есть.
+
+Сопоставь текущий код с FR-027..FR-030 и API-014.
+
+Пока код не изменяй. Предложи implementation plan с конкретными существующими классами и методами. Отдельно укажи, что можно переиспользовать из admin-export без изменения его поведения.
 ```
