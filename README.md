@@ -1,12 +1,14 @@
 ```java
-План принимаю после следующих финальных корректировок:
+План принимаю. Перед началом реализации внеси две финальные технические корректировки и после этого можешь реализовывать без повторного согласования плана.
 
-Исправь @GetMapping: не использовать MediaType.APPLICATION_OCTET_STREAM_VALUE. API-014 должен возвращать application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.
-Для FR-029 сравнивай этапы не с raw agent.agentStatus.ordering, а с текущим витринным статусом инициативы. Учти существующую нормализацию research → analysis, release → targetSolution; analysis/development/pilot/targetSolution остаются без изменения. Не дублируй нормализацию, если в backend уже существует подходящий helper/mapping.
-Email объединять строго через ";" без добавления пробела: joinToString(";").
-Не задавай production URL как default непосредственно в PultProperties.kt. URL должен приходить из конфигурации/application.yaml/environment. Service не должен содержать production hardcode.
-Добавь тесты FR-029 для служебных текущих статусов research и release, подтверждающие их нормализацию в analysis и targetSolution.
-Для Excel hyperlink добавь проверку именно свойства hyperlink ячейки (cell.hyperlink.address), а не только строкового URL в DTO.
+Для statusSla используй bulk-загрузку через существующий AgentStatusSlaRepository.findAllByAiAgentIdIn(...). Добавь repository в зависимости InitiativeRegistryExportService, одним запросом получи SLA для всех экспортируемых инициатив и сгруппируй их по initiative ID/status code. Не полагайся на lazy relation AIAgentEntity.agentStatusSla и не создавай N+1 запросов.
+Перед реализацией hyperlink проверь фактический API ExcelExportHelper.writeSheetData и ExcelColumnDescription. Если существующий helper не предоставляет доступ к POI Cell, общий ExcelExportHelper НЕ изменяй. Сначала сформируй XLSX через существующий helper, затем в InitiativeRegistryExportService отдельным post-processing проходом установи hyperlink на ячейки колонки «Ссылка на инициативу в Пульт» через workbook.creationHelper.createHyperlink(...) / cell.hyperlink.
 
-Остальной план сохраняй. После этих корректировок реализацию можно начинать.
+Добавь тест, который подтверждает bulk-вызов findAllByAiAgentIdIn и отсутствие необходимости получать SLA отдельно для каждой инициативы.
+
+Если проект использует environment variables для URL, prm.pult.initiative-url-template вынеси в env-переменную согласно существующему стилю конфигурации проекта; не придумывай новый стиль, сначала посмотри соседние properties.
+
+findAll() для инициатив оставить как есть — отдельный deterministic ORDER BY не нужен.
+
+После этих изменений реализуй утверждённый план и тесты. Existing admin-export и его supporting classes не менять.
 ```
