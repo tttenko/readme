@@ -1,242 +1,314 @@
 ```java
-/**
- * Создаёт текстовую Excel-колонку.
- *
- * Если [valueProvider] возвращает null, ячейка остаётся пустой.
- */
-fun <T> textColumn(label: String, valueProvider: (T) -> String?): ExcelColumnDescription<T> =
-    ExcelColumnDescription(
-        label = label,
-        columnFun = { (entity, _, cell) ->
-            valueProvider(entity)?.let { cell.setCellValue(it) }
-        },
-    )
+package ru.sber.prm.service
 
-/**
- * Создаёт числовую Excel-колонку.
- *
- * Числовое значение записывается в ячейку как Double.
- * Если [valueProvider] возвращает null, ячейка остаётся пустой.
- */
-fun <T> numberColumn(label: String, valueProvider: (T) -> Number?): ExcelColumnDescription<T> =
-    ExcelColumnDescription(
-        label = label,
-        columnFun = { (entity, _, cell) ->
-            valueProvider(entity)?.let { cell.setCellValue(it.toDouble()) }
-        },
-    )
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
+import org.apache.poi.xssf.usermodel.XSSFWorkbook
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.DisplayName
+import org.junit.jupiter.api.Test
+import org.springframework.http.ContentDisposition
+import org.springframework.http.HttpHeaders
+import org.springframework.http.HttpStatus
+import ru.sber.prm.config.properties.EmailProperties
+import ru.sber.prm.entity.AIAgentEntity
+import ru.sber.prm.entity.AgentStatusSlaEntity
+import ru.sber.prm.entity.StatusEntity
+import ru.sber.prm.exception.AiInternalServerException
+import ru.sber.prm.mapper.InitiativeRegistryMapper
+import ru.sber.prm.repository.AIAgentRepository
+import ru.sber.prm.repository.AgentStatusSlaRepository
+import ru.sber.prm.repository.StatusRepository
+import ru.sber.prm.service.references.TerBankService
+import java.time.LocalDateTime
 
-/**
- * Создаёт Excel-колонку с активной URL-гиперссылкой.
- *
- * URL одновременно используется как отображаемое значение ячейки
- * и как адрес Excel hyperlink.
- */
-fun <T> hyperlinkColumn(label: String, valueProvider: (T) -> String?): ExcelColumnDescription<T> =
-    ExcelColumnDescription(
-        label = label,
-        columnFun = { (entity, workbook, cell) ->
-            valueProvider(entity)?.takeIf { it.isNotBlank() }?.let { url ->
-                cell.setCellValue(url)
-                cell.hyperlink = workbook.creationHelper.createHyperlink(HyperlinkType.URL).apply { address = url }
-            }
-        },
-    )
+@DisplayName("InitiativeRegistryExportService tests")
+class InitiativeRegistryExportServiceTest {
 
-/**
- * Сервис формирования полного XLSX-реестра AI-инициатив.
- *
- * Используется двумя endpoint:
- * - GET /api/v1/ai-agent/initiatives/export для TRANSFORMATION_OFFICE;
- * - GET /api/v1/admin/ai-agent-download для CMS_ADMIN.
- *
- * Выгрузка содержит все инициативы, включая архивные, и формирует 28 колонок:
- * 17 базовых колонок инициативы и 11 дополнительных колонок реестра.
- *
- * Для получения SLA используется один bulk-запрос по всем выгружаемым инициативам.
- */
-@Service
-class InitiativeRegistryExportService(
-    private val mapper: InitiativeRegistryMapper,
-    private val terBankService: TerBankService,
-    private val aiAgentRepository: AIAgentRepository,
-    private val statusRepository: StatusRepository,
-    private val agentStatusSlaRepository: AgentStatusSlaRepository,
-    private val pultProperties: PultProperties,
-) {
+    private lateinit var terBankService: TerBankService
+    private lateinit var aiAgentRepository: AIAgentRepository
+    private lateinit var statusRepository: StatusRepository
+    private lateinit var agentStatusSlaRepository: AgentStatusSlaRepository
+    private lateinit var emailProperties: EmailProperties
+    private lateinit var service: InitiativeRegistryExportService
 
-    @Value("\${scheduled.jira-sync.delta.url.prefix}")
-    private var deltaPrefix: String = ""
+    @BeforeEach
+    fun setUp() {
+        terBankService = mockk()
+        aiAgentRepository = mockk()
+        statusRepository = mockk()
+        agentStatusSlaRepository = mockk()
+        emailProperties = mockk()
 
-    @Value("\${scheduled.jira-sync.sigma.url.prefix}")
-    private var sigmaPrefix: String = ""
-
-    companion object {
-        /** MIME-type XLSX-файла. */
-        const val XLSX_MEDIA_TYPE_VALUE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-        /** MediaType XLSX-файла для HTTP-response. */
-        val XLSX_MEDIA_TYPE: MediaType = MediaType.parseMediaType(XLSX_MEDIA_TYPE_VALUE)
-
-        /** Имя файла полного реестра AI-инициатив. */
-        const val FILE_NAME = "Портфель AI-инициатив.xlsx"
-
-        /** Название листа внутри сформированного Excel-файла. */
-        private const val SHEET_NAME = "Портфель AI-инициатив"
-    }
-
-    /**
-     * Формирует полный XLSX-реестр AI-инициатив.
-     *
-     * В выгрузку включаются все инициативы, включая disabled.
-     * Фильтры, поиск и пагинация каталога не применяются.
-     *
-     * Алгоритм:
-     * 1. Проверить конфигурацию шаблона ссылки Пульта.
-     * 2. Получить полный список инициатив.
-     * 3. Получить справочник тербанков.
-     * 4. Получить ordering активных статусов.
-     * 5. Одним запросом получить SLA всех инициатив.
-     * 6. Сформировать модели строк через [InitiativeRegistryMapper].
-     * 7. Сформировать Excel и вернуть его как XLSX-файл.
-     */
-    @Transactional(readOnly = true)
-    fun downloadRegistryExcel(): ResponseEntity<InputStreamResource> {
-        val urlTemplate = pultProperties.initiativeUrlTemplate
-        validateUrlTemplate(urlTemplate)
-
-        val agents = aiAgentRepository.findAll()
-        val terBanks = terBankService.list()
-        val statusOrderingByCode = loadStatusOrderingByCode()
-        val slaByInitiativeAndStatusCode = loadSlaByInitiativeAndStatusCode(agents.map { it.id })
-
-        val data = agents.map { agent ->
-            mapper.toInitiativeRegistryExcelExportModel(
-                entity = agent,
-                terBanks = terBanks,
-                deltaPrefix = deltaPrefix,
-                sigmaPrefix = sigmaPrefix,
-                statusOrderingByCode = statusOrderingByCode,
-                slaByStatusCode = slaByInitiativeAndStatusCode[agent.id].orEmpty(),
-                urlTemplate = urlTemplate,
-            )
-        }
-
-        val workbook = ExcelExportHelper.createWorkBook(listOf(SHEET_NAME))
-        ExcelExportHelper.writeSheetData(workbook, workbook.getSheetAt(0), data, headerColumns())
-
-        return with(ExcelExportHelper) {
-            workbook.convertToFile(FILE_NAME, XLSX_MEDIA_TYPE)
-        }
-    }
-
-    /**
-     * Проверяет конфигурацию ссылки на инициативу в Пульте.
-     *
-     * Шаблон должен быть непустым и содержать placeholder `{id}`,
-     * который при формировании строки заменяется внутренним ID инициативы.
-     *
-     * @throws AiInternalServerException если property отсутствует или имеет некорректный формат.
-     */
-    private fun validateUrlTemplate(urlTemplate: String) {
-        if (urlTemplate.isBlank() || !urlTemplate.contains("{id}")) {
-            throw AiInternalServerException(
-                message = "Property 'prm.pult.initiative-url-template' must contain '{id}'"
-            )
-        }
-    }
-
-    /**
-     * Загружает ordering активных статусов и индексирует их по code.
-     *
-     * Используется для вычисления жизненного статуса этапов
-     * «Завершён», «В работе» и «План».
-     */
-    private fun loadStatusOrderingByCode(): Map<String, Long> =
-        statusRepository.findAllActive()
-            .mapNotNull { status ->
-                val code = status.code ?: return@mapNotNull null
-                val ordering = status.ordering ?: return@mapNotNull null
-                code to ordering
-            }
-            .toMap()
-
-    /**
-     * Загружает SLA всех выгружаемых инициатив одним запросом.
-     *
-     * Результат группируется сначала по ID инициативы,
-     * затем по code статуса этапа:
-     *
-     * initiativeId -> statusCode -> AgentStatusSlaEntity.
-     *
-     * Такой подход исключает выполнение отдельного SLA-запроса
-     * для каждой инициативы.
-     */
-    private fun loadSlaByInitiativeAndStatusCode(
-        initiativeIds: Collection<Long>,
-    ): Map<Long, Map<String, AgentStatusSlaEntity>> {
-        if (initiativeIds.isEmpty()) return emptyMap()
-
-        return agentStatusSlaRepository.findAllByAiAgentIdIn(initiativeIds)
-            .mapNotNull { sla ->
-                val initiativeId = sla.primaryKey.aiAgentId ?: return@mapNotNull null
-                val statusCode = sla.agentStatus?.code ?: return@mapNotNull null
-                initiativeId to (statusCode to sla)
-            }
-            .groupBy({ it.first }, { it.second })
-            .mapValues { (_, pairs) -> pairs.toMap() }
-    }
-
-    /**
-     * Описание 28 колонок файла «Портфель AI-инициатив.xlsx».
-     *
-     * Первые 17 колонок соответствуют существующей выгрузке AI-инициатив.
-     * Далее добавляются:
-     * - признак архива;
-     * - ссылка на инициативу в Пульт;
-     * - email контактов;
-     * - статус и дедлайн этапов Концепция, PoC, MVP и Целевое решение.
-     *
-     * Колонка «Ссылка на инициативу в Пульт» записывается как активная Excel-гиперссылка.
-     */
-    fun headerColumns(): List<ExcelColumnDescription<InitiativeRegistryExcelExportModel>> =
-        listOf(
-            ExcelExportHelper.textColumn("ID AI-агента") { it.id },
-            ExcelExportHelper.textColumn("Блок") { it.block },
-            ExcelExportHelper.textColumn("Трайб") { it.division },
-            ExcelExportHelper.textColumn("ТБ") { it.terBank },
-            ExcelExportHelper.textColumn("Наименование") { it.name },
-            ExcelExportHelper.textColumn("Описание") { it.description },
-            ExcelExportHelper.textColumn("Проблема, которую решает") { it.problem },
-            ExcelExportHelper.textColumn("Текущий статус") { it.status },
-            ExcelExportHelper.textColumn("Ссылка JIRA") { it.jiraUrl },
-            ExcelExportHelper.textColumn("CROSSGOAL") { it.crossgoal },
-            ExcelExportHelper.textColumn("GIGAUSAGE") { it.gigausage },
-            ExcelExportHelper.textColumn("Тип инициативы") { it.initiativeType },
-            ExcelExportHelper.textColumn("Аудитория") { it.audience },
-            ExcelExportHelper.textColumn("Программа AI-трансформации") { it.program },
-            ExcelExportHelper.numberColumn("Фин. эффект, руб.") { it.effectRevenue },
-            ExcelExportHelper.numberColumn("Фин. эффект, ПШЕ") { it.effectOptimization },
-            ExcelExportHelper.textColumn("Поверхности") { it.implementedPlatforms },
-            ExcelExportHelper.textColumn("Архив") {
-                when (it.isDisable) {
-                    true -> "Да"
-                    false -> "Нет"
-                    null -> null
-                }
-            },
-            ExcelExportHelper.hyperlinkColumn("Ссылка на инициативу в Пульт") { it.initiativeUrl },
-            ExcelExportHelper.textColumn("Email контакта") { it.contactEmails },
-            ExcelExportHelper.textColumn("Статус этапа — Концепция") { it.stageStatusConcept },
-            ExcelExportHelper.textColumn("Дедлайн этапа — Концепция") { it.stageDeadlineConcept },
-            ExcelExportHelper.textColumn("Статус этапа — PoC") { it.stageStatusPoc },
-            ExcelExportHelper.textColumn("Дедлайн этапа — PoC") { it.stageDeadlinePoc },
-            ExcelExportHelper.textColumn("Статус этапа — MVP") { it.stageStatusMvp },
-            ExcelExportHelper.textColumn("Дедлайн этапа — MVP") { it.stageDeadlineMvp },
-            ExcelExportHelper.textColumn("Статус этапа — Целевое решение") { it.stageStatusTargetSolution },
-            ExcelExportHelper.textColumn("Дедлайн этапа — Целевое решение") { it.stageDeadlineTargetSolution },
+        service = InitiativeRegistryExportService(
+            mapper = InitiativeRegistryMapper(),
+            terBankService = terBankService,
+            aiAgentRepository = aiAgentRepository,
+            statusRepository = statusRepository,
+            agentStatusSlaRepository = agentStatusSlaRepository,
+            emailProperties = emailProperties,
         )
-}
+    }
 
+    private fun status(code: String, ordering: Long) = StatusEntity().also {
+        it.id = ordering
+        it.code = code
+        it.name = code
+        it.ordering = ordering
+    }
+
+    private fun sla(statusCode: String, plannedDate: LocalDateTime? = null, initiativeId: Long? = 1L) =
+        AgentStatusSlaEntity().also {
+            it.primaryKey.aiAgentId = initiativeId
+            it.agentStatus = status(statusCode, 1L)
+            it.plannedDate = plannedDate
+        }
+
+    @Test
+    fun `should use findAll including disabled and load sla in bulk`() {
+        // given
+        val activeAgent = AIAgentEntity().also {
+            it.id = 1L
+            it.agentId = "AI-1"
+            it.agentStatus = status("pilot", 3L)
+            it.disabled = false
+        }
+
+        val disabledAgent = AIAgentEntity().also {
+            it.id = 2L
+            it.agentId = "AI-2"
+            it.agentStatus = status("development", 2L)
+            it.disabled = true
+        }
+
+        every { terBankService.list() } returns emptyList()
+        every { aiAgentRepository.findAll() } returns listOf(activeAgent, disabledAgent)
+        every { statusRepository.findAllActive() } returns listOf(
+            status("analysis", 1L),
+            status("development", 2L),
+            status("pilot", 3L),
+            status("targetSolution", 4L),
+        )
+        every { agentStatusSlaRepository.findAllByAiAgentIdIn(any()) } returns
+            listOf(sla("development", LocalDateTime.of(2026, 9, 1, 10, 0)))
+        every { emailProperties.emailLinkProperties.linkToPortalShort } returns "https://pult.sber.ru/"
+
+        // when
+        val response = service.downloadRegistryExcel()
+
+        // then
+        verify(exactly = 1) { aiAgentRepository.findAll() }
+        verify(exactly = 1) { agentStatusSlaRepository.findAllByAiAgentIdIn(listOf(1L, 2L)) }
+        verify(exactly = 0) { agentStatusSlaRepository.findAllByAiAgentId(any()) }
+
+        assertEquals(HttpStatus.OK, response.statusCode)
+        assertEquals(InitiativeRegistryExportService.XLSX_MEDIA_TYPE, response.headers.contentType)
+    }
+
+    @Test
+    fun `should set exact content disposition filename`() {
+        // given
+        val agent = AIAgentEntity().also {
+            it.id = 1L
+            it.agentId = "AI-1"
+        }
+
+        every { terBankService.list() } returns emptyList()
+        every { aiAgentRepository.findAll() } returns listOf(agent)
+        every { statusRepository.findAllActive() } returns emptyList()
+        every { agentStatusSlaRepository.findAllByAiAgentIdIn(any()) } returns emptyList()
+        every { emailProperties.emailLinkProperties.linkToPortalShort } returns "https://pult.sber.ru/"
+
+        // when
+        val response = service.downloadRegistryExcel()
+
+        // then
+        val disposition = ContentDisposition.parse(response.headers.getFirst(HttpHeaders.CONTENT_DISPOSITION)!!)
+
+        assertEquals(InitiativeRegistryExportService.FILE_NAME, disposition.filename)
+    }
+
+    @Test
+    fun `should produce 28 columns in the required order`() {
+        // given
+        val agent = AIAgentEntity().also {
+            it.id = 1L
+            it.agentId = "AI-1"
+        }
+
+        every { terBankService.list() } returns emptyList()
+        every { aiAgentRepository.findAll() } returns listOf(agent)
+        every { statusRepository.findAllActive() } returns emptyList()
+        every { agentStatusSlaRepository.findAllByAiAgentIdIn(any()) } returns emptyList()
+        every { emailProperties.emailLinkProperties.linkToPortalShort } returns "https://pult.sber.ru/"
+
+        // when
+        val response = service.downloadRegistryExcel()
+
+        // then
+        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
+            val headerRow = workbook.getSheetAt(0).getRow(0)
+
+            assertEquals(28, headerRow.physicalNumberOfCells)
+
+            val expectedHeaders = listOf(
+                "ID AI-агента",
+                "Блок",
+                "Трайб",
+                "ТБ",
+                "Наименование",
+                "Описание",
+                "Проблема, которую решает",
+                "Текущий статус",
+                "Ссылка JIRA",
+                "CROSSGOAL",
+                "GIGAUSAGE",
+                "Тип инициативы",
+                "Аудитория",
+                "Программа AI-трансформации",
+                "Фин. эффект, руб.",
+                "Фин. эффект, ПШЕ",
+                "Поверхности",
+                "Архив",
+                "Ссылка на инициативу в Пульт",
+                "Email контакта",
+                "Статус этапа — Концепция",
+                "Дедлайн этапа — Концепция",
+                "Статус этапа — PoC",
+                "Дедлайн этапа — PoC",
+                "Статус этапа — MVP",
+                "Дедлайн этапа — MVP",
+                "Статус этапа — Целевое решение",
+                "Дедлайн этапа — Целевое решение",
+            )
+
+            val headers = (0 until 28).map { headerRow.getCell(it).stringCellValue }
+
+            assertEquals(expectedHeaders, headers)
+        }
+    }
+
+    @Test
+    fun `should set active excel hyperlink for initiative url column`() {
+        // given
+        val agent = AIAgentEntity().also {
+            it.id = 100L
+            it.agentId = "AI-100"
+            it.disabled = false
+        }
+
+        every { terBankService.list() } returns emptyList()
+        every { aiAgentRepository.findAll() } returns listOf(agent)
+        every { statusRepository.findAllActive() } returns emptyList()
+        every { agentStatusSlaRepository.findAllByAiAgentIdIn(any()) } returns emptyList()
+        every { emailProperties.emailLinkProperties.linkToPortalShort } returns "https://pult.sber.ru/"
+
+        // when
+        val response = service.downloadRegistryExcel()
+
+        // then
+        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
+            val cell = workbook.getSheetAt(0).getRow(1).getCell(18)
+
+            assertNotNull(cell.hyperlink)
+            assertEquals("https://pult.sber.ru/ai/initiatives/100", cell.hyperlink.address)
+            assertEquals(cell.hyperlink.address, cell.stringCellValue)
+        }
+    }
+
+    @Test
+    fun `should produce xlsx media type`() {
+        // given
+        val agent = AIAgentEntity().also {
+            it.id = 1L
+            it.agentId = "AI-1"
+        }
+
+        every { terBankService.list() } returns emptyList()
+        every { aiAgentRepository.findAll() } returns listOf(agent)
+        every { statusRepository.findAllActive() } returns emptyList()
+        every { agentStatusSlaRepository.findAllByAiAgentIdIn(any()) } returns emptyList()
+        every { emailProperties.emailLinkProperties.linkToPortalShort } returns "https://pult.sber.ru/"
+
+        // when
+        val response = service.downloadRegistryExcel()
+
+        // then
+        assertEquals(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            response.headers.contentType.toString(),
+        )
+    }
+
+    @Test
+    fun `blank portal base url throws`() {
+        // given
+        every { emailProperties.emailLinkProperties.linkToPortalShort } returns "   "
+
+        // when
+        val exception = assertThrows(AiInternalServerException::class.java) {
+            service.downloadRegistryExcel()
+        }
+
+        // then
+        assertEquals(
+            "Property 'prm.email.link.link-to-portal-short' is not configured",
+            exception.message,
+        )
+
+        verify(exactly = 0) { aiAgentRepository.findAll() }
+    }
+
+    @Test
+    fun `portal base url without trailing slash should produce correct initiative url`() {
+        // given
+        val agent = AIAgentEntity().also {
+            it.id = 100L
+            it.agentId = "AI-100"
+        }
+
+        every { terBankService.list() } returns emptyList()
+        every { aiAgentRepository.findAll() } returns listOf(agent)
+        every { statusRepository.findAllActive() } returns emptyList()
+        every { agentStatusSlaRepository.findAllByAiAgentIdIn(any()) } returns emptyList()
+        every { emailProperties.emailLinkProperties.linkToPortalShort } returns "https://pult.sber.ru"
+
+        // when
+        val response = service.downloadRegistryExcel()
+
+        // then
+        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
+            val cell = workbook.getSheetAt(0).getRow(1).getCell(18)
+
+            assertEquals("https://pult.sber.ru/ai/initiatives/100", cell.stringCellValue)
+            assertEquals("https://pult.sber.ru/ai/initiatives/100", cell.hyperlink.address)
+        }
+    }
+
+    @Test
+    fun `valid portal base url produces export`() {
+        // given
+        val agent = AIAgentEntity().also {
+            it.id = 1L
+            it.agentId = "AI-1"
+        }
+
+        every { terBankService.list() } returns emptyList()
+        every { aiAgentRepository.findAll() } returns listOf(agent)
+        every { statusRepository.findAllActive() } returns emptyList()
+        every { agentStatusSlaRepository.findAllByAiAgentIdIn(any()) } returns emptyList()
+        every { emailProperties.emailLinkProperties.linkToPortalShort } returns "https://pult.sber.ru/"
+
+        // when
+        val response = service.downloadRegistryExcel()
+
+        // then
+        assertEquals(HttpStatus.OK, response.statusCode)
+    }
+}
 
 ```
