@@ -1,180 +1,47 @@
 ```java
 /**
- * Описание Excel-колонки.
+ * Создаёт текстовую Excel-колонку.
  *
- * @param label заголовок колонки.
- * @param columnFun функция заполнения ячейки значением сущности.
- * В функцию передаются сущность, workbook и текущая ячейка.
- * @param columnStyleFun опциональная функция создания стиля ячейки.
+ * Если [valueProvider] возвращает null, ячейка остаётся пустой.
  */
-data class ExcelColumnDescription<T>(
-    val label: String,
-    val columnFun: (param: Triple<T, XSSFWorkbook, Cell>) -> Unit,
-    val columnStyleFun: Optional<(XSSFWorkbook) -> XSSFCellStyle> = Optional.empty(),
-)
+fun <T> textColumn(label: String, valueProvider: (T) -> String?): ExcelColumnDescription<T> =
+    ExcelColumnDescription(
+        label = label,
+        columnFun = { (entity, _, cell) ->
+            valueProvider(entity)?.let { cell.setCellValue(it) }
+        },
+    )
 
 /**
- * Общий helper для формирования Excel-файлов.
+ * Создаёт числовую Excel-колонку.
  *
- * Отвечает за:
- * - создание workbook и листов;
- * - формирование заголовков таблицы;
- * - заполнение строк данными;
- * - создание типовых текстовых, числовых и hyperlink-колонок;
- * - преобразование workbook в HTTP-response для скачивания файла.
+ * Числовое значение записывается в ячейку как Double.
+ * Если [valueProvider] возвращает null, ячейка остаётся пустой.
  */
-object ExcelExportHelper {
-
-    /**
-     * Создаёт новый Excel workbook с указанными листами.
-     *
-     * @param sheets список названий листов.
-     */
-    fun createWorkBook(sheets: List<String>): XSSFWorkbook {
-        val workbook = XSSFWorkbook()
-        sheets.forEach { workbook.createSheet(it) }
-        return workbook
-    }
-
-    /**
-     * Формирует строку заголовков таблицы.
-     *
-     * @return количество созданных строк.
-     */
-    private fun <T> renderTableHeading(
-        sheet: XSSFSheet,
-        columnFuns: List<ExcelColumnDescription<T>>,
-        startRowNum: Int = 0,
-        headerColumnStyle: XSSFCellStyle?,
-    ): Int {
-        val row = sheet.createRow(startRowNum)
-
-        columnFuns.forEachIndexed { index, columnDescription ->
-            val cell = row.createCell(index, CellType.STRING)
-            cell.setCellValue(columnDescription.label)
-            headerColumnStyle?.let { cell.cellStyle = it }
-        }
-
-        return 1
-    }
-
-    /**
-     * Формирует одну строку таблицы для переданной сущности.
-     *
-     * Значение каждой ячейки определяется соответствующим [ExcelColumnDescription].
-     *
-     * @return количество созданных строк.
-     */
-    private fun <T> renderEntityRows(
-        workBook: XSSFWorkbook,
-        sheet: XSSFSheet,
-        columnFuns: List<ExcelColumnDescription<T>>,
-        columnStyles: List<Optional<XSSFCellStyle>>,
-        entity: T,
-        rowNum: Int,
-    ): Int {
-        val row = sheet.createRow(rowNum)
-
-        columnFuns.forEachIndexed { index, columnDescription ->
-            val cell = row.createCell(index)
-            columnDescription.columnFun(Triple(entity, workBook, cell))
-            columnStyles[index].ifPresent { cell.cellStyle = it }
-        }
-
-        return 1
-    }
-
-    /**
-     * Записывает в лист заголовок и все строки переданного набора данных.
-     *
-     * @param workBook workbook, которому принадлежит лист.
-     * @param sheet лист для записи данных.
-     * @param data данные для формирования строк.
-     * @param columnDescriptions описание колонок и правил заполнения ячеек.
-     * @param headerColumnStyle опциональный стиль строки заголовков.
-     */
-    fun <T> writeSheetData(
-        workBook: XSSFWorkbook,
-        sheet: XSSFSheet,
-        data: List<T>,
-        columnDescriptions: List<ExcelColumnDescription<T>>,
-        headerColumnStyle: XSSFCellStyle? = null,
-    ) {
-        val headingRowsCount = renderTableHeading(sheet, columnDescriptions, headerColumnStyle = headerColumnStyle)
-        val columnStyles = columnDescriptions.map { columnDescription -> columnDescription.columnStyleFun.map { it(workBook) } }
-
-        data.fold(headingRowsCount) { rowNum, entity ->
-            rowNum + renderEntityRows(workBook, sheet, columnDescriptions, columnStyles, entity, rowNum)
-        }
-    }
-
-    /**
-     * Создаёт текстовую Excel-колонку.
-     *
-     * Если [valueProvider] возвращает null, ячейка остаётся пустой.
-     */
-    fun <T> textColumn(label: String, valueProvider: (T) -> String?): ExcelColumnDescription<T> =
-        ExcelColumnDescription(label) { (entity, _, cell) ->
-            valueProvider(entity)?.let { cell.setCellValue(it) }
-        }
-
-    /**
-     * Создаёт числовую Excel-колонку.
-     *
-     * Числовое значение записывается в ячейку как Double.
-     * Если [valueProvider] возвращает null, ячейка остаётся пустой.
-     */
-    fun <T> numberColumn(label: String, valueProvider: (T) -> Number?): ExcelColumnDescription<T> =
-        ExcelColumnDescription(label) { (entity, _, cell) ->
+fun <T> numberColumn(label: String, valueProvider: (T) -> Number?): ExcelColumnDescription<T> =
+    ExcelColumnDescription(
+        label = label,
+        columnFun = { (entity, _, cell) ->
             valueProvider(entity)?.let { cell.setCellValue(it.toDouble()) }
-        }
+        },
+    )
 
-    /**
-     * Создаёт Excel-колонку с активной URL-гиперссылкой.
-     *
-     * URL одновременно используется как отображаемое значение ячейки
-     * и как адрес Excel hyperlink.
-     */
-    fun <T> hyperlinkColumn(label: String, valueProvider: (T) -> String?): ExcelColumnDescription<T> =
-        ExcelColumnDescription(label) { (entity, workbook, cell) ->
+/**
+ * Создаёт Excel-колонку с активной URL-гиперссылкой.
+ *
+ * URL одновременно используется как отображаемое значение ячейки
+ * и как адрес Excel hyperlink.
+ */
+fun <T> hyperlinkColumn(label: String, valueProvider: (T) -> String?): ExcelColumnDescription<T> =
+    ExcelColumnDescription(
+        label = label,
+        columnFun = { (entity, workbook, cell) ->
             valueProvider(entity)?.takeIf { it.isNotBlank() }?.let { url ->
                 cell.setCellValue(url)
                 cell.hyperlink = workbook.creationHelper.createHyperlink(HyperlinkType.URL).apply { address = url }
             }
-        }
-
-    /**
-     * Преобразует workbook в HTTP-response со скачиваемым файлом.
-     *
-     * Workbook записывается в память и закрывается после формирования массива байт.
-     * Заголовок Content-Disposition содержит UTF-8 имя файла.
-     *
-     * @param fileName имя скачиваемого файла.
-     * @param mediaType Content-Type ответа. По умолчанию используется
-     * [MediaType.APPLICATION_OCTET_STREAM] для обратной совместимости существующих экспортов.
-     */
-    fun XSSFWorkbook.convertToFile(
-        fileName: String,
-        mediaType: MediaType = MediaType.APPLICATION_OCTET_STREAM,
-    ): ResponseEntity<InputStreamResource> {
-        val baos = ByteArrayOutputStream()
-        this.use { it.write(baos) }
-
-        val data = baos.toByteArray()
-        val contentDisposition = ContentDisposition.attachment().filename(fileName, StandardCharsets.UTF_8).build()
-
-        val headers = HttpHeaders().apply {
-            this.contentDisposition = contentDisposition
-            this.contentLength = data.size.toLong()
-            this.contentType = mediaType
-            this.accessControlExposeHeaders = listOf(HttpHeaders.CONTENT_DISPOSITION)
-        }
-
-        return ResponseEntity.ok()
-            .headers(headers)
-            .body(InputStreamResource(ByteArrayInputStream(data)))
-    }
-}
+        },
+    )
 
 /**
  * Сервис формирования полного XLSX-реестра AI-инициатив.
