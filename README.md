@@ -1,22 +1,25 @@
 ```java
-(
-    :#{#params.gigaUsageNotFilledEnabled} = true
+/**
+ * Загружает email пользователей АУЕ, указанных в agent_contact.user_id.
+ *
+ * Все уникальные userId собираются заранее и запрашиваются одним bulk-вызовом,
+ * чтобы не выполнять отдельный запрос в АУЕ для каждого контакта инициативы.
+ */
+private fun loadUserEmailsById(agents: List<AIAgentEntity>): Map<Long, String> {
+    val userIds = agents.asSequence()
+        .flatMap { it.agentContact.asSequence() }
+        .mapNotNull { it.userId }
+        .toSet()
 
-    AND candidate.current_status_code IN (
-        :#{#params.pilotStatus},
-        :#{#params.targetSolutionStatus}
-    )
+    if (userIds.isEmpty()) return emptyMap()
 
-    AND NOT EXISTS (
-        SELECT 1
-        FROM jira_issue jira
-        WHERE jira.agent_id = candidate.id
-          AND LOWER(jira.project) =
-              LOWER(:#{#params.gigaUsageProject})
-          AND NULLIF(
-              BTRIM(jira.jira_key),
-              ''
-          ) IS NOT NULL
-    )
-)
+    return authFeignClient.getUsers(ids = userIds, companyId = null)
+        .body
+        .orEmpty()
+        .mapNotNull { user ->
+            val email = user.email?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            user.id to email
+        }
+        .toMap()
+}
 ```
