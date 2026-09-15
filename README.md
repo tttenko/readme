@@ -362,5 +362,42 @@ class MetricApplicabilityRequestController(
         metricApplicabilityRequestService.getMetricApplicabilityRequests(status, page, size, search)
 }
 
+/**
+ * Сервис получения информации о пользователях из prm-auth.
+ */
+@Service
+class UserAccountService(
+    private val prmAuthFeignClient: PrmAuthFeignClient
+) {
 
+    /**
+     * Получает пользователей по набору идентификаторов.
+     *
+     * Используется batch-запрос, чтобы не выполнять отдельный HTTP-вызов
+     * для каждой заявки на странице.
+     */
+    fun getUsersByIds(userIds: Set<Long>): Map<Long, UserAccountDto> {
+        if (userIds.isEmpty()) {
+            return emptyMap()
+        }
+
+        return prmAuthFeignClient.getUsers(userIds, null).body.orEmpty().associateBy { it.id }
+    }
+
+    /**
+     * Формирует полное ФИО пользователя.
+     *
+     * Если ФИО полностью отсутствует, используется login.
+     * Если отсутствует и login, возвращается идентификатор пользователя.
+     */
+    fun getFullName(userAccount: UserAccountDto): String {
+        val fullName = listOfNotNull(
+            userAccount.lastName?.trim()?.takeIf { it.isNotEmpty() },
+            userAccount.firstName?.trim()?.takeIf { it.isNotEmpty() },
+            userAccount.patronymic?.trim()?.takeIf { it.isNotEmpty() }
+        ).joinToString(" ")
+
+        return fullName.ifBlank { userAccount.login ?: userAccount.id.toString() }
+    }
+}
 ```
