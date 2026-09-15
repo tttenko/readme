@@ -191,24 +191,25 @@ interface MetricApplicabilityRequestRepository :
 }
 
 /**
- * Сервис чтения очереди заявок на неприменимость метрик.
+ * Сервис получения очереди заявок на неприменимость метрик.
  */
 @Service
 class MetricApplicabilityRequestService(
     private val metricApplicabilityRequestRepository: MetricApplicabilityRequestRepository,
     private val metricApplicabilityActionResolver: MetricApplicabilityActionResolver,
-    private val userInfoProvider: UserInfoProvider
+    private val userAccountService: UserAccountService
 ) {
 
-    companion object {
-        private const val MAX_PAGE_SIZE = 100
-    }
-
     /**
-     * Возвращает страницу заявок на неприменимость метрик.
+     * Возвращает страницу заявок, отображаемых в очереди Офиса.
      *
-     * Поддерживает фильтрацию по статусу, поиск по инициативе и метрике,
-     * пагинацию и расчёт доступных действий для каждой заявки.
+     * Поддерживает:
+     * фильтрацию по статусу,
+     * поиск по названию инициативы и метрики,
+     * пагинацию,
+     * сортировку от новых заявок к старым,
+     * получение ФИО авторов заявок,
+     * расчёт доступных действий.
      */
     @Transactional(readOnly = true)
     fun getMetricApplicabilityRequests(
@@ -217,8 +218,6 @@ class MetricApplicabilityRequestService(
         size: Int,
         search: String?
     ): MetricApplicabilityRequestsResponse {
-        validatePagination(page, size)
-
         val pageable = PageRequest.of(
             page,
             size,
@@ -228,15 +227,19 @@ class MetricApplicabilityRequestService(
             )
         )
 
-        val specification = MetricApplicabilityRequestSpecification.getSpecification(status, search)
+        val specification = MetricApplicabilityRequestSpecification.buildSpecification(status, search)
         val requestsPage = metricApplicabilityRequestRepository.findAll(specification, pageable)
-        val currentUser = userInfoProvider.currentUser()
+
+        val requestedByUserIds = requestsPage.content.map { it.createdBy }.toSet()
+        val usersById = userAccountService.getUsersByIds(requestedByUserIds)
 
         val requests = requestsPage.content.map { request ->
-            request.toResponse(currentUser)
-        }
+            val requestedBy = usersById[request.createdBy]
+                ?.let(userAccountService::getFullName)
+                ?: request.createdBy.toString()
 
-        val pendingCount = getVisibleRequestsCount(status)
+            request.toResponse(requestedBy)
+        }
 
         return MetricApplicabilityRequestsResponse(
             content = requests,
@@ -244,25 +247,17 @@ class MetricApplicabilityRequestService(
             size = requestsPage.size,
             totalElements = requestsPage.totalElements,
             totalPages = requestsPage.totalPages,
-            pendingCount = pendingCount
+            pendingCount = getRequestsCount(status)
         )
     }
 
     /**
-     * Проверяет корректность параметров пагинации.
-     */
-    private fun validatePagination(page: Int, size: Int) {
-        require(page >= 0) { "page не может быть меньше 0" }
-        require(size in 1..MAX_PAGE_SIZE) { "size должен находиться в диапазоне от 1 до $MAX_PAGE_SIZE" }
-    }
-
-    /**
-     * Возвращает количество видимых заявок выбранного статуса.
+     * Возвращает количество заявок без учета текущей страницы.
      *
-     * Если статус не передан, возвращает количество всех заявок,
-     * отображаемых Офису.
+     * При наличии status считаются заявки выбранного статуса.
+     * Без status считаются все заявки, отображаемые Офису.
      */
-    private fun getVisibleRequestsCount(status: MetricApplicabilityRequestStatus?): Long =
+    private fun getRequestsCount(status: MetricApplicabilityRequestStatus?): Long =
         if (status == null) {
             metricApplicabilityRequestRepository.countByIsVisibleInOfficeTrue()
         } else {
@@ -270,69 +265,47 @@ class MetricApplicabilityRequestService(
         }
 
     /**
-     * Преобразует заявку из БД в модель ответа API.
+     * Преобразует сущность заявки в DTO ответа.
+     *
+     * Все связанные сущности являются обязательными согласно ограничениям БД.
+     * requireNotNull дополнительно защищает приложение от неконсистентных данных.
      */
-    private fun MetricApplicabilityRequestEntity.toResponse(currentUser: UserDto): MetricApplicabilityRequestResponse {
-        val assignment = requireNotNull(initiativeMetricAssignment) {
-            "Для заявки id=$id отсутствует связь с initiative_metric_assignment"
+    private fun MetricApplicabilityRequestEntity.toResponse(requestedBy: String): MetricApplicabilityRequestResponse {
+        val initiativeMetricAssignment = requireNotNull(this.initiativeMetricAssignment) {
+            "Для заявки id=$id отсутствует initiativeMetricAssignment"
         }
 
-        val initiativeMetricType = requireNotNull(assignment.initiativeMetricType) {
-            "Для assignment id=${assignment.id} отсутствует initiative_metric_type"
+        val initiativeMetricType = requireNotNull(initiativeMetricAssignment.initiativeMetricType) {
+            "Для assignment id=${initiativeMetricAssignment.id} отсутствует initiativeMetricType"
         }
 
-        val initiative = requireNotNull(initiativeMetricType.aiAgent) {
-            "Для initiativeMetricType id=${initiativeMetricType.id} отсутствует инициатива"
+        val aiAgent = requireNotNull(initiativeMetricType.aiAgent) {
+            "Для initiativeMetricType id=${initiativeMetricType.id} отсутствует aiAgent"
         }
 
-        val metric = requireNotNull(assignment.metric) {
-            "Для assignment id=${assignment.id} отсутствует метрика"
+        val metric = requireNotNull(initiativeMetricAssignment.metric) {
+            "Для assignment id=${initiativeMetricAssignment.id} отсутствует metric"
         }
 
         return MetricApplicabilityRequestResponse(
             requestId = requireNotNull(id),
-            initiativeId = requireNotNull(initiative.id),
-            initiativeName = initiative.agentName,
+            initiativeId = requireNotNull(aiAgent.id),
+            initiativeName = aiAgent.agentName,
             metricId = requireNotNull(metric.id),
             metricName = metric.name,
             metricFrequency = metric.frequency,
             agentType = initiativeMetricType.agentType,
             requestStatus = status,
-            applicabilityStatus = assignment.applicabilityStatus,
+            applicabilityStatus = initiativeMetricAssignment.applicabilityStatus,
             comment = comment,
             resumePeriod = resumePeriod,
-            requestedBy = getRequestedBy(createdBy, currentUser),
+            requestedBy = requestedBy,
             requestedAt = requireNotNull(createdAt),
-            availableActions = metricApplicabilityActionResolver.getAvailableActions(status, assignment.applicabilityStatus)
+            availableActions = metricApplicabilityActionResolver.getAvailableActions(
+                requestStatus = status,
+                applicabilityStatus = initiativeMetricAssignment.applicabilityStatus
+            )
         )
-    }
-
-    /**
-     * Возвращает отображаемое имя автора заявки.
-     *
-     * UserInfoProvider предоставляет только данные текущего пользователя,
-     * поэтому его ФИО можно определить только для собственной заявки.
-     * Для остальных пользователей временно возвращается их идентификатор.
-     */
-    private fun getRequestedBy(createdBy: Long, currentUser: UserDto): String {
-        if (createdBy != currentUser.id) {
-            return createdBy.toString()
-        }
-
-        return buildFullName(currentUser)
-    }
-
-    /**
-     * Формирует ФИО пользователя из доступных частей имени.
-     */
-    private fun buildFullName(user: UserDto): String {
-        val fullName = listOfNotNull(
-            user.lastName?.trim()?.takeIf { it.isNotEmpty() },
-            user.firstName?.trim()?.takeIf { it.isNotEmpty() },
-            user.patronymic?.trim()?.takeIf { it.isNotEmpty() }
-        ).joinToString(" ")
-
-        return fullName.ifBlank { user.login ?: user.id.toString() }
     }
 }
 
