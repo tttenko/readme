@@ -1,514 +1,366 @@
 ```java
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<databaseChangeLog
-        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
-        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
-        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-3.5.xsd">
-
-    <!-- ========================================================= -->
-    <!-- initiative_metric_assignment                              -->
-    <!-- ========================================================= -->
-
-    <changeSet id="Create initiative_metric_assignment table" author="KoptenkoMV">
-
-        <createTable
-                tableName="initiative_metric_assignment"
-                remarks="Привязка метрики к типу агента инициативы">
-
-            <column
-                    name="id"
-                    type="BIGINT"
-                    autoIncrement="true"
-                    remarks="ID постоянной физической связи">
-                <constraints
-                        primaryKey="true"
-                        nullable="false"/>
-            </column>
-
-            <column
-                    name="initiative_agent_type_id"
-                    type="BIGINT"
-                    remarks="Ссылка на тип агента инициативы">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="metric_id"
-                    type="UUID"
-                    remarks="Ссылка на метрику">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="applicability_status"
-                    type="VARCHAR(50)"
-                    remarks="Текущий статус применимости метрики">
-                <constraints nullable="false"/>
-            </column>
-
-        </createTable>
-
-        <addForeignKeyConstraint
-                baseTableName="initiative_metric_assignment"
-                baseColumnNames="initiative_agent_type_id"
-                constraintName="initiative_metric_assignment_INITIATIVE_AGENT_TYPE_ID_FK"
-                referencedTableName="initiative_metric_type"
-                referencedColumnNames="id"/>
-
-        <addForeignKeyConstraint
-                baseTableName="initiative_metric_assignment"
-                baseColumnNames="metric_id"
-                constraintName="initiative_metric_assignment_METRIC_ID_FK"
-                referencedTableName="metrics_directory"
-                referencedColumnNames="id"/>
-
-        <addUniqueConstraint
-                tableName="initiative_metric_assignment"
-                columnNames="initiative_agent_type_id, metric_id"
-                constraintName="initiative_metric_assignment_agent_type_metric_UK"/>
-
-        <createIndex
-                tableName="initiative_metric_assignment"
-                indexName="idx_initiative_metric_assignment_agent_type_id">
-            <column name="initiative_agent_type_id"/>
-        </createIndex>
-
-        <createIndex
-                tableName="initiative_metric_assignment"
-                indexName="idx_initiative_metric_assignment_metric_id">
-            <column name="metric_id"/>
-        </createIndex>
-
-        <rollback>
-            <dropTable tableName="initiative_metric_assignment"/>
-        </rollback>
-
-    </changeSet>
-
-
-    <!-- ========================================================= -->
-    <!-- metric_applicability_request                              -->
-    <!-- ========================================================= -->
-
-    <changeSet id="Create metric_applicability_request table" author="KoptenkoMV">
-
-        <createTable
-                tableName="metric_applicability_request"
-                remarks="Заявка на изменение применимости метрики">
-
-            <column
-                    name="id"
-                    type="BIGINT"
-                    autoIncrement="true"
-                    remarks="ID заявки">
-                <constraints
-                        primaryKey="true"
-                        nullable="false"/>
-            </column>
-
-            <column
-                    name="initiative_metric_assignment_id"
-                    type="BIGINT"
-                    remarks="Ссылка на привязку метрики к инициативе">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="status"
-                    type="VARCHAR(50)"
-                    remarks="Статус заявки">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="comment"
-                    type="VARCHAR(1000)"
-                    remarks="Обоснование создания заявки">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="resume_period"
-                    type="DATE"
-                    remarks="Период автоматического возврата применимости метрики"/>
-
-            <column
-                    name="is_visible_in_office"
-                    type="BOOLEAN"
-                    remarks="Признак отображения заявки в очереди Офиса">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="effective_from_period"
-                    type="DATE"
-                    remarks="Период начала неприменимости метрики">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="effective_to_period"
-                    type="DATE"
-                    remarks="Период окончания неприменимости метрики"/>
-
-            <column
-                    name="created_by"
-                    type="BIGINT"
-                    remarks="ID пользователя, создавшего заявку">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="decision_by"
-                    type="BIGINT"
-                    remarks="ID пользователя, принявшего решение по заявке"/>
-
-            <column
-                    name="created_at"
-                    type="DATE"
-                    remarks="Дата создания заявки">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="updated_at"
-                    type="TIMESTAMP"
-                    remarks="Дата и время последнего изменения заявки">
-                <constraints nullable="false"/>
-            </column>
-
-        </createTable>
-
-        <addForeignKeyConstraint
-                baseTableName="metric_applicability_request"
-                baseColumnNames="initiative_metric_assignment_id"
-                constraintName="metric_applicability_request_ASSIGNMENT_ID_FK"
-                referencedTableName="initiative_metric_assignment"
-                referencedColumnNames="id"/>
-
-        <createIndex
-                tableName="metric_applicability_request"
-                indexName="idx_metric_applicability_request_assignment_id">
-            <column name="initiative_metric_assignment_id"/>
-        </createIndex>
-
-        <createIndex
-                tableName="metric_applicability_request"
-                indexName="idx_metric_applicability_request_office_status">
-            <column name="is_visible_in_office"/>
-            <column name="status"/>
-            <column name="created_at"/>
-            <column name="id"/>
-        </createIndex>
-
-        <!--
-            Для одного assignment одновременно может существовать
-            только одна заявка со статусом PENDING.
-            Обычный addUniqueConstraint здесь не подходит,
-            поэтому используем partial unique index PostgreSQL.
-        -->
-        <sql>
-            CREATE UNIQUE INDEX uq_metric_applicability_request_pending_assignment
-            ON metric_applicability_request (initiative_metric_assignment_id)
-            WHERE status = 'PENDING';
-        </sql>
-
-        <rollback>
-            <dropTable tableName="metric_applicability_request"/>
-        </rollback>
-
-    </changeSet>
-
-
-    <!-- ========================================================= -->
-    <!-- metric_applicability_history                              -->
-    <!-- ========================================================= -->
-
-    <changeSet id="Create metric_applicability_history table" author="KoptenkoMV">
-
-        <createTable
-                tableName="metric_applicability_history"
-                remarks="История действий по заявке на изменение применимости метрики">
-
-            <column
-                    name="id"
-                    type="BIGINT"
-                    autoIncrement="true"
-                    remarks="ID записи истории">
-                <constraints
-                        primaryKey="true"
-                        nullable="false"/>
-            </column>
-
-            <column
-                    name="metric_applicability_request_id"
-                    type="BIGINT"
-                    remarks="Ссылка на заявку">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="action"
-                    type="VARCHAR(50)"
-                    remarks="Выполненное действие">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="created_by"
-                    type="VARCHAR(255)"
-                    remarks="Пользователь или SYSTEM, выполнивший действие">
-                <constraints nullable="false"/>
-            </column>
-
-            <column
-                    name="comment"
-                    type="VARCHAR(1000)"
-                    remarks="Комментарий действия"/>
-
-            <column
-                    name="created_at"
-                    type="DATE"
-                    remarks="Дата выполнения действия">
-                <constraints nullable="false"/>
-            </column>
-
-        </createTable>
-
-        <addForeignKeyConstraint
-                baseTableName="metric_applicability_history"
-                baseColumnNames="metric_applicability_request_id"
-                constraintName="metric_applicability_history_REQUEST_ID_FK"
-                referencedTableName="metric_applicability_request"
-                referencedColumnNames="id"/>
-
-        <createIndex
-                tableName="metric_applicability_history"
-                indexName="idx_metric_applicability_history_request_id">
-            <column name="metric_applicability_request_id"/>
-            <column name="created_at"/>
-            <column name="id"/>
-        </createIndex>
-
-        <rollback>
-            <dropTable tableName="metric_applicability_history"/>
-        </rollback>
-
-    </changeSet>
-
-</databaseChangeLog>
-
-
-enum class MetricApplicabilityStatus {
-    ACTIVE,
-    PENDING,
-    NOT_APPLICABLE,
-}
-enum class MetricApplicabilityRequestStatus {
-    PENDING,
-    APPROVED,
-    REJECTED,
-}
+/**
+ * Действия, которые доступны пользователю для заявки на неприменимость метрики.
+ */
 enum class MetricApplicabilityAction {
-    REQUEST_CREATED,
-    APPROVED,
-    REJECTED,
-    CANCEL_DECISION,
-    RESTORED,
-    RESUME_PERIOD,
+    APPROVE,
+    REJECT,
+    CANCEL_DECISION
 }
 
-
-@Entity
-@Table(
-    name = "initiative_metric_assignment",
-    uniqueConstraints = [
-        UniqueConstraint(
-            name = "initiative_metric_assignment_agent_type_metric_UK",
-            columnNames = [
-                "initiative_agent_type_id",
-                "metric_id",
-            ],
-        ),
-    ],
+/**
+ * Данные заявки на неприменимость метрики для отображения в очереди Офиса.
+ */
+data class MetricApplicabilityRequestResponse(
+    val requestId: Long,
+    val initiativeId: Long,
+    val initiativeName: String?,
+    val metricId: UUID,
+    val metricName: String?,
+    val metricFrequency: String?,
+    val agentType: String?,
+    val requestStatus: MetricApplicabilityRequestStatus,
+    val applicabilityStatus: MetricApplicabilityStatus,
+    val comment: String,
+    val resumePeriod: LocalDate?,
+    val requestedBy: String,
+    val requestedAt: LocalDate,
+    val availableActions: List<MetricApplicabilityAvailableAction>
 )
-class InitiativeMetricAssignmentEntity(
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(
-        name = "initiative_agent_type_id",
-        referencedColumnName = "id",
-        nullable = false,
-    )
-    var initiativeMetricType: InitiativeMetricTypeEntity? = null,
+/**
+ * Страничный ответ со списком заявок на неприменимость метрик.
+ *
+ * pendingCount содержит количество видимых заявок выбранного статуса.
+ * Если статус не передан, содержит количество всех видимых заявок.
+ */
+data class MetricApplicabilityRequestsResponse(
+    val content: List<MetricApplicabilityRequestResponse>,
+    val page: Int,
+    val size: Int,
+    val totalElements: Long,
+    val totalPages: Int,
+    val pendingCount: Long
+)
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(
-        name = "metric_id",
-        referencedColumnName = "id",
-        nullable = false,
-    )
-    var metric: MetricsDirectoryEntity? = null,
+/**
+ * Определяет доступные действия по текущему состоянию заявки и привязки метрики.
+ */
+@Component
+class MetricApplicabilityActionResolver {
 
-    @Enumerated(EnumType.STRING)
-    @Column(
-        name = "applicability_status",
-        length = 50,
-        nullable = false,
-    )
-    var applicabilityStatus: MetricApplicabilityStatus = MetricApplicabilityStatus.ACTIVE,
+    /**
+     * Возвращает список действий, доступных для текущей пары статусов.
+     */
+    fun getAvailableActions(
+        requestStatus: MetricApplicabilityRequestStatus,
+        applicabilityStatus: MetricApplicabilityStatus
+    ): List<MetricApplicabilityAvailableAction> =
+        when {
+            requestStatus == MetricApplicabilityRequestStatus.PENDING &&
+                applicabilityStatus == MetricApplicabilityStatus.PENDING ->
+                listOf(
+                    MetricApplicabilityAvailableAction.APPROVE,
+                    MetricApplicabilityAvailableAction.REJECT
+                )
 
-    @OneToMany(
-        mappedBy = "initiativeMetricAssignment",
-        fetch = FetchType.LAZY,
-    )
-    var requests: MutableList<MetricApplicabilityRequestEntity> = mutableListOf(),
+            requestStatus == MetricApplicabilityRequestStatus.APPROVED &&
+                applicabilityStatus == MetricApplicabilityStatus.NOT_APPLICABLE ->
+                listOf(MetricApplicabilityAvailableAction.CANCEL_DECISION)
 
-    ) : BasicLongEntity()
+            requestStatus == MetricApplicabilityRequestStatus.REJECTED &&
+                applicabilityStatus == MetricApplicabilityStatus.ACTIVE ->
+                listOf(MetricApplicabilityAvailableAction.CANCEL_DECISION)
 
-
-@Entity
-@Table(name = "metric_applicability_request")
-class MetricApplicabilityRequestEntity(
-
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(
-        name = "initiative_metric_assignment_id",
-        referencedColumnName = "id",
-        nullable = false,
-    )
-    var initiativeMetricAssignment: InitiativeMetricAssignmentEntity? = null,
-
-    @Enumerated(EnumType.STRING)
-    @Column(
-        name = "status",
-        length = 50,
-        nullable = false,
-    )
-    var status: MetricApplicabilityRequestStatus = MetricApplicabilityRequestStatus.PENDING,
-
-    @Column(
-        name = "comment",
-        length = 1000,
-        nullable = false,
-    )
-    var comment: String = "",
-
-    @Column(name = "resume_period")
-    var resumePeriod: LocalDate? = null,
-
-    @Column(
-        name = "is_visible_in_office",
-        nullable = false,
-    )
-    var isVisibleInOffice: Boolean = true,
-
-    @Column(
-        name = "effective_from_period",
-        nullable = false,
-    )
-    var effectiveFromPeriod: LocalDate? = null,
-
-    @Column(name = "effective_to_period")
-    var effectiveToPeriod: LocalDate? = null,
-
-    @Column(
-        name = "created_by",
-        nullable = false,
-    )
-    var createdBy: Long = 0L,
-
-    @Column(name = "decision_by")
-    var decisionBy: Long? = null,
-
-    @Column(
-        name = "created_at",
-        nullable = false,
-    )
-    var createdAt: LocalDate? = null,
-
-    @Column(
-        name = "updated_at",
-        nullable = false,
-    )
-    var updatedAt: LocalDateTime? = null,
-
-    @OneToMany(
-        mappedBy = "metricApplicabilityRequest",
-        fetch = FetchType.LAZY,
-    )
-    var history: MutableList<MetricApplicabilityHistoryEntity> = mutableListOf(),
-
-    ) : BasicLongEntity() {
-
-    @PrePersist
-    protected fun onCreate() {
-        createdAt = LocalDate.now()
-        updatedAt = LocalDateTime.now()
-    }
-
-    @PreUpdate
-    protected fun onUpdate() {
-        updatedAt = LocalDateTime.now()
-    }
+            else -> emptyList()
+        }
 }
 
-@Entity
-@Table(name = "metric_applicability_history")
-class MetricApplicabilityHistoryEntity(
+/**
+ * Specification для фильтрации заявок на неприменимость метрик.
+ */
+object MetricApplicabilityRequestSpecification {
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(
-        name = "metric_applicability_request_id",
-        referencedColumnName = "id",
-        nullable = false,
-    )
-    var metricApplicabilityRequest: MetricApplicabilityRequestEntity? = null,
+    /**
+     * Формирует итоговый фильтр очереди Офиса.
+     *
+     * Всегда возвращаются только заявки с isVisibleInOffice=true.
+     * Дополнительно поддерживается фильтрация по статусу и поиск
+     * по названию инициативы или метрики.
+     */
+    fun getSpecification(
+        status: MetricApplicabilityRequestStatus?,
+        search: String?
+    ): Specification<MetricApplicabilityRequestEntity> {
+        var specification = isVisibleInOffice()
 
-    @Enumerated(EnumType.STRING)
-    @Column(
-        name = "action",
-        length = 50,
-        nullable = false,
-    )
-    var action: MetricApplicabilityAction? = null,
+        if (status != null) {
+            specification = specification.and(hasStatus(status))
+        }
 
-    @Column(
-        name = "created_by",
-        length = 255,
-        nullable = false,
-    )
-    var createdBy: String = "",
+        if (!search.isNullOrBlank()) {
+            specification = specification.and(matchesSearch(search.trim()))
+        }
 
-    @Column(
-        name = "comment",
-        length = 1000,
-    )
-    var comment: String? = null,
-
-    @Column(
-        name = "created_at",
-        nullable = false,
-    )
-    var createdAt: LocalDate? = null,
-
-    ) : BasicLongEntity() {
-
-    @PrePersist
-    protected fun onCreate() {
-        createdAt = LocalDate.now()
+        return specification
     }
+
+    /**
+     * Ограничивает выборку заявками, которые должны отображаться Офису.
+     */
+    private fun isVisibleInOffice(): Specification<MetricApplicabilityRequestEntity> =
+        Specification { root, _, criteriaBuilder ->
+            criteriaBuilder.isTrue(root.get("isVisibleInOffice"))
+        }
+
+    /**
+     * Ограничивает выборку заявками с указанным статусом.
+     */
+    private fun hasStatus(status: MetricApplicabilityRequestStatus): Specification<MetricApplicabilityRequestEntity> =
+        Specification { root, _, criteriaBuilder ->
+            criteriaBuilder.equal(root.get<MetricApplicabilityRequestStatus>("status"), status)
+        }
+
+    /**
+     * Выполняет регистронезависимый поиск по названию инициативы и названию метрики.
+     */
+    private fun matchesSearch(search: String): Specification<MetricApplicabilityRequestEntity> =
+        Specification { root, _, criteriaBuilder ->
+            val assignment = root.join<MetricApplicabilityRequestEntity, InitiativeMetricAssignmentEntity>(
+                "initiativeMetricAssignment",
+                JoinType.INNER
+            )
+
+            val initiativeMetricType = assignment.join<InitiativeMetricAssignmentEntity, InitiativeMetricTypeEntity>(
+                "initiativeMetricType",
+                JoinType.INNER
+            )
+
+            val initiative = initiativeMetricType.join<InitiativeMetricTypeEntity, AIAgentEntity>(
+                "aiAgent",
+                JoinType.INNER
+            )
+
+            val metric = assignment.join<InitiativeMetricAssignmentEntity, MetricsDirectoryEntity>(
+                "metric",
+                JoinType.INNER
+            )
+
+            val searchPattern = "%${search.lowercase(Locale.ROOT)}%"
+
+            criteriaBuilder.or(
+                criteriaBuilder.like(criteriaBuilder.lower(initiative.get<String>("agentName")), searchPattern),
+                criteriaBuilder.like(criteriaBuilder.lower(metric.get<String>("name")), searchPattern)
+            )
+        }
 }
 
-
-@Repository
-interface InitiativeMetricAssignmentRepository :
-    JpaRepository<InitiativeMetricAssignmentEntity, Long>
 @Repository
 interface MetricApplicabilityRequestRepository :
-    JpaRepository<MetricApplicabilityRequestEntity, Long>
-@Repository
-interface MetricApplicabilityHistoryRepository :
-    JpaRepository<MetricApplicabilityHistoryEntity, Long>
+    JpaRepository<MetricApplicabilityRequestEntity, Long>,
+    JpaSpecificationExecutor<MetricApplicabilityRequestEntity> {
+
+    /**
+     * Получает страницу заявок вместе со связями, необходимыми для формирования ответа.
+     *
+     * EntityGraph позволяет избежать дополнительных запросов к БД
+     * для каждой заявки при обращении к инициативе и метрике.
+     */
+    @EntityGraph(
+        attributePaths = [
+            "initiativeMetricAssignment",
+            "initiativeMetricAssignment.initiativeMetricType",
+            "initiativeMetricAssignment.initiativeMetricType.aiAgent",
+            "initiativeMetricAssignment.metric"
+        ]
+    )
+    override fun findAll(
+        specification: Specification<MetricApplicabilityRequestEntity>?,
+        pageable: Pageable
+    ): Page<MetricApplicabilityRequestEntity>
+
+    /**
+     * Возвращает количество видимых заявок указанного статуса.
+     */
+    fun countByStatusAndIsVisibleInOfficeTrue(status: MetricApplicabilityRequestStatus): Long
+
+    /**
+     * Возвращает общее количество заявок, отображаемых Офису.
+     */
+    fun countByIsVisibleInOfficeTrue(): Long
+}
+
+/**
+ * Сервис чтения очереди заявок на неприменимость метрик.
+ */
+@Service
+class MetricApplicabilityRequestService(
+    private val metricApplicabilityRequestRepository: MetricApplicabilityRequestRepository,
+    private val metricApplicabilityActionResolver: MetricApplicabilityActionResolver,
+    private val userInfoProvider: UserInfoProvider
+) {
+
+    companion object {
+        private const val MAX_PAGE_SIZE = 100
+    }
+
+    /**
+     * Возвращает страницу заявок на неприменимость метрик.
+     *
+     * Поддерживает фильтрацию по статусу, поиск по инициативе и метрике,
+     * пагинацию и расчёт доступных действий для каждой заявки.
+     */
+    @Transactional(readOnly = true)
+    fun getMetricApplicabilityRequests(
+        status: MetricApplicabilityRequestStatus?,
+        page: Int,
+        size: Int,
+        search: String?
+    ): MetricApplicabilityRequestsResponse {
+        validatePagination(page, size)
+
+        val pageable = PageRequest.of(
+            page,
+            size,
+            Sort.by(
+                Sort.Order.desc("createdAt"),
+                Sort.Order.desc("id")
+            )
+        )
+
+        val specification = MetricApplicabilityRequestSpecification.getSpecification(status, search)
+        val requestsPage = metricApplicabilityRequestRepository.findAll(specification, pageable)
+        val currentUser = userInfoProvider.currentUser()
+
+        val requests = requestsPage.content.map { request ->
+            request.toResponse(currentUser)
+        }
+
+        val pendingCount = getVisibleRequestsCount(status)
+
+        return MetricApplicabilityRequestsResponse(
+            content = requests,
+            page = requestsPage.number,
+            size = requestsPage.size,
+            totalElements = requestsPage.totalElements,
+            totalPages = requestsPage.totalPages,
+            pendingCount = pendingCount
+        )
+    }
+
+    /**
+     * Проверяет корректность параметров пагинации.
+     */
+    private fun validatePagination(page: Int, size: Int) {
+        require(page >= 0) { "page не может быть меньше 0" }
+        require(size in 1..MAX_PAGE_SIZE) { "size должен находиться в диапазоне от 1 до $MAX_PAGE_SIZE" }
+    }
+
+    /**
+     * Возвращает количество видимых заявок выбранного статуса.
+     *
+     * Если статус не передан, возвращает количество всех заявок,
+     * отображаемых Офису.
+     */
+    private fun getVisibleRequestsCount(status: MetricApplicabilityRequestStatus?): Long =
+        if (status == null) {
+            metricApplicabilityRequestRepository.countByIsVisibleInOfficeTrue()
+        } else {
+            metricApplicabilityRequestRepository.countByStatusAndIsVisibleInOfficeTrue(status)
+        }
+
+    /**
+     * Преобразует заявку из БД в модель ответа API.
+     */
+    private fun MetricApplicabilityRequestEntity.toResponse(currentUser: UserDto): MetricApplicabilityRequestResponse {
+        val assignment = requireNotNull(initiativeMetricAssignment) {
+            "Для заявки id=$id отсутствует связь с initiative_metric_assignment"
+        }
+
+        val initiativeMetricType = requireNotNull(assignment.initiativeMetricType) {
+            "Для assignment id=${assignment.id} отсутствует initiative_metric_type"
+        }
+
+        val initiative = requireNotNull(initiativeMetricType.aiAgent) {
+            "Для initiativeMetricType id=${initiativeMetricType.id} отсутствует инициатива"
+        }
+
+        val metric = requireNotNull(assignment.metric) {
+            "Для assignment id=${assignment.id} отсутствует метрика"
+        }
+
+        return MetricApplicabilityRequestResponse(
+            requestId = requireNotNull(id),
+            initiativeId = requireNotNull(initiative.id),
+            initiativeName = initiative.agentName,
+            metricId = requireNotNull(metric.id),
+            metricName = metric.name,
+            metricFrequency = metric.frequency,
+            agentType = initiativeMetricType.agentType,
+            requestStatus = status,
+            applicabilityStatus = assignment.applicabilityStatus,
+            comment = comment,
+            resumePeriod = resumePeriod,
+            requestedBy = getRequestedBy(createdBy, currentUser),
+            requestedAt = requireNotNull(createdAt),
+            availableActions = metricApplicabilityActionResolver.getAvailableActions(status, assignment.applicabilityStatus)
+        )
+    }
+
+    /**
+     * Возвращает отображаемое имя автора заявки.
+     *
+     * UserInfoProvider предоставляет только данные текущего пользователя,
+     * поэтому его ФИО можно определить только для собственной заявки.
+     * Для остальных пользователей временно возвращается их идентификатор.
+     */
+    private fun getRequestedBy(createdBy: Long, currentUser: UserDto): String {
+        if (createdBy != currentUser.id) {
+            return createdBy.toString()
+        }
+
+        return buildFullName(currentUser)
+    }
+
+    /**
+     * Формирует ФИО пользователя из доступных частей имени.
+     */
+    private fun buildFullName(user: UserDto): String {
+        val fullName = listOfNotNull(
+            user.lastName?.trim()?.takeIf { it.isNotEmpty() },
+            user.firstName?.trim()?.takeIf { it.isNotEmpty() },
+            user.patronymic?.trim()?.takeIf { it.isNotEmpty() }
+        ).joinToString(" ")
+
+        return fullName.ifBlank { user.login ?: user.id.toString() }
+    }
+}
+
+/**
+ * Контроллер работы с заявками на неприменимость метрик.
+ */
+@Validated
+@RestController
+@RequestMapping("/api/v1/ai-agent")
+class MetricApplicabilityRequestController(
+    private val metricApplicabilityRequestService: MetricApplicabilityRequestService
+) {
+
+    /**
+     * Возвращает очередь заявок на неприменимость метрик.
+     *
+     * Без status возвращаются заявки всех статусов.
+     * Search выполняется по названию инициативы и названию метрики.
+     */
+    @GetMapping("/metric-applicability-requests")
+    fun getMetricApplicabilityRequests(
+        @RequestParam(required = false) status: MetricApplicabilityRequestStatus?,
+        @RequestParam(defaultValue = "0") @Min(0) page: Int,
+        @RequestParam(defaultValue = "20") @Min(1) @Max(100) size: Int,
+        @RequestParam(required = false) search: String?
+    ): MetricApplicabilityRequestsResponse =
+        metricApplicabilityRequestService.getMetricApplicabilityRequests(status, page, size, search)
+}
+
+
 ```
