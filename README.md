@@ -1,4 +1,14 @@
 ```java
+
+select
+    a.id as initiative_id,
+    a.agent_name,
+    imt.id as initiative_metric_type_id,
+    imt.agent_type
+from ai_agent a
+left join initiative_metric_type imt on imt.ai_agent_id = a.id
+where a.id = 37;
+
 Например:
 
 INSERT INTO initiative_metric_assignment (
