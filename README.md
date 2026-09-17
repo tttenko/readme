@@ -1,154 +1,100 @@
 ```java
+1. PATCH APPROVE
 
-BEGIN;
+Метод:
 
-WITH candidate_pool AS (
-    SELECT
-        imt.id         AS initiative_agent_type_id,
-        imt.ai_agent_id AS initiative_id,
-        imt.agent_type AS agent_type,
-        md.id          AS metric_id
-    FROM prm_ai.initiative_metric_type imt
-    CROSS JOIN prm_ai.metrics_directory md
-    WHERE md.is_active = TRUE
-      AND NOT EXISTS (
-          SELECT 1
-          FROM prm_ai.initiative_metric_assignment ima
-          WHERE ima.initiative_agent_type_id = imt.id
-            AND ima.metric_id = md.id
-      )
-),
-selected AS (
-    SELECT
-        initiative_agent_type_id,
-        initiative_id,
-        agent_type,
-        metric_id,
-        ROW_NUMBER() OVER (
-            ORDER BY initiative_agent_type_id, metric_id
-        ) AS rn
-    FROM candidate_pool
-    ORDER BY initiative_agent_type_id, metric_id
-    LIMIT 2
-),
-inserted_assignments AS (
-    INSERT INTO prm_ai.initiative_metric_assignment (
-        initiative_agent_type_id,
-        metric_id,
-        applicability_status
-    )
-    SELECT
-        initiative_agent_type_id,
-        metric_id,
-        'PENDING'
-    FROM selected
-    RETURNING
-        id,
-        initiative_agent_type_id,
-        metric_id
-),
-test_assignments AS (
-    SELECT
-        ia.id AS assignment_id,
-        s.initiative_id,
-        s.agent_type,
-        s.metric_id,
-        s.rn
-    FROM inserted_assignments ia
-    JOIN selected s
-      ON s.initiative_agent_type_id = ia.initiative_agent_type_id
-     AND s.metric_id = ia.metric_id
-),
-inserted_requests AS (
-    INSERT INTO prm_ai.metric_applicability_request (
-        initiative_metric_assignment_id,
-        status,
-        comment,
-        resume_period,
-        is_visible_in_office,
-        effective_from_period,
-        effective_to_period,
-        created_by,
-        decision_by,
-        created_at,
-        updated_at
-    )
-    SELECT
-        assignment_id,
-        'PENDING',
+PATCH /api/v1/ai-agent/initiatives/1/metrics/10000000-0000-0000-0000-000000000002/copilot/applicability-requests/15
 
-        CASE rn
-            WHEN 1 THEN 'PATCH_TEST_20260917_APPROVE'
-            WHEN 2 THEN 'PATCH_TEST_20260917_REJECT'
-        END,
+То есть к своему host добавь:
 
-        CASE rn
-            WHEN 1 THEN
-                (
-                    date_trunc('month', current_date)
-                    + interval '3 months'
-                )::date
-            ELSE NULL
-        END,
+/api/v1/ai-agent/initiatives/1/metrics/10000000-0000-0000-0000-000000000002/copilot/applicability-requests/15
 
-        TRUE,
-        date_trunc('month', current_date)::date,
-        NULL,
+Body → JSON:
 
-        -- Для проверки только бизнес-логики можно оставить 0.
-        -- Для проверки email поставь сюда id реального пользователя prm-auth.
-        0,
+{
+  "action": "APPROVE",
+  "comment": "Тестовое согласование заявки"
+}
 
-        NULL,
-        current_date,
-        current_timestamp
+Токен должен быть пользователя с ролью:
 
-    FROM test_assignments
+TRANSFORMATION_OFFICE
+2. Что ожидаем в ответе
 
-    RETURNING
-        id,
-        initiative_metric_assignment_id,
-        comment
-),
-inserted_history AS (
-    INSERT INTO prm_ai.metric_applicability_history (
-        metric_applicability_request_id,
-        action,
-        created_by,
-        comment,
-        created_at
-    )
-    SELECT
-        ir.id,
-        'REQUEST_CREATED',
-        '0',
-        ir.comment,
-        current_date
-    FROM inserted_requests ir
+По бизнес-логике:
 
-    RETURNING id
-)
+{
+  "requestId": 15,
+  "requestStatus": "APPROVED",
+  "applicabilityStatus": "NOT_APPLICABLE",
+  "availableActions": [
+    "CANCEL_DECISION"
+  ]
+}
+
+Если в твоём текущем DTO ещё присутствует pendingCount, он просто будет дополнительным полем ответа — это сейчас не мешает тестированию state machine.
+
+3. Что должно поменяться в БД
+
+После успешного 200 выполни:
+
 SELECT
-    CASE ta.rn
-        WHEN 1 THEN 'APPROVE -> CANCEL_DECISION'
-        WHEN 2 THEN 'REJECT -> CANCEL_DECISION'
-    END AS test_scenario,
+    r.id                              AS request_id,
+    r.status                          AS request_status,
+    a.applicability_status            AS applicability_status,
+    r.decision_by,
+    r.resume_period,
+    r.effective_from_period,
+    r.effective_to_period,
+    r.is_visible_in_office,
+    r.updated_at
+FROM prm_ai.metric_applicability_request r
+JOIN prm_ai.initiative_metric_assignment a
+    ON a.id = r.initiative_metric_assignment_id
+WHERE r.id = 15;
 
-    ta.initiative_id,
-    ta.metric_id,
-    ta.agent_type,
-    ta.assignment_id,
-    ir.id AS request_id,
+Ожидаем:
 
-    'PENDING' AS request_status,
-    'PENDING' AS applicability_status
+request_id             = 15
+request_status         = APPROVED
+applicability_status   = NOT_APPLICABLE
+decision_by            = ID пользователя, которым ты вызвал PATCH
+resume_period          = 2026-12-01
+effective_from_period  = 2026-09-01
+effective_to_period    = 2026-12-01
+is_visible_in_office   = true
 
-FROM inserted_requests ir
-JOIN test_assignments ta
-  ON ta.assignment_id = ir.initiative_metric_assignment_id
+effective_to_period должен скопироваться из resume_period при APPROVE.
 
-ORDER BY ta.rn;
+4. Проверяем history
+SELECT
+    h.id,
+    h.metric_applicability_request_id AS request_id,
+    h.action,
+    h.created_by,
+    h.comment,
+    h.created_at
+FROM prm_ai.metric_applicability_history h
+WHERE h.metric_applicability_request_id = 15
+ORDER BY h.created_at, h.id;
 
-COMMIT;
+Должно быть две записи:
+
+REQUEST_CREATED
+APPROVED
+
+У APPROVED:
+
+created_by = ID текущего пользователя
+comment    = Тестовое согласование заявки
+5. Один нюанс с email
+
+В тестовых данных мы указали:
+
+created_by = 0
+
+Поэтому после commit код попробует уведомить пользователя 0. Скорее всего в логах увидишь сообщение, что пользователь не найден. Для этого теста это нормально: состояние в БД уже должно сохраниться и откатываться из-за уведомления не должно.
+
+Сделай PATCH APPROVE и пришли мне response из Insomnia. После этого проверим БД и сразу на этой же заявке протестируем CANCEL_DECISION.
 
 ```
