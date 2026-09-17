@@ -1,48 +1,46 @@
 ```java
-data class UpdateMetricApplicabilityRequest(
+/**
+ * Получает email автора заявки
+ * и отправляет уведомление.
+ */
+private fun sendNotification(
+    recipientUserId: Long,
+    action: MetricApplicabilityRequestAction,
+    metricName: String,
+    initiativeName: String
+) {
+    val user = userAccountService
+        .getUsersByIds(setOf(recipientUserId))
+        .get(recipientUserId)
 
-    @field:Schema(
-        description = "Действие над заявкой",
-        example = "APPROVE"
+    if (user == null) {
+        log.warn(
+            "Не найден пользователь для отправки уведомления, userId={}",
+            recipientUserId
+        )
+        return
+    }
+
+    val email = user.email?.trim()
+
+    if (email.isNullOrEmpty()) {
+        log.warn(
+            "У пользователя отсутствует email, userId={}",
+            recipientUserId
+        )
+        return
+    }
+
+    emailHandler.fillAndSend(
+        getEmailTemplate(action),
+        listOf(email),
+        mutableMapOf(
+            METRIC_NAME to metricName,
+            INITIATIVE_NAME to initiativeName,
+            LINK to emailProperties.emailLinkProperties.linkToPortalShort
+        )
     )
-    val action: MetricApplicabilityRequestAction,
-
-    @field:Schema(
-        description = "Комментарий. Обязателен для REJECT и CANCEL_DECISION",
-        nullable = true,
-        maxLength = 1000
-    )
-    val comment: String? = null
-)
-
-data class MetricApplicabilityRequestActionResponse(
-
-    @field:Schema(
-        description = "Идентификатор заявки"
-    )
-    val requestId: Long,
-
-    @field:Schema(
-        description = "Статус заявки"
-    )
-    val requestStatus: MetricApplicabilityRequestStatus,
-
-    @field:Schema(
-        description = "Статус применимости метрики"
-    )
-    val applicabilityStatus: MetricApplicabilityStatus,
-
-    @field:Schema(
-        description = "Количество заявок со статусом PENDING, отображаемых в очереди Офиса"
-    )
-    val pendingCount: Long,
-
-    @field:Schema(
-        description = "Доступные действия для текущего состояния заявки"
-    )
-    val availableActions: List<MetricApplicabilityRequestAction>
-)
-
+}
 /**
  * Проверяет корректность тела запроса
  * при изменении заявки на неприменимость метрики.
