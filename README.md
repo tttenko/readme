@@ -168,14 +168,14 @@ class MetricApplicabilityRequestUpdater(
     private val metricApplicabilityHistoryRepository:
         MetricApplicabilityHistoryRepository,
 
-    private val metricApplicabilityActionResolver:
-        MetricApplicabilityActionResolver,
-
-    private val initiativeAgentTypeRepository:
-        InitiativeAgentTypeRepository,
+    private val initiativeMetricTypeRepository:
+        InitiativeMetricTypeRepository,
 
     private val metricsDirectoryRepository:
         MetricsDirectoryRepository,
+
+    private val metricApplicabilityActionResolver:
+        MetricApplicabilityActionResolver,
 
     private val userInfoProvider: UserInfoProvider,
 
@@ -191,17 +191,17 @@ class MetricApplicabilityRequestUpdater(
     private val log by logger
 
     /**
-     * Выполняет действие над заявкой на неприменимость метрики.
+     * Выполняет действие Офиса над заявкой
+     * на неприменимость метрики.
      *
-     * APPROVE:
-     * PENDING/PENDING -> APPROVED/NOT_APPLICABLE
+     * Поддерживаемые действия:
+     * APPROVE, REJECT, CANCEL_DECISION.
      *
-     * REJECT:
-     * PENDING/PENDING -> REJECTED/ACTIVE
+     * Все изменения заявки, assignment и history
+     * выполняются в одной транзакции.
      *
-     * CANCEL_DECISION:
-     * APPROVED/NOT_APPLICABLE или REJECTED/ACTIVE
-     * -> PENDING/PENDING
+     * Уведомление регистрируется на отправку
+     * только после успешного commit транзакции.
      */
     @Transactional
     fun updateRequest(
@@ -209,12 +209,12 @@ class MetricApplicabilityRequestUpdater(
         metricId: UUID,
         agentType: String,
         requestId: Long,
-        request: MetricApplicabilityRequestUpdateRequest
-    ): MetricApplicabilityRequestUpdateResponse {
+        request: UpdateMetricApplicabilityRequest,
+    ): UpdateMetricApplicabilityResponse {
 
-        val initiativeAgentType =
-            initiativeAgentTypeRepository
-                .findByInitiativeIdAndAgentType(
+        val initiativeMetricType =
+            initiativeMetricTypeRepository
+                .findByAiAgentIdAndAgentType(
                     initiativeId = initiativeId,
                     agentType = agentType
                 )
@@ -232,8 +232,8 @@ class MetricApplicabilityRequestUpdater(
         val assignment =
             initiativeMetricAssignmentRepository
                 .findByInitiativeAgentTypeIdAndMetricDirectoryId(
-                    initiativeAgentType.id,
-                    metricId
+                    initiativeAgentTypeId = initiativeMetricType.id,
+                    metricDirectoryId = metricId
                 )
                 ?: throw AiNotFoundException(
                     errorCode = INITIATIVE_METRIC_ASSIGNMENT_NOT_FOUND,
@@ -268,32 +268,38 @@ class MetricApplicabilityRequestUpdater(
         )
 
         when (request.action) {
-            MetricApplicabilityRequestAction.APPROVE ->
+            MetricApplicabilityRequestAction.APPROVE -> {
                 approve(
-                    applicabilityRequest = applicabilityRequest,
+                    request = applicabilityRequest,
                     assignment = assignment,
                     comment = request.comment
                 )
+            }
 
-            MetricApplicabilityRequestAction.REJECT ->
+            MetricApplicabilityRequestAction.REJECT -> {
                 reject(
-                    applicabilityRequest = applicabilityRequest,
+                    request = applicabilityRequest,
                     assignment = assignment,
                     comment = request.comment
                 )
+            }
 
-            MetricApplicabilityRequestAction.CANCEL_DECISION ->
+            MetricApplicabilityRequestAction.CANCEL_DECISION -> {
                 cancelDecision(
-                    applicabilityRequest = applicabilityRequest,
+                    request = applicabilityRequest,
                     assignment = assignment,
                     comment = request.comment
                 )
+            }
         }
 
+        /*
+         * Считаем количество PENDING уже после изменения состояния.
+         */
         val pendingCount =
             metricApplicabilityRequestRepository
                 .countByStatusAndIsVisibleInOfficeTrue(
-                    MetricApplicabilityRequestStatus.PENDING
+                    status = MetricApplicabilityRequestStatus.PENDING
                 )
 
         val availableActions =
@@ -302,12 +308,17 @@ class MetricApplicabilityRequestUpdater(
                 applicabilityStatus = assignment.applicabilityStatus
             )
 
+        /*
+         * Email отправляется только после успешного commit.
+         * createdBy заявки не меняется при принятии решения,
+         * поэтому здесь всегда получаем автора заявки.
+         */
         registerNotificationAfterCommit(
             recipientUserId = applicabilityRequest.createdBy,
             action = request.action
         )
 
-        return MetricApplicabilityRequestUpdateResponse(
+        return UpdateMetricApplicabilityResponse(
             requestId = applicabilityRequest.id,
             requestStatus = applicabilityRequest.status,
             applicabilityStatus = assignment.applicabilityStatus,
@@ -318,30 +329,34 @@ class MetricApplicabilityRequestUpdater(
 
     /**
      * APPROVE:
-     * PENDING/PENDING -> APPROVED/NOT_APPLICABLE.
+     *
+     * PENDING / PENDING
+     *       ↓
+     * APPROVED / NOT_APPLICABLE
      */
     private fun approve(
-        applicabilityRequest: MetricApplicabilityRequestEntity,
+        request: MetricApplicabilityRequestEntity,
         assignment: InitiativeMetricAssignmentEntity,
         comment: String?
     ) {
         val currentUserId = getCurrentUserId()
 
-        applicabilityRequest.status =
-            MetricApplicabilityRequestStatus.APPROVED
+        request.status = MetricApplicabilityRequestStatus.APPROVED
+        request.decisionBy = currentUserId
+        request.updatedAt = LocalDateTime.now()
 
-        applicabilityRequest.decisionBy = currentUserId
-        applicabilityRequest.updatedAt = LocalDateTime.now()
-
-        applicabilityRequest.effectiveToPeriod =
-            applicabilityRequest.resumePeriod
+        /*
+         * Если resumePeriod задан, он становится
+         * границей периода неприменимости.
+         */
+        request.effectiveToPeriod = request.resumePeriod
 
         assignment.applicabilityStatus =
             MetricApplicabilityStatus.NOT_APPLICABLE
 
         metricApplicabilityHistoryRepository.save(
             MetricApplicabilityHistoryEntity(
-                request = applicabilityRequest,
+                request = request,
                 action = MetricApplicabilityAction.APPROVED,
                 createdBy = currentUserId,
                 comment = comment,
@@ -352,33 +367,35 @@ class MetricApplicabilityRequestUpdater(
 
     /**
      * REJECT:
-     * PENDING/PENDING -> REJECTED/ACTIVE.
+     *
+     * PENDING / PENDING
+     *       ↓
+     * REJECTED / ACTIVE
      */
     private fun reject(
-        applicabilityRequest: MetricApplicabilityRequestEntity,
+        request: MetricApplicabilityRequestEntity,
         assignment: InitiativeMetricAssignmentEntity,
         comment: String?
     ) {
         val currentUserId = getCurrentUserId()
 
-        applicabilityRequest.status =
-            MetricApplicabilityRequestStatus.REJECTED
-
-        applicabilityRequest.decisionBy = currentUserId
-        applicabilityRequest.updatedAt = LocalDateTime.now()
+        request.status = MetricApplicabilityRequestStatus.REJECTED
+        request.decisionBy = currentUserId
+        request.updatedAt = LocalDateTime.now()
 
         assignment.applicabilityStatus =
             MetricApplicabilityStatus.ACTIVE
 
         /*
-         * isVisibleInOffice намеренно не меняем.
          * Согласно спецификации заявка после REJECT
          * остаётся видимой в очереди Офиса.
+         *
+         * isVisibleInOffice здесь намеренно не меняем.
          */
 
         metricApplicabilityHistoryRepository.save(
             MetricApplicabilityHistoryEntity(
-                request = applicabilityRequest,
+                request = request,
                 action = MetricApplicabilityAction.REJECTED,
                 createdBy = currentUserId,
                 comment = comment,
@@ -389,26 +406,26 @@ class MetricApplicabilityRequestUpdater(
 
     /**
      * CANCEL_DECISION:
-     * APPROVED/NOT_APPLICABLE или REJECTED/ACTIVE
-     * -> PENDING/PENDING.
+     *
+     * APPROVED / NOT_APPLICABLE
+     *              или
+     * REJECTED / ACTIVE
+     *       ↓
+     * PENDING / PENDING
      */
     private fun cancelDecision(
-        applicabilityRequest: MetricApplicabilityRequestEntity,
+        request: MetricApplicabilityRequestEntity,
         assignment: InitiativeMetricAssignmentEntity,
         comment: String?
     ) {
         val currentUserId = getCurrentUserId()
 
-        applicabilityRequest.status =
-            MetricApplicabilityRequestStatus.PENDING
-
-        applicabilityRequest.updatedAt = LocalDateTime.now()
-        applicabilityRequest.effectiveToPeriod = null
+        request.status = MetricApplicabilityRequestStatus.PENDING
+        request.updatedAt = LocalDateTime.now()
+        request.effectiveToPeriod = null
 
         /*
-         * decisionBy намеренно не очищаем.
-         * Последний принявший решение пользователь
-         * должен сохраниться.
+         * decisionBy согласно требованиям не очищаем.
          */
 
         assignment.applicabilityStatus =
@@ -416,7 +433,7 @@ class MetricApplicabilityRequestUpdater(
 
         metricApplicabilityHistoryRepository.save(
             MetricApplicabilityHistoryEntity(
-                request = applicabilityRequest,
+                request = request,
                 action = MetricApplicabilityAction.CANCEL_DECISION,
                 createdBy = currentUserId,
                 comment = comment,
@@ -426,7 +443,8 @@ class MetricApplicabilityRequestUpdater(
     }
 
     /**
-     * Проверяет, что заявка относится именно к найденному assignment.
+     * Проверяет, что request относится именно
+     * к найденному assignment.
      */
     private fun validateRequestBelongsToAssignment(
         request: MetricApplicabilityRequestEntity,
@@ -444,7 +462,11 @@ class MetricApplicabilityRequestUpdater(
     }
 
     /**
-     * Проверяет допустимость действия для текущего состояния.
+     * Проверяет доступность действия для текущего
+     * состояния заявки.
+     *
+     * Собственной проверки state machine здесь нет —
+     * используется общий ActionResolver.
      */
     private fun validateAction(
         request: MetricApplicabilityRequestEntity,
@@ -483,10 +505,10 @@ class MetricApplicabilityRequestUpdater(
     }
 
     /**
-     * Регистрирует отправку уведомления после успешного commit транзакции.
+     * Регистрирует отправку email после успешного commit.
      *
-     * Если отправка не удалась, изменение состояния заявки
-     * не откатывается.
+     * Ошибка получения пользователя или отправки письма
+     * не влияет на уже зафиксированные изменения БД.
      */
     private fun registerNotificationAfterCommit(
         recipientUserId: Long,
@@ -503,7 +525,8 @@ class MetricApplicabilityRequestUpdater(
                         )
                     }.onFailure { exception ->
                         log.error(
-                            "Ошибка отправки уведомления. " +
+                            "Ошибка отправки уведомления " +
+                                "по заявке на неприменимость метрики: " +
                                 "userId=$recipientUserId, action=$action",
                             exception
                         )
@@ -514,7 +537,8 @@ class MetricApplicabilityRequestUpdater(
     }
 
     /**
-     * Получает email пользователя и отправляет уведомление.
+     * Получает email автора заявки
+     * и отправляет соответствующее уведомление.
      */
     private fun sendNotification(
         recipientUserId: Long,
@@ -549,12 +573,25 @@ class MetricApplicabilityRequestUpdater(
         emailHandler.fillAndSend(
             getEmailTemplate(action),
             listOf(email),
-            mutableMapOf()
+            mutableMapOf(
+                Pair(
+                    METRIC_NAME,
+                    getMetricNameForNotification(action)
+                ),
+                Pair(
+                    INITIATIVE_NAME,
+                    getInitiativeNameForNotification(action)
+                ),
+                Pair(
+                    LINK,
+                    emailProperties.emailLinkProperties.linkToPortalShort
+                )
+            )
         )
     }
 
     /**
-     * Возвращает template уведомления для действия.
+     * Возвращает template письма для выполненного действия.
      */
     private fun getEmailTemplate(
         action: MetricApplicabilityRequestAction
@@ -576,7 +613,6 @@ class MetricApplicabilityRequestUpdater(
     private fun getCurrentUserId(): Long =
         userInfoProvider.user.id
 }
-
 /**
  * Выполняет действие Офиса над заявкой
  * на неприменимость метрики.
