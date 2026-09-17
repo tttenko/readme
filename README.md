@@ -120,27 +120,8 @@ const val UNLINK_METRIC_APPROVE_NOTIFICATION_TEMPLATE =
 const val INITIATIVE_AGENT_TYPE_NOT_FOUND =
     "initiative.agent.type.not.found"
 
-const val INITIATIVE_METRIC_ASSIGNMENT_NOT_FOUND =
-    "initiative.metric.assignment.not.found"
-
-const val METRIC_APPLICABILITY_REQUEST_NOT_FOUND =
-    "metric.applicability.request.not.found"
-
-const val REQUEST_NOT_BELONG_TO_ASSIGNMENT =
-    "request.not.belong.to.assignment"
-
-const val ACTION_NOT_AVAILABLE =
-    "action.not.available"
-
-const val INITIATIVE_METRIC_NOT_FOUND =
-    "initiative.metric.not.found"
-
-initiative.agent.type.not.found=Тип агента для инициативы {0} не найден
-initiative.metric.assignment.not.found=Метрика {1} не связана с инициативой {0} и типом агента {2}
-metric.applicability.request.not.found=Заявка на неприменимость метрики с идентификатором {0} не найдена
-request.not.belong.to.assignment=Заявка {0} не относится к указанной связке инициативы, метрики и типа агента
-action.not.available=Действие {0} недоступно для текущего состояния заявки
-initiative.metric.not.found=Метрика с идентификатором {0} не найдена
+const val COMMENT_REQUIRED = "comment.required"
+comment.required=Комментарий обязателен для выбранного действия
 
 
 
