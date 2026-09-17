@@ -1,201 +1,41 @@
 ```java
-/**
- * Получает email автора заявки
- * и отправляет уведомление.
- */
-private fun sendNotification(
-    recipientUserId: Long,
-    action: MetricApplicabilityRequestAction,
-    metricName: String,
-    initiativeName: String
-) {
-    val user = userAccountService
-        .getUsersByIds(setOf(recipientUserId))
-        .get(recipientUserId)
-
-    if (user == null) {
-        log.warn(
-            "Не найден пользователь для отправки уведомления, userId={}",
-            recipientUserId
-        )
-        return
-    }
-
-    val email = user.email?.trim()
-
-    if (email.isNullOrEmpty()) {
-        log.warn(
-            "У пользователя отсутствует email, userId={}",
-            recipientUserId
-        )
-        return
-    }
-
-    emailHandler.fillAndSend(
-        getEmailTemplate(action),
-        listOf(email),
-        mutableMapOf(
-            METRIC_NAME to metricName,
-            INITIATIVE_NAME to initiativeName,
-            LINK to emailProperties.emailLinkProperties.linkToPortalShort
-        )
-    )
-}
-/**
- * Проверяет корректность тела запроса
- * при изменении заявки на неприменимость метрики.
- */
-@Target(AnnotationTarget.VALUE_PARAMETER)
-@Retention(AnnotationRetention.RUNTIME)
-@Constraint(validatedBy = [UpdateUnlinkMetricRequestValidator::class])
-annotation class ValidUpdateUnlinkMetricRequest(
-    val message: String = "VALIDATION_ERROR",
-    val groups: Array<KClass<*>> = [],
-    val payload: Array<KClass<out Payload>> = [],
-)
-
-@Component
-class UpdateUnlinkMetricRequestValidator(
-    private val messageProvider: MessageProvider,
-) : ConstraintValidator<
-    ValidUpdateUnlinkMetricRequest,
-    UpdateMetricApplicabilityRequest
-> {
-
-    private companion object {
-        const val COMMENT_MAX_LENGTH = 1000
-    }
-
-    override fun isValid(
-        request: UpdateMetricApplicabilityRequest,
-        context: ConstraintValidatorContext,
-    ): Boolean {
-        context.disableDefaultConstraintViolation()
-
-        val comment = request.comment?.trim()
-
-        if (comment != null && comment.length > COMMENT_MAX_LENGTH) {
-            val message = messageProvider[COMMENT_TOO_LONG]
-
-            context
-                .buildConstraintViolationWithTemplate(message)
-                .addConstraintViolation()
-
-            return false
-        }
-
-        if (
-            request.action in setOf(
-                MetricApplicabilityRequestAction.REJECT,
-                MetricApplicabilityRequestAction.CANCEL_DECISION,
-            ) &&
-            comment.isNullOrEmpty()
-        ) {
-            val message = messageProvider[COMMENT_REQUIRED]
-
-            context
-                .buildConstraintViolationWithTemplate(message)
-                .addConstraintViolation()
-
-            return false
-        }
-
-        return true
-    }
-}
-
-const val UNLINK_METRIC_APPROVE_NOTIFICATION_TEMPLATE =
-        "unlinkMetricFromInitiativeRequestApprove"
-
-    const val UNLINK_METRIC_REJECT_NOTIFICATION_TEMPLATE =
-        "unlinkMetricFromInitiativeRequestReject"
-
-    const val UNLINK_METRIC_CANCEL_DECISION_NOTIFICATION_TEMPLATE =
-        "unlinkMetricFromInitiativeRequestCancelDecision"
-
-
-
-const val INITIATIVE_AGENT_TYPE_NOT_FOUND =
-    "initiative.agent.type.not.found"
-
-const val COMMENT_REQUIRED = "comment.required"
-comment.required=Комментарий обязателен для выбранного действия
-
-
-
-/**
-     * Получает заявку с блокировкой записи на время транзакции.
-     */
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query(
-        """
-        select r
-        from MetricApplicabilityRequestEntity r
-        where r.id = :requestId
-        """
-    )
-    fun findByIdForUpdate(
-        @Param("requestId") requestId: Long
-    ): MetricApplicabilityRequestEntity?
-
-    /**
-     * Количество видимых в очереди Офиса заявок,
-     * ожидающих принятия решения.
-     */
-    fun countByStatusAndIsVisibleInOfficeTrue(
-        status: MetricApplicabilityRequestStatus
-    ): Long
-
-
-fun findByInitiativeAgentTypeIdAndMetricDirectoryId(
-        initiativeAgentTypeId: Long,
-        metricDirectoryId: UUID
-    ): InitiativeMetricAssignmentEntity?
-
-
-
-
 @Service
 class MetricApplicabilityRequestUpdater(
     private val metricApplicabilityRequestRepository:
         MetricApplicabilityRequestRepository,
-
     private val initiativeMetricAssignmentRepository:
         InitiativeMetricAssignmentRepository,
-
     private val metricApplicabilityHistoryRepository:
         MetricApplicabilityHistoryRepository,
-
     private val initiativeMetricTypeRepository:
         InitiativeMetricTypeRepository,
-
     private val metricsDirectoryRepository:
         MetricsDirectoryRepository,
-
     private val metricApplicabilityActionResolver:
         MetricApplicabilityActionResolver,
-
     private val userInfoProvider:
         UserInfoProvider,
-
     private val userAccountService:
         UserAccountService,
-
     private val emailHandler:
         EmailHandler,
-
     private val emailProperties:
         EmailProperties,
-
     private val messageProvider:
         MessageProvider
 ) {
 
-    private val log by logger
+    companion object {
+        private val log by logger()
+    }
 
     /**
      * Выполняет действие Офиса над заявкой
      * на неприменимость метрики.
+     *
+     * Поддерживает APPROVE, REJECT и CANCEL_DECISION.
+     * Изменение request, assignment и history выполняется
+     * в одной транзакции.
      */
     @Transactional
     fun updateRequest(
@@ -205,6 +45,8 @@ class MetricApplicabilityRequestUpdater(
         requestId: Long,
         request: UpdateMetricApplicabilityRequest,
     ): MetricApplicabilityRequestActionResponse {
+
+        val currentUserId = userInfoProvider.currentUser().id
 
         val initiativeMetricType =
             initiativeMetricTypeRepository
@@ -223,7 +65,9 @@ class MetricApplicabilityRequestUpdater(
 
         val initiativeMetricTypeId =
             initiativeMetricType.id
-                ?: error("У сохранённого типа агента инициативы отсутствует id")
+                ?: error(
+                    "У сохранённого типа агента инициативы отсутствует id"
+                )
 
         validateMetricExists(metricId)
 
@@ -236,7 +80,9 @@ class MetricApplicabilityRequestUpdater(
                 ?: throw AiNotFoundException(
                     errorCode = INITIATIVE_METRIC_ASSIGNMENT_NOT_FOUND,
                     message = MessageFormat.format(
-                        messageProvider[INITIATIVE_METRIC_ASSIGNMENT_NOT_FOUND],
+                        messageProvider[
+                            INITIATIVE_METRIC_ASSIGNMENT_NOT_FOUND
+                        ],
                         initiativeId,
                         metricId,
                         agentType
@@ -245,15 +91,23 @@ class MetricApplicabilityRequestUpdater(
 
         val assignmentId =
             assignment.id
-                ?: error("У сохранённого assignment отсутствует id")
+                ?: error(
+                    "У сохранённого assignment отсутствует id"
+                )
 
+        /*
+         * Заявка блокируется до завершения транзакции,
+         * чтобы два решения не могли выполниться одновременно.
+         */
         val applicabilityRequest =
             metricApplicabilityRequestRepository
                 .findByIdForUpdate(requestId)
                 ?: throw AiNotFoundException(
                     errorCode = METRIC_APPLICABILITY_REQUEST_NOT_FOUND,
                     message = MessageFormat.format(
-                        messageProvider[METRIC_APPLICABILITY_REQUEST_NOT_FOUND],
+                        messageProvider[
+                            METRIC_APPLICABILITY_REQUEST_NOT_FOUND
+                        ],
                         requestId
                     )
                 )
@@ -270,10 +124,8 @@ class MetricApplicabilityRequestUpdater(
         )
 
         /*
-         * Валидатор уже гарантирует обязательность comment
-         * для REJECT/CANCEL_DECISION.
-         *
-         * Здесь только нормализуем значение перед сохранением.
+         * Валидатор уже проверил обязательность comment.
+         * Здесь только убираем лишние пробелы.
          */
         val comment =
             request.comment
@@ -281,33 +133,32 @@ class MetricApplicabilityRequestUpdater(
                 ?.takeIf { it.isNotEmpty() }
 
         when (request.action) {
+
             MetricApplicabilityRequestAction.APPROVE ->
                 approve(
                     request = applicabilityRequest,
                     assignment = assignment,
-                    comment = comment
+                    comment = comment,
+                    currentUserId = currentUserId
                 )
 
             MetricApplicabilityRequestAction.REJECT ->
                 reject(
                     request = applicabilityRequest,
                     assignment = assignment,
-                    comment = comment
+                    comment = comment,
+                    currentUserId = currentUserId
                 )
 
             MetricApplicabilityRequestAction.CANCEL_DECISION ->
                 cancelDecision(
                     request = applicabilityRequest,
                     assignment = assignment,
-                    comment = comment
+                    comment = comment,
+                    currentUserId = currentUserId
                 )
         }
 
-        /*
-         * Query перед выполнением автоматически flush'ит
-         * изменения managed Entity, поэтому count уже учитывает
-         * новое состояние заявки.
-         */
         val pendingCount =
             metricApplicabilityRequestRepository
                 .countByStatusAndIsVisibleInOfficeTrue(
@@ -315,26 +166,27 @@ class MetricApplicabilityRequestUpdater(
                 )
 
         val availableActions =
-            metricApplicabilityActionResolver.getAvailableActions(
-                requestStatus = applicabilityRequest.status,
-                applicabilityStatus = assignment.applicabilityStatus
-            )
+            metricApplicabilityActionResolver
+                .getAvailableActions(
+                    requestStatus = applicabilityRequest.status,
+                    applicabilityStatus =
+                        assignment.applicabilityStatus
+                )
 
         /*
-         * До завершения транзакции извлекаем данные,
-         * необходимые для email.
-         *
-         * После commit Entity уже не используем.
+         * Lazy Entity после commit не используем.
+         * Поэтому необходимые данные для письма
+         * достаём внутри транзакции заранее.
          */
         val metricName =
-            assignment.metric.name.orEmpty()
+            assignment.metric.name.toString()
 
         val initiativeName =
             assignment
                 .initiativeMetricType
                 .aiAgent
                 .agentName
-                .orEmpty()
+                .toString()
 
         registerNotificationAfterCommit(
             recipientUserId = applicabilityRequest.createdBy,
@@ -346,27 +198,27 @@ class MetricApplicabilityRequestUpdater(
         return MetricApplicabilityRequestActionResponse(
             requestId =
                 applicabilityRequest.id
-                    ?: error("У сохранённой заявки отсутствует id"),
+                    ?: error(
+                        "У сохранённой заявки отсутствует id"
+                    ),
             requestStatus = applicabilityRequest.status,
-            applicabilityStatus = assignment.applicabilityStatus,
+            applicabilityStatus =
+                assignment.applicabilityStatus,
             pendingCount = pendingCount,
             availableActions = availableActions
         )
     }
 
     /**
-     * Согласовывает неприменимость метрики.
-     *
-     * PENDING/PENDING
-     * -> APPROVED/NOT_APPLICABLE.
+     * Согласовывает неприменимость:
+     * PENDING/PENDING -> APPROVED/NOT_APPLICABLE.
      */
     private fun approve(
         request: MetricApplicabilityRequestEntity,
         assignment: InitiativeMetricAssignmentEntity,
-        comment: String?
+        comment: String?,
+        currentUserId: Long
     ) {
-        val currentUserId = getCurrentUserId()
-
         request.status =
             MetricApplicabilityRequestStatus.APPROVED
 
@@ -386,18 +238,15 @@ class MetricApplicabilityRequestUpdater(
     }
 
     /**
-     * Отклоняет заявку.
-     *
-     * PENDING/PENDING
-     * -> REJECTED/ACTIVE.
+     * Отклоняет заявку:
+     * PENDING/PENDING -> REJECTED/ACTIVE.
      */
     private fun reject(
         request: MetricApplicabilityRequestEntity,
         assignment: InitiativeMetricAssignmentEntity,
-        comment: String?
+        comment: String?,
+        currentUserId: Long
     ) {
-        val currentUserId = getCurrentUserId()
-
         request.status =
             MetricApplicabilityRequestStatus.REJECTED
 
@@ -420,7 +269,7 @@ class MetricApplicabilityRequestUpdater(
     }
 
     /**
-     * Отменяет ранее принятое решение.
+     * Отменяет принятое решение:
      *
      * APPROVED/NOT_APPLICABLE или REJECTED/ACTIVE
      * -> PENDING/PENDING.
@@ -428,10 +277,9 @@ class MetricApplicabilityRequestUpdater(
     private fun cancelDecision(
         request: MetricApplicabilityRequestEntity,
         assignment: InitiativeMetricAssignmentEntity,
-        comment: String?
+        comment: String?,
+        currentUserId: Long
     ) {
-        val currentUserId = getCurrentUserId()
-
         request.status =
             MetricApplicabilityRequestStatus.PENDING
 
@@ -439,7 +287,7 @@ class MetricApplicabilityRequestUpdater(
         request.effectiveToPeriod = null
 
         /*
-         * decisionBy согласно требованиям не очищаем.
+         * decisionBy по требованиям не очищается.
          */
 
         assignment.applicabilityStatus =
@@ -454,7 +302,7 @@ class MetricApplicabilityRequestUpdater(
     }
 
     /**
-     * Добавляет новую immutable-запись истории.
+     * Добавляет новое действие в историю заявки.
      */
     private fun saveHistory(
         request: MetricApplicabilityRequestEntity,
@@ -474,17 +322,23 @@ class MetricApplicabilityRequestUpdater(
     }
 
     /**
-     * Проверяет принадлежность request указанному assignment.
+     * Проверяет принадлежность заявки
+     * указанному assignment.
      */
     private fun validateRequestBelongsToAssignment(
         request: MetricApplicabilityRequestEntity,
         assignmentId: Long
     ) {
-        if (request.initiativeMetricAssignment.id != assignmentId) {
+        if (
+            request.initiativeMetricAssignment.id !=
+            assignmentId
+        ) {
             throw AiBadRequestException(
                 errorCode = REQUEST_NOT_BELONG_TO_ASSIGNMENT,
                 message = MessageFormat.format(
-                    messageProvider[REQUEST_NOT_BELONG_TO_ASSIGNMENT],
+                    messageProvider[
+                        REQUEST_NOT_BELONG_TO_ASSIGNMENT
+                    ],
                     request.id
                 )
             )
@@ -501,14 +355,16 @@ class MetricApplicabilityRequestUpdater(
         action: MetricApplicabilityRequestAction
     ) {
         val availableActions =
-            metricApplicabilityActionResolver.getAvailableActions(
-                requestStatus = request.status,
-                applicabilityStatus = assignment.applicabilityStatus
-            )
+            metricApplicabilityActionResolver
+                .getAvailableActions(
+                    requestStatus = request.status,
+                    applicabilityStatus =
+                        assignment.applicabilityStatus
+                )
 
         /*
-         * PATCH Офиса не должен работать
-         * со скрытыми после RESTORE заявками.
+         * Скрытая после RESTORE заявка
+         * также недоступна для действий Офиса.
          */
         if (
             !request.isVisibleInOffice ||
@@ -527,12 +383,17 @@ class MetricApplicabilityRequestUpdater(
     /**
      * Проверяет существование метрики.
      */
-    private fun validateMetricExists(metricId: UUID) {
-        metricsDirectoryRepository.findByIdOrNull(metricId)
+    private fun validateMetricExists(
+        metricId: UUID
+    ) {
+        metricsDirectoryRepository
+            .findByIdOrNull(metricId)
             ?: throw AiNotFoundException(
                 errorCode = INITIATIVE_METRIC_NOT_FOUND,
                 message = MessageFormat.format(
-                    messageProvider[INITIATIVE_METRIC_NOT_FOUND],
+                    messageProvider[
+                        INITIATIVE_METRIC_NOT_FOUND
+                    ],
                     metricId
                 )
             )
@@ -548,28 +409,33 @@ class MetricApplicabilityRequestUpdater(
         metricName: String,
         initiativeName: String
     ) {
-        TransactionSynchronizationManager.registerSynchronization(
-            object : TransactionSynchronization {
+        TransactionSynchronizationManager
+            .registerSynchronization(
+                object : TransactionSynchronization {
 
-                override fun afterCommit() {
-                    runCatching {
-                        sendNotification(
-                            recipientUserId = recipientUserId,
-                            action = action,
-                            metricName = metricName,
-                            initiativeName = initiativeName
-                        )
-                    }.onFailure { exception ->
-                        log.error(
-                            "Ошибка отправки уведомления " +
-                                "по заявке на неприменимость метрики: " +
-                                "userId=$recipientUserId, action=$action",
-                            exception
-                        )
+                    override fun afterCommit() {
+                        runCatching {
+                            sendNotification(
+                                recipientUserId =
+                                    recipientUserId,
+                                action = action,
+                                metricName = metricName,
+                                initiativeName =
+                                    initiativeName
+                            )
+                        }.onFailure { exception ->
+                            log.error(
+                                "Ошибка отправки уведомления " +
+                                    "по заявке на неприменимость " +
+                                    "метрики: userId={}, action={}",
+                                recipientUserId,
+                                action,
+                                exception
+                            )
+                        }
                     }
                 }
-            }
-        )
+            )
     }
 
     /**
@@ -584,26 +450,27 @@ class MetricApplicabilityRequestUpdater(
     ) {
         val user =
             userAccountService
-                .getUsersByIds(setOf(recipientUserId))
-                [recipientUserId]
+                .getUsersByIds(
+                    setOf(recipientUserId)
+                )
+                .get(recipientUserId)
 
         if (user == null) {
             log.warn(
-                "Не найден пользователь для отправки уведомления, " +
-                    "userId=$recipientUserId"
+                "Не найден пользователь для отправки " +
+                    "уведомления, userId={}",
+                recipientUserId
             )
             return
         }
 
-        val email =
-            user.email
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
+        val email = user.email?.trim()
 
-        if (email == null) {
+        if (email.isNullOrEmpty()) {
             log.warn(
                 "У пользователя отсутствует email, " +
-                    "userId=$recipientUserId"
+                    "userId={}",
+                recipientUserId
             )
             return
         }
@@ -612,18 +479,12 @@ class MetricApplicabilityRequestUpdater(
             getEmailTemplate(action),
             listOf(email),
             mutableMapOf(
-                Pair(
-                    METRIC_NAME,
-                    metricName
-                ),
-                Pair(
-                    INITIATIVE_NAME,
-                    initiativeName
-                ),
-                Pair(
-                    LINK,
-                    emailProperties.emailLinkProperties.linkToPortalShort
-                )
+                METRIC_NAME to metricName,
+                INITIATIVE_NAME to initiativeName,
+                LINK to
+                    emailProperties
+                        .emailLinkProperties
+                        .linkToPortalShort
             )
         )
     }
@@ -636,6 +497,7 @@ class MetricApplicabilityRequestUpdater(
         action: MetricApplicabilityRequestAction
     ): String =
         when (action) {
+
             MetricApplicabilityRequestAction.APPROVE ->
                 UNLINK_METRIC_APPROVE_NOTIFICATION_TEMPLATE
 
@@ -645,12 +507,6 @@ class MetricApplicabilityRequestUpdater(
             MetricApplicabilityRequestAction.CANCEL_DECISION ->
                 UNLINK_METRIC_CANCEL_DECISION_NOTIFICATION_TEMPLATE
         }
-
-    /**
-     * Возвращает ID текущего пользователя.
-     */
-    private fun getCurrentUserId(): Long =
-        userInfoProvider.currentUser().id
 }
 /**
  * Выполняет действие Офиса над заявкой
