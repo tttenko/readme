@@ -170,4 +170,21 @@ class MetricApplicabilityRequestQueryService(
         )
     }
 }
+
+/**
+     * Возвращает очередь заявок Офиса.
+     */
+    fun getMetricApplicabilityRequests(
+        status: MetricApplicabilityRequestStatus?,
+        page: Int,
+        size: Int,
+        search: String?
+    ): MetricApplicabilityRequestsResponse =
+        metricApplicabilityRequestQueryService
+            .getMetricApplicabilityRequests(
+                status = status,
+                page = page,
+                size = size,
+                search = search
+            )
 ```
