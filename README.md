@@ -1,9 +1,12 @@
 ```java
 select
     id,
-    initiative_agent_type_id,
-    metric_directory_id,
-    applicability_status
-from initiative_metric_assignment
-where id = <assignment_id>;
+    status,
+    is_visible_in_office,
+    decision_by,
+    effective_from_period,
+    effective_to_period,
+    updated_at
+from metric_applicability_request
+where id = 15;
 ```
