@@ -1,41 +1,79 @@
 ```java
-SELECT
-    r.id AS request_id,
-    r.status AS request_status,
-    a.applicability_status,
-    r.decision_by,
-    r.effective_to_period,
-    r.is_visible_in_office,
-    r.updated_at
-FROM prm_ai.metric_applicability_request r
-JOIN prm_ai.initiative_metric_assignment a
-    ON a.id = r.initiative_metric_assignment_id
-WHERE r.id = 15;
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="
+            http://www.liquibase.org/xml/ns/dbchangelog
+            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
-Ожидаем:
+    <changeSet id="Add metric applicability request decision email templates"
+               author="KoptenkoMV">
 
-request_status        = PENDING
-applicability_status  = PENDING
-decision_by           = НЕ изменился
-effective_to_period   = null
-is_visible_in_office  = true
+        <insert tableName="email_template">
+            <column name="id"
+                    value="unlinkMetricFromInitiativeRequestApprove"/>
 
-И история:
+            <column name="subject">
+                <value><![CDATA[${agentName}: метрика больше не актуальна]]></value>
+            </column>
 
-SELECT
-    h.id,
-    h.action,
-    h.created_by,
-    h.comment,
-    h.created_at
-FROM prm_ai.metric_applicability_history h
-WHERE h.metric_applicability_request_id = 15
-ORDER BY h.created_at, h.id;
+            <column name="template">
+                <value><![CDATA[
+Здравствуйте!
 
-Должно стать:
+Метрика «${metric}» признана неактуальной для инициативы «${agentName}».
+Открыть инициативу: ${link}
 
-REQUEST_CREATED
-APPROVED
-CANCEL_DECISION
+Поддержка Пульта
+${supportEmail}
+                ]]></value>
+            </column>
+        </insert>
 
+        <insert tableName="email_template">
+            <column name="id"
+                    value="unlinkMetricFromInitiativeRequestReject"/>
+
+            <column name="subject">
+                <value><![CDATA[${agentName}: метрика признана актуальной]]></value>
+            </column>
+
+            <column name="template">
+                <value><![CDATA[
+Здравствуйте!
+
+Метрика «${metric}» остаётся актуальной для инициативы «${agentName}».
+Открыть инициативу: ${link}
+
+Поддержка Пульта
+${supportEmail}
+                ]]></value>
+            </column>
+        </insert>
+
+        <insert tableName="email_template">
+            <column name="id"
+                    value="unlinkMetricFromInitiativeRequestCancelDecision"/>
+
+            <column name="subject">
+                <value><![CDATA[${agentName}: актуальность метрики изменилась]]></value>
+            </column>
+
+            <column name="template">
+                <value><![CDATA[
+Здравствуйте!
+
+Сотрудник офиса AI-трансформации отменил решение по актуальности метрики «${metric}» для инициативы «${agentName}».
+Открыть инициативу: ${link}
+
+Поддержка Пульта
+${supportEmail}
+                ]]></value>
+            </column>
+        </insert>
+
+    </changeSet>
+
+</databaseChangeLog>
 ```
