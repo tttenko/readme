@@ -1,262 +1,76 @@
 ```java
- val applicabilityStatus: MetricApplicabilityStatus = MetricApplicabilityStatus.ACTIVE,
-    val resumePeriod: LocalDate? = null,
+ Шаг 1. Найдём инициативу с типами агентов
 
-    /**
-     * Возвращает все существующие assignment для инициативы
-     * и набора метрик.
-     *
-     * Отсутствие assignment для конкретной пары metric + agentType
-     * означает applicabilityStatus=ACTIVE.
-     */
-    @Query(
-        """
-        select assignment
-        from InitiativeMetricAssignmentEntity assignment
-            join fetch assignment.initiativeMetricType initiativeMetricType
-            join fetch assignment.metric metric
-        where initiativeMetricType.aiAgent.id = :initiativeId
-          and metric.id in :metricIds
-        """
-    )
-    fun findAllByInitiativeIdAndMetricIds(
-        @Param("initiativeId") initiativeId: Long,
-        @Param("metricIds") metricIds: Set<UUID>,
-    ): List<InitiativeMetricAssignmentEntity>
+Выполни:
 
+select
+    imt.ai_agent_id          as initiative_id,
+    a.agent_name             as initiative_name,
+    imt.id                   as initiative_agent_type_id,
+    imt.agent_type
+from initiative_metric_type imt
+join ai_agent a
+    on a.id = imt.ai_agent_id
+order by imt.ai_agent_id, imt.agent_type;
 
-@Query(
-    """
-    select request
-    from MetricApplicabilityRequestEntity request
-    where request.initiativeMetricAssignment.id in :assignmentIds
-      and not exists (
-          select newerRequest.id
-          from MetricApplicabilityRequestEntity newerRequest
-          where newerRequest.initiativeMetricAssignment.id =
-                    request.initiativeMetricAssignment.id
-            and (
-                newerRequest.createdAt > request.createdAt
-                or (
-                    newerRequest.createdAt = request.createdAt
-                    and newerRequest.id > request.id
-                )
-            )
-      )
-    """
-)
-fun findLatestByAssignmentIds(
-    @Param("assignmentIds") assignmentIds: Set<Long>
-): List<MetricApplicabilityRequestEntity>
+Лучше выбрать инициативу, у которой есть хотя бы autonomous или copilot, а идеально — оба.
 
-private val initiativeMetricAssignmentRepository: InitiativeMetricAssignmentRepository,
-    private val metricApplicabilityRequestRepository: MetricApplicabilityRequestRepository,
+Шаг 2. Для выбранной инициативы посмотрим assignments
 
-@Transactional(readOnly = true)
-fun getInitiativeMetricValues(
-    initiativeId: Long
-): List<InitiativeMetricResponse> {
+После того как выберешь initiative_id, подставь его:
 
-    val metricTypes =
-        initiativeMetricTypeRepository.findAllByAiAgentId(
-            initiativeId = initiativeId
-        )
+select
+    imt.ai_agent_id              as initiative_id,
+    imt.id                       as initiative_agent_type_id,
+    imt.agent_type,
+    ima.id                       as assignment_id,
+    ima.metric_directory_id      as metric_id,
+    md.name                      as metric_name,
+    ima.applicability_status
+from initiative_metric_type imt
+left join initiative_metric_assignment ima
+    on ima.initiative_agent_type_id = imt.id
+left join metrics_directory md
+    on md.id = ima.metric_directory_id
+where imt.ai_agent_id = <INITIATIVE_ID>
+order by imt.agent_type, md.name;
 
-    if (metricTypes.isEmpty()) {
-        return emptyList()
-    }
+Нам особенно интересны строки с:
 
-    val requestedAgentTypes =
-        metricTypes
-            .map { metricType ->
-                InitiativeMetricAgentType
-                    .fromValue(metricType.agentType.orEmpty())
-                    ?: throw AiBadRequestException(
-                        errorCode = WRONG_INITIATIVE_METRIC_AGENT_TYPE,
-                        message = MessageFormat.format(
-                            messageProvider[
-                                WRONG_INITIATIVE_METRIC_AGENT_TYPE
-                            ],
-                            metricType.agentType,
-                        ),
-                    )
-            }
-            .toSet()
+ACTIVE
+PENDING
+NOT_APPLICABLE
 
-    val metrics =
-        metricsDirectoryRepository.findApplicableMetrics(
-            autonomousSelected =
-                requestedAgentTypes.contains(
-                    InitiativeMetricAgentType.AUTONOMOUS
-                ),
-            copilotSelected =
-                requestedAgentTypes.contains(
-                    InitiativeMetricAgentType.COPILOT
-                ),
-            appealsSelected =
-                requestedAgentTypes.contains(
-                    InitiativeMetricAgentType.APPEALS
-                )
-        )
+Но отсутствие assignment тоже важно: по требованиям оно должно интерпретироваться как ACTIVE.
 
-    if (metrics.isEmpty()) {
-        return emptyList()
-    }
+Шаг 3. Посмотрим последнюю заявку для каждого assignment
+select
+    ima.id                    as assignment_id,
+    imt.ai_agent_id           as initiative_id,
+    imt.agent_type,
+    ima.metric_directory_id   as metric_id,
+    md.name                   as metric_name,
+    ima.applicability_status,
+    mar.id                    as request_id,
+    mar.status                as request_status,
+    mar.resume_period,
+    mar.created_at
+from initiative_metric_assignment ima
+join initiative_metric_type imt
+    on imt.id = ima.initiative_agent_type_id
+join metrics_directory md
+    on md.id = ima.metric_directory_id
+left join lateral (
+    select r.*
+    from metric_applicability_request r
+    where r.initiative_metric_assignment_id = ima.id
+    order by r.created_at desc, r.id desc
+    limit 1
+) mar on true
+where imt.ai_agent_id = <INITIATIVE_ID>
+order by imt.agent_type, md.name;
 
-    val metricIds = metrics
-        .map { metric -> metric.id }
-        .toSet()
-
-    /*
-     * Получаем состояния применимости одним запросом.
-     *
-     * В БД assignment существует только для тех metric + agentType,
-     * по которым уже запускался процесс неприменимости.
-     *
-     * Если assignment отсутствует, ниже считаем метрику ACTIVE.
-     */
-    val assignments =
-        initiativeMetricAssignmentRepository
-            .findAllByInitiativeIdAndMetricIds(
-                initiativeId = initiativeId,
-                metricIds = metricIds,
-            )
-
-    /*
-     * Для каждого assignment нужна актуальная заявка,
-     * чтобы получить resumePeriod.
-     *
-     * Актуальность:
-     * createdAt DESC, id DESC.
-     */
-    val assignmentIds =
-        assignments
-            .map { assignment -> assignment.id }
-            .toSet()
-
-    val latestRequestsByAssignmentId =
-        if (assignmentIds.isEmpty()) {
-            emptyMap()
-        } else {
-            metricApplicabilityRequestRepository
-                .findLatestByAssignmentIds(assignmentIds)
-                .associateBy { request ->
-                    request.initiativeMetricAssignment.id
-                }
-        }
-
-    /*
-     * Индексируем состояние именно по:
-     *
-     * metricId + agentType
-     *
-     * потому что одна справочная метрика может одновременно
-     * существовать для autonomous и copilot с разными статусами.
-     */
-    val applicabilityByMetricAndAgentType =
-        assignments.associate { assignment ->
-
-            val key =
-                MetricApplicabilityKey(
-                    metricId = assignment.metric.id,
-                    agentType =
-                        assignment
-                            .initiativeMetricType
-                            .agentType
-                            .orEmpty(),
-                )
-
-            val latestRequest =
-                latestRequestsByAssignmentId[assignment.id]
-
-            key to MetricApplicabilityData(
-                status = assignment.applicabilityStatus,
-                resumePeriod = latestRequest?.resumePeriod,
-            )
-        }
-
-    val reportingMonth = YearMonth.now().minusMonths(1)
-    val previousPeriodMonth = reportingMonth.minusMonths(1)
-
-    val hasReportingMonthValues =
-        initiativeMetricValueRepository
-            .existsByInitiativeMetricTypeAiAgentIdAndPeriodMonth(
-                initiativeId = initiativeId,
-                periodMonth = reportingMonth.atDay(1),
-            )
-
-    val metricValues =
-        initiativeMetricValueRepository
-            .findValuesForInitiativeMetricsInPeriodRange(
-                initiativeId = initiativeId,
-                agentTypes =
-                    requestedAgentTypes
-                        .map { agentType -> agentType.value }
-                        .toSet(),
-                metricDirectoryIds = metricIds,
-                periodFrom = previousPeriodMonth.atDay(1),
-                periodTo = reportingMonth.atDay(1),
-            )
-
-    val metricIdsWithSubmittedValue =
-        metricValues
-            .asSequence()
-            .filter { metricValue ->
-                metricValue.metricValue != null ||
-                    metricValue.targetValue != null
-            }
-            .mapNotNull { metricValue ->
-                metricValue.metricDirectory?.id
-            }
-            .toSet()
-
-    return metricResponseBuilder
-        .build(
-            metrics = metrics,
-            requestedAgentTypes = requestedAgentTypes,
-            metricValues = metricValues,
-            reportingMonth = reportingMonth,
-            clearRegularMetricValue = !hasReportingMonthValues,
-        )
-        /*
-         * Обогащаем уже построенный response состоянием применимости.
-         */
-        .map { response ->
-
-            val applicability =
-                applicabilityByMetricAndAgentType[
-                    MetricApplicabilityKey(
-                        metricId = response.id,
-                        agentType = response.agentType,
-                    )
-                ]
-
-            response.copy(
-                applicabilityStatus =
-                    applicability?.status
-                        ?: MetricApplicabilityStatus.ACTIVE,
-                resumePeriod =
-                    applicability?.resumePeriod,
-            )
-        }
-        .filter { response ->
-            response.isActive != false ||
-                response.id in metricIdsWithSubmittedValue
-        }
-        .sortedBy { response ->
-            response.isActive == false
-        }
-}
-
-private data class MetricApplicabilityKey(
-    val metricId: UUID,
-    val agentType: String,
-)
-
-private data class MetricApplicabilityData(
-    val status: MetricApplicabilityStatus,
-    val resumePeriod: LocalDate?,
-)
+Именно created_at DESC, id DESC нам сейчас особенно важно проверить, потому что последняя заявка используется для resumePeriod.
 
 
 ```
