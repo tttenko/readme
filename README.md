@@ -1,159 +1,118 @@
 ```java
 
-@Service
-class MetricsReportService(
-    private val metricsRepository: MetricRepository
-) {
-
-    companion object {
-        private val PERIOD_FORMATTER = DateTimeFormatter.ofPattern("MM-yyyy")
-        private val DATE_FORMATTER = DateTimeFormatter.ofPattern("dd.MM.yyyy")
-    }
-
-    fun downloadExcelReport(
-        periodFrom: LocalDate,
-        periodTo: LocalDate,
-        divisionId: Long?,
-        blockId: Long?
-    ): ResponseEntity<InputStreamResource> {
-
-        // Подготовка таблицы excel
-        val workBook = ExcelExportHelper.createWorkBook(listOf("Метрики"))
-
-        // Получение и подготовка данных для выгрузки
-        val data = toMetricsExcelExportModel(
-            metricsRepository.getMetricDataForExport(periodFrom, periodTo, divisionId, blockId)
-        ).ifEmpty { return ResponseEntity.noContent().build() }
-
-        // Заполнение данных
-        ExcelExportHelper.writeSheetData(
-            workBook,
-            workBook.getSheetAt(0),
-            data,
-            headerColumns(getYearMonthsBetween(periodFrom, periodTo))
+@Modifying
+@Query(
+    nativeQuery = true,
+    value = """
+        insert into initiative_metric_value (
+            initiative_agent_type_id,
+            metric_directory_id,
+            period_month,
+            metric_value,
+            target_value
         )
+        select
+            previous.initiative_agent_type_id,
+            previous.metric_directory_id,
+            :currentPeriod,
+            case
+                when directory.frequency = 'constant'
+                    then previous.metric_value
+                else null
+            end,
+            previous.target_value
+        from initiative_metric_value previous
+        join metrics_directory directory
+            on directory.id = previous.metric_directory_id
 
-        // Превращение полученной таблицы в файл
-        return workBook.convertToFile("metrics_export_${periodFrom}_${periodTo}.xlsx")
-    }
+        where previous.period_month = :previousPeriod
 
-    fun toMetricsExcelExportModel(data: List<MetricDataForExportView>): List<MetricsExcelExportModel> {
-        return data
-            .groupBy {
-                Triple(
-                    it.getAgentId(),
-                    it.getType(),
-                    it.getMetric()
-                )
-            }
-            .mapNotNull { agentMetrics ->
-                agentMetrics.value.firstOrNull()?.let { metricData ->
-                    MetricsExcelExportModel(
-                        block = metricData.getBlock(),
-                        division = metricData.getDivision(),
-                        name = metricData.getName(),
-                        crossgoal = metricData.getCrossgoal(),
-                        type = metricData.getType()?.let { agentType ->
-                            when (InitiativeMetricAgentType.fromValue(agentType)) {
-                                COPILOT -> COPILOT.value
-                                APPEALS -> "работа с обращениями"
-                                else -> "автономный"
-                            }
-                        },
-                        metric = metricData.getMetric(),
-                        periodType = metricData.getPeriodType(),
-                        notApplicable = getNotApplicableValue(
-                            applicabilityStatus = metricData.getApplicabilityStatus(),
-                            resumePeriod = metricData.getResumePeriod()
-                        ),
-                        data = agentMetrics.value.associate {
-                            it.getPeriodMonth()?.let { periodMonth -> YearMonth.from(periodMonth) } to it.getMetricValue()
-                        },
-                        planData = agentMetrics.value.associate {
-                            it.getPeriodMonth()?.let { periodMonth -> YearMonth.from(periodMonth) } to it.getTargetValue()
-                        }
+          /*
+           * Не переносим значение, если метрика
+           * неприменима для периода, в который
+           * выполняется перенос.
+           */
+          and not exists (
+              select 1
+              from initiative_metric_assignment assignment
+              join metric_applicability_request request
+                  on request.initiative_metric_assignment_id = assignment.id
+              where assignment.initiative_agent_type_id =
+                        previous.initiative_agent_type_id
+
+                and assignment.metric_id =
+                        previous.metric_directory_id
+
+                /*
+                 * Ограничение уже началось.
+                 */
+                and request.effective_from_period is not null
+                and request.effective_from_period <= :currentPeriod
+
+                and (
+                    /*
+                     * Завершённый период неприменимости.
+                     *
+                     * effective_to_period является
+                     * exclusive boundary:
+                     *
+                     * [effective_from_period, effective_to_period)
+                     */
+                    (
+                        request.effective_to_period is not null
+                        and :currentPeriod < request.effective_to_period
                     )
-                }
-            }
-    }
 
-    /**
-     * Формирует отображаемое значение колонки "Неприменима".
-     *
-     * assignment отсутствует / ACTIVE -> пусто
-     * PENDING -> "Согласование"
-     * NOT_APPLICABLE без resumePeriod -> "Да"
-     * NOT_APPLICABLE с resumePeriod -> "До <последний день месяца>"
-     */
-    private fun getNotApplicableValue(applicabilityStatus: String?, resumePeriod: LocalDate?): String? {
-        return when (applicabilityStatus) {
-            null, MetricApplicabilityStatus.ACTIVE.name -> null
-            MetricApplicabilityStatus.PENDING.name -> "Согласование"
+                    or
 
-            MetricApplicabilityStatus.NOT_APPLICABLE.name -> {
-                if (resumePeriod == null) {
-                    "Да"
-                } else {
-                    "До ${YearMonth.from(resumePeriod).atEndOfMonth().format(DATE_FORMATTER)}"
-                }
-            }
-
-            else -> null
-        }
-    }
-
-    private fun headerColumns(periods: Set<YearMonth>): List<ExcelColumnDescription<MetricsExcelExportModel>> {
-        return mutableListOf<ExcelColumnDescription<MetricsExcelExportModel>>(
-            ExcelColumnDescription(
-                "Блок",
-                { param -> param.first.block?.let { param.third.setCellValue(it) } }
-            ),
-            ExcelColumnDescription(
-                "Трайб",
-                { param -> param.first.division?.let { param.third.setCellValue(it) } }
-            ),
-            ExcelColumnDescription(
-                "Название агента",
-                { param -> param.first.name?.let { param.third.setCellValue(it) } }
-            ),
-            ExcelColumnDescription(
-                "CROSSGOAL",
-                { param -> param.first.crossgoal?.let { param.third.setCellValue(it) } }
-            ),
-            ExcelColumnDescription(
-                "Тип агента (автономный/copilot)",
-                { param -> param.first.type?.let { param.third.setCellValue(it) } }
-            ),
-            ExcelColumnDescription(
-                "Метрика",
-                { param -> param.first.metric?.let { param.third.setCellValue(it) } }
-            ),
-            ExcelColumnDescription(
-                "Периодичность сбора (регулярный мониторинг/вводный параметр)",
-                { param -> param.first.periodType?.let { param.third.setCellValue(it) } }
-            ),
-            ExcelColumnDescription(
-                "Неприменима",
-                { param -> param.first.notApplicable?.let { param.third.setCellValue(it) } }
-            )
-        ).also { columns ->
-            periods.forEach { period ->
-                columns.add(
-                    ExcelColumnDescription(
-                        "факт / ${period.format(PERIOD_FORMATTER)}",
-                        { param -> param.first.data[period]?.let { param.third.setCellValue(it.toDouble()) } }
+                    /*
+                     * Открытый период.
+                     *
+                     * PENDING:
+                     * заявка находится на согласовании.
+                     *
+                     * NOT_APPLICABLE:
+                     * неприменимость согласована без
+                     * наступившего окончания периода.
+                     */
+                    (
+                        request.effective_to_period is null
+                        and (
+                            (
+                                assignment.applicability_status = 'PENDING'
+                                and request.status = 'PENDING'
+                            )
+                            or
+                            (
+                                assignment.applicability_status = 'NOT_APPLICABLE'
+                                and request.status = 'APPROVED'
+                            )
+                        )
                     )
                 )
+          )
 
-                columns.add(
-                    ExcelColumnDescription(
-                        "план / ${period.format(PERIOD_FORMATTER)}",
-                        { param -> param.first.planData[period]?.let { param.third.setCellValue(it.toDouble()) } }
-                    )
-                )
-            }
-        }
-    }
-}
+        on conflict (
+            initiative_agent_type_id,
+            metric_directory_id,
+            period_month
+        ) do update
+        set metric_value = excluded.metric_value,
+            target_value = excluded.target_value
+        where initiative_metric_value.metric_value is null
+          and initiative_metric_value.target_value is null
+          and (
+              excluded.metric_value is not null
+              or excluded.target_value is not null
+          )
+    """,
+)
+fun copyValuesToNextPeriod(
+    @Param("previousPeriod")
+    previousPeriod: LocalDate,
+
+    @Param("currentPeriod")
+    currentPeriod: LocalDate,
+): Int
 
 ```
