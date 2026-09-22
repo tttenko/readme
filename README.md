@@ -1,4 +1,5 @@
-    ```java
+```java
+
 @Repository
 interface MetricApplicabilityRequestRepository :
     JpaRepository<MetricApplicabilityRequestEntity, Long>,
@@ -211,4 +212,5 @@ interface MetricApplicabilityRequestRepository :
     )
     fun findUpdatedRequests(): List<MetricApplicabilityRequestEntity>
 }
+
 ```
