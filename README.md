@@ -1,4 +1,4 @@
 ```java
 
-/api/ai/v1/ai-agent/metric-applicability-requests?page=0&size=10
+Что должно произойти с metric_applicability_request.status при отмене координатором заявки в состоянии PENDING? Нужен ли новый статус CANCELLED, либо заявку требуется переводить в другой существующий статус?
 ```
