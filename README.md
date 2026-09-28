@@ -1,9 +1,13 @@
 ```java
 
- "updatedAt": {
-      "type": "string",
-      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$",
-      "maxLength": 50,
-      "description": "Дата и время последнего изменения заявки"
-    }
+select
+    id,
+    author,
+    filename,
+    dateexecuted,
+    orderexecuted,
+    exectype
+from databasechangelog
+where id = 'Update pending metric applicability request unique index'
+  and author = 'KoptenkoMV';
 ```
