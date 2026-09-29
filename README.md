@@ -1,6 +1,25 @@
 ```java
 
-Если заявка PENDING и is_visible_in_office=true, то у соответствующего initiative_metric_assignment статус должен быть PENDING. Если при этом метрика остаётся ACTIVE — состояние БД неконсистентное.
-Если же заявка PENDING, но is_visible_in_office=false, это отменённая координатором заявка после restore, и тогда assignment=ACTIVE — ожидаемое состояние.
-Если заявка была вставлена вручную через БД, статус assignment автоматически не поменяется — штатный POST меняет и request, и assignment одной транзакцией.
+select
+    r.id,
+    r.status,
+    r.resume_period,
+    r.is_visible_in_office,
+    r.created_at,
+    r.updated_at,
+    r.effective_from_period,
+    r.effective_to_period
+from metric_applicability_request r
+where r.initiative_metric_assignment_id = (
+    select a.id
+    from initiative_metric_assignment a
+    join initiative_metric_type mt
+        on mt.id = a.initiative_agent_type_id
+    join metrics_directory md
+        on md.id = a.metric_id
+    where mt.ai_agent_id = <initiative_id>
+      and mt.agent_type = '<agent_type>'
+      and md.name = 'test761hMB'
+)
+order by r.created_at desc, r.id desc;
 ```
