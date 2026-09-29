@@ -1,11 +1,26 @@
 ```java
 
-resumePeriod = 01.11.2026
-→ в отчёте: До 31.10.2026
+/**
+ * Обрабатывает заявки с наступившим resumePeriod.
+ *
+ * Сначала закрывает период неприменимости и скрывает заявку из очереди Офиса,
+ * после чего возвращает связанную метрику в ACTIVE.
+ */
+@Transactional
+fun checkAndProcessExpiredMetrics() {
+    // 1. Обновляем request, пока assignment ещё PENDING / NOT_APPLICABLE
+    metricApplicabilityRequestRepository.updateRequests()
 
-resumePeriod = 01.10.2026
-→ в отчёте: До 30.09.2026
+    // 2. Возвращаем assignment в ACTIVE
+    metricApplicabilityRequestRepository.updateAssignmentsToActive()
 
-resumePeriod = 01.01.2027
-→ в отчёте: До 31.12.2026
+    // 3. Получаем обработанные scheduler заявки
+    val updatedRequests =
+        metricApplicabilityRequestRepository.findUpdatedRequests()
+
+    // 4. Отправляем уведомления
+    updatedRequests.forEach { sendNotifications(it) }
+}
+
+
 ```
