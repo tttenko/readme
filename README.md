@@ -1,25 +1,22 @@
 ```java
 
 select
-    r.id,
-    r.status,
-    r.resume_period,
-    r.is_visible_in_office,
-    r.created_at,
-    r.updated_at,
-    r.effective_from_period,
-    r.effective_to_period
-from metric_applicability_request r
-where r.initiative_metric_assignment_id = (
-    select a.id
-    from initiative_metric_assignment a
-    join initiative_metric_type mt
-        on mt.id = a.initiative_agent_type_id
-    join metrics_directory md
-        on md.id = a.metric_id
-    where mt.ai_agent_id = <initiative_id>
-      and mt.agent_type = '<agent_type>'
-      and md.name = 'test761hMB'
-)
-order by r.created_at desc, r.id desc;
+    a.id as initiative_id,
+    a.agent_name,
+    mt.id as initiative_agent_type_id,
+    mt.agent_type,
+    md.id as metric_id,
+    md.name as metric_name,
+    assignment.id as assignment_id,
+    assignment.applicability_status
+from initiative_metric_assignment assignment
+join initiative_metric_type mt
+    on mt.id = assignment.initiative_agent_type_id
+join ai_agent a
+    on a.id = mt.ai_agent_id
+join metrics_directory md
+    on md.id = assignment.metric_id
+where md.name = 'test761hMB';
+
+
 ```
