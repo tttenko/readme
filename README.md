@@ -1,452 +1,317 @@
 ```java
 
 /**
- * Одним запросом загружает сохранённые Task текущей страницы Jira Search.
- *
- * Вместе с Task загружает инициативу, quality gate и связанный статус:
- * обработка страницы не должна обращаться к ленивым связям по одной Task.
+ * Формирует запросы поиска изменённых Task и инициатив для FR2.
  */
-@Query(
-    """
-    select distinct issue
-    from JiraIssueEntity issue
-    join fetch issue.agent agent
-    left join fetch issue.qualityGate qualityGate
-    left join fetch qualityGate.status
-    where issue.jiraKey in :jiraKeys
-      and issue.type = :taskType
-      and lower(issue.project) = 'crossgoal'
-    """
-)
-fun findMonitoringTasksForUpdate(
-    @Param("jiraKeys") jiraKeys: Collection<String>,
-    @Param("taskType") taskType: String,
-): List<JiraIssueEntity>
+@Component
+class JiraUpdateSearchRequestFactory {
 
-/**
- * Загружает все сохранённые этапы инициативы перед повторным GET из Jira.
- *
- * Используются только Task, связанные с quality gate типа status.
- * Jira key и справочник этапа необходимы для расчёта статуса по алгоритму FR1.
- */
-@Query(
-    """
-    select distinct issue
-    from JiraIssueEntity issue
-    join fetch issue.qualityGate qualityGate
-    left join fetch qualityGate.status
-    where issue.agent.id = :agentId
-      and issue.type = :taskType
-      and lower(issue.project) = 'crossgoal'
-      and qualityGate.type = :stageType
-    """
-)
-fun findStageTasksForUpdate(
-    @Param("agentId") agentId: Long,
-    @Param("taskType") taskType: String,
-    @Param("stageType") stageType: QualityGateType,
-): List<JiraIssueEntity>
+    companion object {
+        private val TASK_FIELDS = listOf(
+            "summary", "description", "status", "customfield_16700", "customfield_16701",
+            "assignee", "reporter", "lastViewed", "resolutiondate", "created", "updated"
+        )
 
-/**
- * Изменённая Jira Task и её уже установленная связь со справочником quality gate.
- *
- * Сопоставление берётся из jira_issue: повторно определять quality gate
- * по названию Task не требуется.
- */
-data class JiraUpdatedTaskChange(
-    val task: SearchIssueDto,
-    val qualityGate: QualityGateEntity,
-)
+        private val INITIATIVE_FIELDS = listOf(
+            "summary", "description", "status", "labels",
+            "customfield_30000", "customfield_30001", "customfield_30002",
+            "customfield_34300", "customfield_30401",
+            "customfield_31304", "customfield_31305", "customfield_31306", "customfield_31307",
+            "issuelinks", "customfield_15903", "assignee", "reporter",
+            "customfield_29202", "customfield_29203", "customfield_29205",
+            "lastViewed", "resolutiondate", "created", "updated"
+        )
+    }
 
-/**
- * Статистика обработки одной страницы поиска Task.
- *
- * affectedAgentIds содержат инициативы с изменённым этапом.
- * archivedAgentIds позволяют исключить архивированные инициативы
- * из последующего пересчёта статуса.
- */
-data class JiraUpdatedTaskPageStatistics(
-    val receivedTasks: Int = 0,
-    val existingTasks: Int = 0,
-    val skippedTasks: Int = 0,
-    val affectedAgentIds: Set<Long> = emptySet(),
-    val archivedAgentIds: Set<Long> = emptySet(),
-)
+    /** Ищет изменённые Task эпика мониторинга. */
+    fun createUpdatedTasksRequest(updateDepth: Int, maxResults: Int, startAt: Int): SearchIssueRequestDto {
+        require(updateDepth > 0) { "Jira updateDepth must be positive" }
+        require(maxResults > 0) { "Jira maxResults must be positive" }
 
-enum class JiraUpdatedInitiativeState {
-    ACTIVE,
-    ARCHIVED,
-    UNAVAILABLE,
+        return SearchIssueRequestDto(
+            fields = TASK_FIELDS,
+            jql = "project = CROSSGOAL AND issuetype = Task " +
+                "AND \"Epic Link\"=\"Мониторинг портфеля AI-Native\" " +
+                "AND updated >= -${updateDepth}d ORDER BY updated DESC",
+            maxResults = maxResults,
+            startAt = startAt
+        )
+    }
+
+    /**
+     * Ищет обновлённые инициативы, включая отменённые и ClassicML.
+     *
+     * У отменённой инициативы resolution может перестать быть Unresolved.
+     * Метка ClassicML может остаться без исходной метки портфеля.
+     */
+    fun createUpdatedInitiativesRequest(updateDepth: Int, maxResults: Int, startAt: Int): SearchIssueRequestDto {
+        require(updateDepth > 0) { "Jira updateDepth must be positive" }
+        require(maxResults > 0) { "Jira maxResults must be positive" }
+
+        return SearchIssueRequestDto(
+            fields = INITIATIVE_FIELDS,
+            jql = "project = CROSSGOAL AND issuetype = Инициатива " +
+                "AND ((resolution = Unresolved AND labels IN (AI_Native_портфель, \"AI-эффективность\")) " +
+                "OR labels = ClassicML OR status = \"Отменена\") " +
+                "AND updated >= -${updateDepth}d ORDER BY updated DESC",
+            maxResults = maxResults,
+            startAt = startAt
+        )
+    }
+}
+
+/** Найденная связь инициативы Пульта с ключом CROSSGOAL. */
+interface JiraUpdatedInitiativeReference {
+    val agentId: Long
+    val jiraKey: String
 }
 
 /**
- * Получает инициативы и этапы из Jira для FR2.
- *
- * Повторные попытки выполняются существующим @Retryable у Jira Feign client.
- * Счётчик текущего запуска увеличивается только тогда, когда вызов
- * завершился исключением после всех настроенных попыток.
- *
- * null означает окончательную ошибку конкретного GET, при которой
- * обработку соответствующей инициативы продолжать нельзя.
+ * Находит существующие инициативы по ключам Jira одной страницы Search.
  */
-@Component
-class JiraUpdateIssueReader(
-    private val jiraService: JiraService,
+@Repository
+interface JiraUpdatedInitiativeRepository : JpaRepository<AIAgentEntity, Long> {
+
+    @Query(
+        value = """
+            select distinct issue.agent_id as "agentId", upper(issue.jira_key) as "jiraKey"
+            from jira_issue issue
+            where issue.type = 'initiative'
+              and lower(issue.project) = 'crossgoal'
+              and upper(issue.jira_key) in (:jiraKeys)
+
+            union
+
+            select agent.id as "agentId",
+                   substring(upper(agent.agent_jira_url) from '(CROSSGOAL-[0-9]+)') as "jiraKey"
+            from ai_agent agent
+            where substring(upper(agent.agent_jira_url) from '(CROSSGOAL-[0-9]+)') in (:jiraKeys)
+        """,
+        nativeQuery = true
+    )
+    fun findInitiativeReferences(@Param("jiraKeys") jiraKeys: Collection<String>): List<JiraUpdatedInitiativeReference>
+}
+
+enum class JiraUpdatedInitiativeResult {
+    UPDATED,
+    SKIPPED
+}
+
+/**
+ * Обновляет разрешённые основные поля инициативы.
+ *
+ * Описание, контакты, текущий бизнес-статус и связанные сущности
+ * на этом этапе не изменяются.
+ */
+@Service
+class JiraUpdatedInitiativePersistenceService(
+    private val agentRepository: AIAgentRepository,
+    private val organizationResolver: JiraInitiativeOrganizationResolver,
+    private val initiativeTypeResolver: JiraInitiativeTypeResolver,
+    private val numericValueParser: JiraNumericValueParser,
 ) {
 
-    private val log by logger()
+    companion object {
+        private const val MAX_AGENT_NAME_LENGTH = 255
+        private val log by logger()
+    }
 
     /**
-     * Получает issue по CROSSGOAL key.
+     * Под блокировкой строки проверяет дату изменения и сохраняет поля ai_agent.
      *
-     * После окончательной ошибки учитывает её в общем счётчике FR2.
-     * При превышении лимита выбрасывает исключение для остановки scheduler.
+     * Для инициатив, обработанных Task-подпроцессом этого запуска,
+     * используется значение updated до обработки Task.
      */
-    fun getIssue(issueKey: String, fields: List<String>, jiraErrorTracker: JiraErrorTracker): IssueDto? {
-        return try {
-            jiraService.getIssue(issueKey, fields)
-        } catch (exception: Exception) {
-            val jiraErrorCount = jiraErrorTracker.increment()
-            log.error("Jira GET failed after retries: issueKey={}, jiraErrorCount={}, error={}",
-                issueKey, jiraErrorCount, exception.message, exception)
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = [Exception::class])
+    fun updateInitiative(
+        agentId: Long,
+        issue: SearchIssueDto,
+        jiraUpdated: LocalDateTime,
+        referenceData: JiraImportReferenceData,
+        pultUpdatedBeforeTaskSync: Map<Long, LocalDateTime?>,
+    ): JiraUpdatedInitiativeResult {
+        val agent = agentRepository.findByIdForUpdate(agentId) ?: return JiraUpdatedInitiativeResult.SKIPPED
+        if (agent.disabled == true) return JiraUpdatedInitiativeResult.SKIPPED
 
-            if (jiraErrorTracker.isErrorLimitExceeded()) throw JiraErrorLimitExceededException(exception)
-            null
+        val pultUpdated = if (pultUpdatedBeforeTaskSync.containsKey(agentId)) {
+            pultUpdatedBeforeTaskSync[agentId]
+        } else {
+            agent.updated
         }
+
+        if (pultUpdated != null && pultUpdated.isAfter(jiraUpdated)) {
+            log.debug("Skipping initiative updated later in Pult: agentId={}, jiraKey={}", agentId, issue.key)
+            return JiraUpdatedInitiativeResult.SKIPPED
+        }
+
+        val fields = requireNotNull(issue.fields) { "Jira initiative fields are missing: ${issue.key}" }
+        val summary = fields.summary?.takeIf(String::isNotBlank)
+            ?: error("Jira initiative summary is missing: ${issue.key}")
+
+        val organization = organizationResolver.resolveOrganization(
+            initiatorUnits = fields.customfield_30000,
+            executorUnits = fields.customfield_30001,
+            referenceData = referenceData
+        )
+
+        if (organization.block != null || organization.division != null) {
+            agent.block = organization.block
+            agent.division = organization.division
+        } else {
+            log.warn(
+                "Organization is not resolved from Jira; existing Pult values retained: jiraKey={}, agentId={}, block={}, division={}",
+                issue.key, agentId, agent.block?.code, agent.division?.code
+            )
+        }
+
+        agent.agentName = summary.take(MAX_AGENT_NAME_LENGTH)
+        agent.initiativeType = initiativeTypeResolver.resolveInitiativeType(
+            labels = fields.labels,
+            initiativeTypesByCode = referenceData.initiativeTypesByCode
+        )
+        agent.agentEffectOptimization = parseEffect(issue.key, "customfield_34300", fields.customfield_34300)
+        agent.agentEffectRevenue = parseEffect(issue.key, "customfield_30401", fields.customfield_30401)
+        agent.jiraFromStatus = "inProgress"
+        agent.updated = LocalDateTime.now()
+
+        agentRepository.save(agent)
+        log.debug("Updated initiative fields from Jira: agentId={}, jiraKey={}", agentId, issue.key)
+        return JiraUpdatedInitiativeResult.UPDATED
+    }
+
+    /** Извлекает числовой эффект общим парсером FR1/FR2. */
+    private fun parseEffect(jiraKey: String?, fieldName: String, value: String?): BigDecimal? {
+        if (value.isNullOrBlank()) return null
+
+        val effect = numericValueParser.parseFirst(value)
+        if (effect == null) {
+            log.warn("Cannot parse Jira initiative effect: jiraKey={}, field={}, value={}", jiraKey, fieldName, value)
+        }
+        return effect
     }
 }
 
 /**
- * Сохраняет изменения этапа 2 FR2 в базе данных.
- *
- * Jira HTTP-вызовов здесь нет. Изменения Task одной инициативы,
- * архивация и запись итогового статуса выполняются отдельными транзакциями.
- * Существующие правила обновления quality gate и SLA повторяют FR1.
+ * Обрабатывает найденные обновления существующих Jira-инициатив.
  */
 @Service
-class JiraUpdatedTaskPersistenceService(
-    private val agentRepository: AIAgentRepository,
-    private val agentQualityGateRepository: AIAgentQualityGateRepository,
-    private val agentStatusSlaRepository: AgentStatusSlaRepository,
+class JiraUpdatedInitiativeService(
+    private val searchRequestFactory: JiraUpdateSearchRequestFactory,
+    private val jiraSearchPaginator: JiraSearchPaginator,
+    private val initiativeRepository: JiraUpdatedInitiativeRepository,
+    private val initiativePersistenceService: JiraUpdatedInitiativePersistenceService,
+    private val taskPersistenceService: JiraUpdatedTaskPersistenceService,
+    private val jiraIssueKeyExtractor: JiraIssueKeyExtractor,
     private val jiraDateTimeParser: JiraDateTimeParser,
 ) {
 
     companion object {
-        private val COMPLETED_TASK_STATUS_IDS = setOf("10110", "5", "14103")
+        private const val CANCELLED_STATUS_NAME = "Отменена"
+        private const val CLASSIC_ML_LABEL = "ClassicML"
+        private val MINIMUM_UPDATE_AGE = Duration.ofHours(1)
         private val log by logger()
     }
 
     /**
-     * Обновляет QG и SLA по изменённым Task одной инициативы.
+     * Постранично ищет обновлённые инициативы.
      *
-     * Возвращает true, если среди обработанных Task был корректно связанный
-     * этап типа status. Такая инициатива должна пройти повторный GET всех
-     * сохранённых этапов и пересчёт текущего статуса.
-     *
-     * Существующие SLA загружаются одним запросом. Некорректная непустая
-     * дата из Jira логируется и не затирает ранее сохранённую дату.
+     * Окончательная ошибка Search прекращает запуск. Ошибка обработки
+     * одной инициативы не мешает перейти к следующей.
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = [Exception::class])
-    fun saveUpdatedTasks(agentId: Long, changes: List<JiraUpdatedTaskChange>): Boolean {
-        if (changes.isEmpty()) return false
+    fun updateInitiatives(
+        updateDepth: Int,
+        maxResults: Int,
+        referenceData: JiraImportReferenceData,
+        jiraErrorTracker: JiraErrorTracker,
+        pultUpdatedBeforeTaskSync: Map<Long, LocalDateTime?>,
+    ) {
+        val processedJiraKeys = mutableSetOf<String>()
+        var updatedInitiatives = 0
+        var archivedInitiatives = 0
 
-        val agent = agentRepository.findByIdForUpdate(agentId) ?: return false
-        if (agent.disabled == true) return false
+        log.info("Started searching updated Jira initiatives: updateDepth={}, maxResults={}", updateDepth, maxResults)
 
-        val currentDateTime = LocalDateTime.now()
-        updateQualityGates(agentId, changes, currentDateTime)
-        return updateStageSla(agent, changes)
-    }
+        jiraSearchPaginator.processPages(
+            maxResults = maxResults,
+            jiraErrorTracker = jiraErrorTracker,
+            requestFactory = { startAt ->
+                searchRequestFactory.createUpdatedInitiativesRequest(updateDepth, maxResults, startAt)
+            },
+            pageProcessor = { response ->
+                if (response.total == 0) log.info("No updated initiatives found in Jira")
 
-    /**
-     * Переносит отменённую в Jira инициативу в архив Пульта.
-     *
-     * Повторный вызов безопасен: уже архивированная инициатива остаётся
-     * без изменений. Метод не удаляет связанные записи и не отправляет
-     * запросов в Jira.
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = [Exception::class])
-    fun archiveInitiative(agentId: Long, initiativeJiraKey: String) {
-        val agent = agentRepository.findByIdForUpdate(agentId) ?: return
-        if (agent.disabled == true) return
+                val jiraKeys = response.issues.mapNotNull { jiraIssueKeyExtractor.extractCrossgoalKey(it.key) }.toSet()
+                if (jiraKeys.isNotEmpty()) {
+                    val referencesByJiraKey = initiativeRepository.findInitiativeReferences(jiraKeys)
+                        .groupBy { reference -> reference.jiraKey }
 
-        agent.disabled = true
-        agent.updated = LocalDateTime.now()
-        agentRepository.save(agent)
+                    response.issues.forEach { issue ->
+                        val jiraKey = jiraIssueKeyExtractor.extractCrossgoalKey(issue.key)
+                        if (jiraKey == null || !processedJiraKeys.add(jiraKey)) return@forEach
 
-        log.info("Archived initiative from Jira: agentId={}, jiraKey={}", agentId, initiativeJiraKey)
-    }
+                        val agentIds = referencesByJiraKey[jiraKey].orEmpty().map { it.agentId }.distinct()
+                        if (agentIds.isEmpty()) {
+                            log.debug("Jira initiative is absent in Pult: jiraKey={}", jiraKey)
+                            return@forEach
+                        }
 
-    /**
-     * Сохраняет статус, рассчитанный по повторно полученным этапам.
-     *
-     * Если инициатива успела попасть в архив, статус больше не меняется.
-     * Неизвестный код статуса считается ошибкой, чтобы не сохранить
-     * частичный результат синхронизации.
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = [Exception::class])
-    fun saveInitiativeStatus(agentId: Long, statusCode: String, statusesByCode: Map<String, StatusEntity>) {
-        val status = requireNotNull(statusesByCode[statusCode]) {
-            "Calculated Jira status '$statusCode' is missing from active status dictionary"
-        }
+                        if (agentIds.size != 1) {
+                            log.warn("Skipping initiative with ambiguous Jira key: jiraKey={}, agentIds={}", jiraKey, agentIds)
+                            return@forEach
+                        }
 
-        val agent = agentRepository.findByIdForUpdate(agentId) ?: return
-        if (agent.disabled == true) return
+                        val agentId = agentIds.single()
+                        try {
+                            val cancelled = issue.fields?.status?.name.equals(CANCELLED_STATUS_NAME, ignoreCase = true)
+                            val classicMl = issue.fields?.labels.orEmpty()
+                                .any { label -> label.equals(CLASSIC_ML_LABEL, ignoreCase = true) }
 
-        val currentDateTime = LocalDateTime.now()
-        agent.agentStatus = status
-        agent.jiraFromStatus = "done"
-        agent.jiraUpdated = currentDateTime
-        agent.updated = currentDateTime
-        agentRepository.save(agent)
+                            if (cancelled || classicMl) {
+                                taskPersistenceService.archiveInitiative(agentId, jiraKey)
+                                archivedInitiatives++
+                                return@forEach
+                            }
 
-        log.info("Updated initiative status from Jira stages: agentId={}, statusCode={}", agentId, statusCode)
-    }
+                            val jiraCreated = jiraDateTimeParser.parse(issue.fields?.created)
+                            val jiraUpdated = jiraDateTimeParser.parse(issue.fields?.updated)
 
-    /**
-     * Фиксирует неуспешную синхронизацию инициативы.
-     *
-     * Бизнес-статус agent_status_id сохраняется прежним. Архивированную
-     * инициативу метод не изменяет.
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = [Exception::class])
-    fun markSynchronizationError(agentId: Long) {
-        val agent = agentRepository.findByIdForUpdate(agentId) ?: return
-        if (agent.disabled == true) return
+                            if (jiraCreated == null || jiraUpdated == null) {
+                                log.warn("Skipping initiative with missing or invalid Jira dates: jiraKey={}", jiraKey)
+                                return@forEach
+                            }
 
-        val currentDateTime = LocalDateTime.now()
-        agent.jiraFromStatus = "error"
-        agent.jiraUpdated = currentDateTime
-        agent.updated = currentDateTime
-        agentRepository.save(agent)
-    }
+                            if (Duration.between(jiraCreated, jiraUpdated) < MINIMUM_UPDATE_AGE) {
+                                log.debug("Skipping initiative updated within an hour of creation: jiraKey={}", jiraKey)
+                                return@forEach
+                            }
 
-    /** Обновляет состояния вех, используя те же Jira status id, что и FR1. */
-    private fun updateQualityGates(agentId: Long, changes: List<JiraUpdatedTaskChange>, currentDateTime: LocalDateTime) {
-        val qualityGateChanges = changes.filter { change -> change.qualityGate.type == QualityGateType.quality_gate }
+                            val result = initiativePersistenceService.updateInitiative(
+                                agentId = agentId,
+                                issue = issue,
+                                jiraUpdated = jiraUpdated,
+                                referenceData = referenceData,
+                                pultUpdatedBeforeTaskSync = pultUpdatedBeforeTaskSync
+                            )
 
-        qualityGateChanges.filter { change -> change.task.fields?.status?.id.isNullOrBlank() }
-            .forEach { change -> log.warn("Cannot update QG without Jira Task status: agentId={}, taskKey={}", agentId, change.task.key) }
-
-        val validChanges = qualityGateChanges.filter { change -> !change.task.fields?.status?.id.isNullOrBlank() }
-        val checkedCodes = validChanges.filter { change -> change.task.fields?.status?.id in COMPLETED_TASK_STATUS_IDS }
-            .mapNotNull { change -> change.qualityGate.code }.toSet()
-        val uncheckedCodes = validChanges.filter { change -> change.task.fields?.status?.id !in COMPLETED_TASK_STATUS_IDS }
-            .mapNotNull { change -> change.qualityGate.code }.filterNot(checkedCodes::contains).toSet()
-
-        if (checkedCodes.isNotEmpty()) {
-            agentQualityGateRepository.upsertStateForAgent(
-                agentId = agentId, qualityGateCodes = checkedCodes,
-                state = QualityGateState.checked.name, updatedAt = currentDateTime
-            )
-        }
-
-        if (uncheckedCodes.isNotEmpty()) {
-            agentQualityGateRepository.upsertStateForAgent(
-                agentId = agentId, qualityGateCodes = uncheckedCodes,
-                state = QualityGateState.unchecked.name, updatedAt = currentDateTime
-            )
-        }
-    }
-
-    /**
-     * Обновляет сроки этапов из Jira Search.
-     *
-     * Пустое поле Jira очищает дату; некорректная непустая дата оставляет
-     * предыдущее значение. Если этап не связан со статусом справочника,
-     * он пропускается и не считается основанием для пересчёта статуса.
-     */
-    private fun updateStageSla(agent: AIAgentEntity, changes: List<JiraUpdatedTaskChange>): Boolean {
-        val stageChanges = changes.filter { change -> change.qualityGate.type == QualityGateType.status }
-        if (stageChanges.isEmpty()) return false
-
-        val existingSlaByStatusId = agentStatusSlaRepository.findAllByAiAgentId(agent.id)
-            .associateBy { sla -> sla.primaryKey.agentStatusId }.toMutableMap()
-        val changedSlaByStatusId = linkedMapOf<Long, AgentStatusSlaEntity>()
-
-        stageChanges.forEach { change ->
-            val status = change.qualityGate.status
-            val statusId = status?.id
-
-            if (statusId == null) {
-                log.warn("Stage Task has no linked status: agentId={}, taskKey={}, qualityGate={}",
-                    agent.id, change.task.key, change.qualityGate.code)
-                return@forEach
-            }
-
-            val sla = changedSlaByStatusId[statusId] ?: existingSlaByStatusId[statusId]
-                ?: AgentStatusSlaEntity().apply {
-                    aiAgent = agent
-                    agentStatus = status
+                            if (result == JiraUpdatedInitiativeResult.UPDATED) updatedInitiatives++
+                        } catch (exception: Exception) {
+                            log.error("Failed to update Jira initiative: jiraKey={}, agentId={}", jiraKey, agentId, exception)
+                            taskPersistenceService.markSynchronizationError(agentId)
+                        }
+                    }
                 }
+            }
+        )
 
-            sla.plannedDate = parseDateOrKeepPrevious(
-                value = change.task.fields?.customfield_16701,
-                previousDate = sla.plannedDate,
-                agentId = agent.id,
-                taskKey = change.task.key,
-                fieldName = "customfield_16701"
-            )
-            sla.completedDate = parseDateOrKeepPrevious(
-                value = change.task.fields?.resolutiondate,
-                previousDate = sla.completedDate,
-                agentId = agent.id,
-                taskKey = change.task.key,
-                fieldName = "resolutiondate"
-            )
-
-            changedSlaByStatusId[statusId] = sla
-        }
-
-        if (changedSlaByStatusId.isNotEmpty()) agentStatusSlaRepository.saveAll(changedSlaByStatusId.values)
-        return changedSlaByStatusId.isNotEmpty()
-    }
-
-    /** Парсит дату Jira и защищает ранее сохранённую дату от ошибочного формата. */
-    private fun parseDateOrKeepPrevious(
-        value: String?,
-        previousDate: LocalDateTime?,
-        agentId: Long,
-        taskKey: String?,
-        fieldName: String,
-    ): LocalDateTime? {
-        if (value.isNullOrBlank()) return null
-
-        return jiraDateTimeParser.parse(value) ?: run {
-            log.warn("Cannot parse Jira date; previous value retained: agentId={}, taskKey={}, field={}, value={}",
-                agentId, taskKey, fieldName, value)
-            previousDate
-        }
+        log.info("Finished updating Jira initiatives: updated={}, archived={}", updatedInitiatives, archivedInitiatives)
     }
 }
 
 /**
- * Пересчитывает статусы инициатив, у которых изменились Jira Task этапов.
+ * Выполняет FR2: обновляет изменённые Task, пересчитывает статусы
+ * затронутых инициатив и обрабатывает изменения самих инициатив.
  *
- * Для каждой инициативы заново получает через GET все сохранённые этапы.
- * Статус вычисляется существующим резолвером FR1 только после успешного
- * получения каждого этапа. Ошибка одного GET не приводит к частичному
- * пересчёту и не останавливает обработку остальных инициатив, пока
- * общий лимит Jira-ошибок не превышен.
- */
-@Service
-class JiraUpdatedStageStatusService(
-    private val jiraIssueRepository: JiraIssueRepository,
-    private val jiraUpdateIssueReader: JiraUpdateIssueReader,
-    private val taskPersistenceService: JiraUpdatedTaskPersistenceService,
-    private val initiativeStatusResolver: JiraInitiativeStatusResolver,
-    private val jiraIssueKeyExtractor: JiraIssueKeyExtractor,
-) {
-
-    companion object {
-        private val STAGE_FIELDS = listOf(
-            "summary", "issuetype", "description", "status", "customfield_16700",
-            "customfield_16701", "lastViewed", "resolutiondate", "created", "updated"
-        )
-        private val log by logger()
-    }
-
-    /**
-     * Последовательно пересчитывает статусы затронутых инициатив.
-     *
-     * Справочник статусов загружен один раз в основном сервисе FR2.
-     * При достижении лимита ошибок передаёт исключение наверх, чтобы
-     * текущий запуск scheduler завершился.
-     */
-    fun updateStatuses(
-        affectedAgentIds: Set<Long>,
-        statusesByCode: Map<String, StatusEntity>,
-        jiraErrorTracker: JiraErrorTracker,
-    ) {
-        affectedAgentIds.forEach { agentId ->
-            try {
-                updateStatus(agentId, statusesByCode, jiraErrorTracker)
-            } catch (exception: JiraErrorLimitExceededException) {
-                taskPersistenceService.markSynchronizationError(agentId)
-                throw exception
-            } catch (exception: Exception) {
-                log.error("Failed to update initiative status: agentId={}, error={}", agentId, exception.message, exception)
-                taskPersistenceService.markSynchronizationError(agentId)
-            }
-        }
-    }
-
-    /**
-     * Выполняет GET каждого этапа и сохраняет итоговый статус.
-     *
-     * Пустой набор этапов либо некорректная сохранённая связь считается
-     * ошибкой синхронизации: без полного набора этапов нельзя безопасно
-     * присвоить инициативе targetSolution.
-     */
-    private fun updateStatus(
-        agentId: Long,
-        statusesByCode: Map<String, StatusEntity>,
-        jiraErrorTracker: JiraErrorTracker,
-    ) {
-        val savedStages = jiraIssueRepository.findStageTasksForUpdate(
-            agentId = agentId,
-            taskType = JiraIssueType.task.name,
-            stageType = QualityGateType.status
-        )
-
-        if (savedStages.isEmpty()) {
-            log.warn("Cannot calculate status without saved stage Tasks: agentId={}", agentId)
-            taskPersistenceService.markSynchronizationError(agentId)
-            return
-        }
-
-        val stageKeys = savedStages.mapNotNull { stage -> jiraIssueKeyExtractor.extractCrossgoalKey(stage.jiraKey) }
-
-        if (stageKeys.size != savedStages.size || stageKeys.toSet().size != savedStages.size) {
-            log.warn("Cannot calculate status with missing or duplicate stage keys: agentId={}", agentId)
-            taskPersistenceService.markSynchronizationError(agentId)
-            return
-        }
-
-        val stageMatches = mutableListOf<JiraTaskQualityGateMatch>()
-
-        savedStages.forEach { savedStage ->
-            val stageKey = requireNotNull(jiraIssueKeyExtractor.extractCrossgoalKey(savedStage.jiraKey))
-            val jiraStage = jiraUpdateIssueReader.getIssue(stageKey, STAGE_FIELDS, jiraErrorTracker)
-
-            if (jiraStage == null) {
-                taskPersistenceService.markSynchronizationError(agentId)
-                return
-            }
-
-            val jiraStatusId = jiraStage.fields?.status?.id
-            if (jiraStatusId.isNullOrBlank()) {
-                log.warn("Jira stage Task has no status: agentId={}, taskKey={}", agentId, stageKey)
-                taskPersistenceService.markSynchronizationError(agentId)
-                return
-            }
-
-            stageMatches += JiraTaskQualityGateMatch(
-                task = SearchIssueDto(
-                    id = savedStage.jiraId ?: stageKey,
-                    key = stageKey,
-                    fields = SearchIssueFieldsDto(
-                        status = SearchIssueStatusDto(id = jiraStatusId, name = jiraStage.fields?.status?.name ?: "")
-                    )
-                ),
-                qualityGate = requireNotNull(savedStage.qualityGate)
-            )
-        }
-
-        val statusCode = initiativeStatusResolver.resolveStatusCode(stageMatches)
-        taskPersistenceService.saveInitiativeStatus(agentId, statusCode, statusesByCode)
-    }
-}
-
-/**
- * Оркестрирует первый подпроцесс FR2: поиск и обработку изменённых Task.
- *
- * Обрабатывает Jira Search постранично, проверяет наличие Task в Пульте
- * одним запросом на страницу, один раз за запуск проверяет Jira-инициативу
- * каждого agentId и сохраняет QG/SLA короткими транзакциями.
- *
- * После всех страниц повторно запрашивает этапы инициатив, затронутых
- * изменением SLA, и пересчитывает их статус через резолвер FR1.
+ * Jira HTTP-вызовы выполняются вне транзакций сохранения.
  */
 @Service
 class JiraInitiativeUpdateService(
@@ -459,6 +324,7 @@ class JiraInitiativeUpdateService(
     private val jiraUpdateIssueReader: JiraUpdateIssueReader,
     private val taskPersistenceService: JiraUpdatedTaskPersistenceService,
     private val updatedStageStatusService: JiraUpdatedStageStatusService,
+    private val updatedInitiativeService: JiraUpdatedInitiativeService,
 ) {
 
     companion object {
@@ -469,18 +335,18 @@ class JiraInitiativeUpdateService(
     }
 
     /**
-     * Выполняет один запуск обработки обновлений Jira.
+     * Выполняет один запуск FR2.
      *
-     * JiraErrorTracker и кеш состояния инициатив создаются на запуск:
-     * данные разных ручных и плановых запусков не смешиваются.
-     * Окончательная ошибка Jira Search прекращает подпроцесс;
-     * ошибка GET отдельного этапа пропускает соответствующую инициативу.
+     * Счётчик Jira-ошибок и данные обработки создаются на запуск.
+     * Перед поиском обновлений инициатив счётчик сбрасывается согласно
+     * документации второго подпроцесса.
      */
     fun synchronizeUpdates() {
         val jiraErrorTracker = JiraErrorTracker()
         val initiativeStates = mutableMapOf<Long, JiraUpdatedInitiativeState>()
         val processedTaskKeys = mutableSetOf<String>()
         val affectedAgentIds = mutableSetOf<Long>()
+        val pultUpdatedBeforeTaskSync = mutableMapOf<Long, LocalDateTime?>()
 
         var receivedTasks = 0
         var existingTasks = 0
@@ -512,7 +378,8 @@ class JiraInitiativeUpdateService(
                         tasks = response.issues,
                         initiativeStates = initiativeStates,
                         processedTaskKeys = processedTaskKeys,
-                        jiraErrorTracker = jiraErrorTracker
+                        jiraErrorTracker = jiraErrorTracker,
+                        pultUpdatedBeforeTaskSync = pultUpdatedBeforeTaskSync
                     )
 
                     receivedTasks += statistics.receivedTasks
@@ -530,34 +397,49 @@ class JiraInitiativeUpdateService(
                 jiraErrorTracker = jiraErrorTracker
             )
 
-            // Этап 3: после обработки Task здесь начнётся поиск обновлённых инициатив.
-        } catch (exception: JiraErrorLimitExceededException) {
-            log.error("FromJiraUpdate stopped: Jira error limit exceeded, jiraErrorCount={}",
-                jiraErrorTracker.getErrorCount(), exception)
-        } catch (exception: Exception) {
-            log.error("FromJiraUpdate stopped due to an error: jiraErrorCount={}, error={}",
-                jiraErrorTracker.getErrorCount(), exception.message, exception)
-        } finally {
             log.info(
                 "Finished updated Task processing: received={}, existing={}, skipped={}, archived={}, affectedAgents={}, jiraErrorCount={}",
                 receivedTasks, existingTasks, skippedTasks, archivedInitiatives,
                 affectedAgentIds.size, jiraErrorTracker.getErrorCount()
             )
+
+            jiraErrorTracker.reset()
+
+            updatedInitiativeService.updateInitiatives(
+                updateDepth = updateDepth,
+                maxResults = maxResults,
+                referenceData = referenceData,
+                jiraErrorTracker = jiraErrorTracker,
+                pultUpdatedBeforeTaskSync = pultUpdatedBeforeTaskSync
+            )
+        } catch (exception: JiraErrorLimitExceededException) {
+            log.error(
+                "FromJiraUpdate stopped: Jira error limit exceeded, jiraErrorCount={}",
+                jiraErrorTracker.getErrorCount(), exception
+            )
+        } catch (exception: Exception) {
+            log.error(
+                "FromJiraUpdate stopped due to an error: jiraErrorCount={}, error={}",
+                jiraErrorTracker.getErrorCount(), exception.message, exception
+            )
+        } finally {
+            log.info("Finished FromJiraUpdate scheduler: jiraErrorCount={}", jiraErrorTracker.getErrorCount())
         }
     }
 
     /**
-     * Сопоставляет Task страницы с jira_issue и обрабатывает их по инициативам.
+     * Сопоставляет Task страницы с сохранёнными jira_issue.
      *
-     * Повторную или неоднозначную связь по Jira key пропускает. Группировка
-     * по agentId позволяет один раз проверить статус самой инициативы
-     * и одной транзакцией сохранить изменения Task этой инициативы.
+     * Task группируются по инициативе: статус самой инициативы
+     * проверяется один раз за запуск, а QG/SLA сохраняются одной
+     * транзакцией для каждой группы.
      */
     private fun processUpdatedTaskPage(
         tasks: List<SearchIssueDto>,
         initiativeStates: MutableMap<Long, JiraUpdatedInitiativeState>,
         processedTaskKeys: MutableSet<String>,
         jiraErrorTracker: JiraErrorTracker,
+        pultUpdatedBeforeTaskSync: MutableMap<Long, LocalDateTime?>,
     ): JiraUpdatedTaskPageStatistics {
         if (tasks.isEmpty()) return JiraUpdatedTaskPageStatistics()
 
@@ -580,6 +462,7 @@ class JiraInitiativeUpdateService(
 
             if (jiraKey == null || savedTasks.size != 1 || !processedTaskKeys.add(jiraKey)) {
                 skippedTasks++
+
                 if (savedTasks.size > 1) {
                     log.warn("Skipping Jira Task with ambiguous relations: jiraKey={}, relations={}", jiraKey, savedTasks.size)
                 } else {
@@ -596,6 +479,12 @@ class JiraInitiativeUpdateService(
                 skippedTasks++
                 log.debug("Skipping Jira Task without active agent or quality gate: jiraKey={}", jiraKey)
                 return@forEach
+            }
+
+            // Пересчёт статуса ниже изменит ai_agent.updated. Для следующего
+            // подпроцесса нужно сохранить значение до изменений этого запуска.
+            if (!pultUpdatedBeforeTaskSync.containsKey(agent.id)) {
+                pultUpdatedBeforeTaskSync[agent.id] = agent.updated
             }
 
             existingTasks++
@@ -628,7 +517,9 @@ class JiraInitiativeUpdateService(
                     }
 
                     JiraUpdatedInitiativeState.ACTIVE -> {
-                        if (taskPersistenceService.saveUpdatedTasks(agentId, changes)) affectedAgentIds += agentId
+                        if (taskPersistenceService.saveUpdatedTasks(agentId, changes)) {
+                            affectedAgentIds += agentId
+                        }
                     }
 
                     JiraUpdatedInitiativeState.UNAVAILABLE -> {
@@ -655,9 +546,8 @@ class JiraInitiativeUpdateService(
     /**
      * Проверяет статус и метки родительской инициативы непосредственно в Jira.
      *
-     * «Отменена» и ClassicML приводят к архивированию. Если Jira GET
-     * окончательно не удался либо статус отсутствует, Task не изменяются:
-     * технический статус синхронизации становится error.
+     * Отменённая инициатива и инициатива с ClassicML подлежат архивации.
+     * При ошибке GET или отсутствии статуса Task не обновляются.
      */
     private fun resolveInitiativeState(
         agentId: Long,
