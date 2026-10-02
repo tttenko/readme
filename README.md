@@ -557,7 +557,4 @@ class JiraUpdatedInitiativeProcessor(
     }
 }
 
-
-
-
 ```
