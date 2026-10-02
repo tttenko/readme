@@ -64,10 +64,7 @@ class JiraUpdatedInitiativeCompletionService(
         log.debug("Initiative synchronized without monitoring: agentId={}, jiraKey={}", agentId, jiraKey)
     }
 
-    /**
-     * Записывает технический статус успешной синхронизации
-     * и обновляет даты инициативы.
-     */
+    /** Записывает технический статус успешной синхронизации и обновляет даты. */
     private fun completeSynchronization(agent: AIAgentEntity) {
         val currentDateTime = LocalDateTime.now()
         agent.jiraFromStatus = "done"
@@ -167,7 +164,6 @@ class JiraUpdatedInitiativeRelationsService(
      *
      * Сопоставляет записи по составному идентификатору:
      * инициатива, источник и тип ресурса.
-     * Удаляет отсутствующие ресурсы и сохраняет актуальные значения.
      */
     private fun updateInvolvedResources(agent: AIAgentEntity, issue: SearchIssueDto, jiraKey: String) {
         val resources = involvedResourceResolver.resolveInvolvedResources(jiraKey, issue)
@@ -207,7 +203,6 @@ class JiraUpdatedInitiativeRelationsService(
      *
      * Учитывает только элементы с checked = true.
      * Имена сопоставляются со справочником после нормализации.
-     * Неизвестные энейблеры пропускаются с записью в журнал.
      */
     private fun updateEnablers(agent: AIAgentEntity, issue: SearchIssueDto, referenceData: JiraImportReferenceData) {
         val enablerIds = issue.fields?.customfield_15903.orEmpty()
@@ -238,7 +233,6 @@ class JiraUpdatedInitiativeRelationsService(
      *
      * Существующие записи сопоставляются по Jira key.
      * Связи, отсутствующие в актуальных данных Jira, удаляются.
-     * При нескольких связях сохраняется весь набор.
      */
     private fun updateGigaUsageIssues(agent: AIAgentEntity, issue: SearchIssueDto) {
         val gigaUsageIssues = gigaUsageIssueResolver.resolveGigaUsageIssues(issue)
@@ -251,14 +245,16 @@ class JiraUpdatedInitiativeRelationsService(
         val updatedIssues = gigaUsageIssues.distinctBy { gigaUsageIssue -> gigaUsageIssue.jiraKey.uppercase() }
             .map { gigaUsageIssue ->
                 val jiraKey = gigaUsageIssue.jiraKey
-                (existingByKey[jiraKey.uppercase()] ?: JiraIssueEntity(
+                val jiraIssue = existingByKey[jiraKey.uppercase()] ?: JiraIssueEntity(
                     agent = agent,
                     type = JiraIssueType.initiative.name,
                     project = GIGAUSAGE_PROJECT,
                     jiraKey = jiraKey
                 ).apply {
                     created = currentDateTime
-                }).apply {
+                }
+
+                jiraIssue.apply {
                     jiraId = gigaUsageIssue.jiraId
                     jiraUrl = jiraService.getJiraSigmaUrl() + jiraKey
                 }
@@ -271,6 +267,41 @@ class JiraUpdatedInitiativeRelationsService(
         if (updatedIssues.isNotEmpty()) jiraIssueRepository.saveAll(updatedIssues)
 
         log.debug("Updated GigaUsage relations: agentId={}, issueCount={}", agent.id, updatedIssues.size)
+    }
+}
+
+/**
+ * Удаляет устаревшие связи с Task monitoring Epic.
+ *
+ * Вызывается только после успешного получения всех страниц Jira Search
+ * и сохранения актуальных Task.
+ */
+@Service
+class JiraUpdatedMonitoringTaskCleanupService(
+    private val jiraIssueRepository: JiraIssueRepository,
+) {
+
+    private val log by logger()
+
+    /** Оставляет у Epic только Task из актуального сопоставленного набора. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = [Exception::class])
+    fun deleteObsoleteTasks(agentId: Long, epicIssueId: Long, taskMatches: List<JiraTaskQualityGateMatch>) {
+        val currentTaskKeys = taskMatches.mapNotNull { match -> match.task.key?.uppercase() }.toSet()
+        val savedTasks = jiraIssueRepository.findAllByParentIdAndType(epicIssueId, JiraIssueType.task.name)
+
+        val obsoleteTasks = savedTasks.filter { task ->
+            task.agent?.id == agentId &&
+                task.project?.equals("crossgoal", ignoreCase = true) == true &&
+                task.jiraKey?.uppercase()?.let(currentTaskKeys::contains) != true
+        }
+
+        if (obsoleteTasks.isEmpty()) return
+
+        jiraIssueRepository.deleteAll(obsoleteTasks)
+        log.info(
+            "Deleted obsolete monitoring Tasks: agentId={}, epicIssueId={}, count={}",
+            agentId, epicIssueId, obsoleteTasks.size
+        )
     }
 }
 
@@ -289,6 +320,7 @@ class JiraUpdatedInitiativeMonitoringService(
     private val taskQualityGateMatcher: JiraTaskQualityGateMatcher,
     private val monitoringPersistenceService: JiraMonitoringPersistenceService,
     private val completionService: JiraUpdatedInitiativeCompletionService,
+    private val monitoringTaskCleanupService: JiraUpdatedMonitoringTaskCleanupService,
 ) {
 
     private val log by logger()
@@ -300,7 +332,7 @@ class JiraUpdatedInitiativeMonitoringService(
      * завершает синхронизацию со статусом analysis без поиска Task.
      *
      * Если Epic найден, получает полный набор Task с пагинацией,
-     * сопоставляет их с quality gate и сохраняет monitoring-результат.
+     * проверяет наличие этапов и сохраняет monitoring-результат.
      */
     fun synchronizeMonitoring(
         agentId: Long,
@@ -336,6 +368,19 @@ class JiraUpdatedInitiativeMonitoringService(
             qualityGates = referenceData.qualityGates
         )
 
+        val hasValidStage = taskMatches.any { match ->
+            match.qualityGate.type == QualityGateType.status &&
+                match.qualityGate.status?.code != null &&
+                !match.task.fields?.status?.id.isNullOrBlank()
+        }
+
+        if (!hasValidStage) {
+            throw AiBadRequestException(
+                errorCode = JIRA_SYNC_ERROR,
+                message = "No valid monitoring stage Tasks: agentId=$agentId, jiraKey=$jiraKey, epicKey=${monitoringEpic.jiraKey}"
+            )
+        }
+
         monitoringPersistenceService.saveMonitoringData(
             agentId = agentId,
             initiativeJiraKey = jiraKey,
@@ -344,6 +389,8 @@ class JiraUpdatedInitiativeMonitoringService(
             taskMatches = taskMatches,
             referenceData = referenceData
         )
+
+        monitoringTaskCleanupService.deleteObsoleteTasks(agentId, epicIssueId, taskMatches)
 
         log.debug(
             "Updated initiative monitoring: agentId={}, jiraKey={}, epicKey={}, tasks={}, matchedTasks={}",
