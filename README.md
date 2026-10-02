@@ -1,198 +1,111 @@
 ```java
 
-/**
- * Обновляет разрешённые основные поля инициативы.
- *
- * Описание, контакты, текущий бизнес-статус и связанные сущности
- * в этом классе не изменяются.
- */
-@Service
-class JiraUpdatedInitiativePersistenceService(
-    private val agentRepository: AIAgentRepository,
-    private val organizationResolver: JiraInitiativeOrganizationResolver,
-    private val initiativeTypeResolver: JiraInitiativeTypeResolver,
-    private val numericValueParser: JiraNumericValueParser,
-) {
+    private val objectMapper = jacksonObjectMapper()
+    private val searchCalls = CopyOnWriteArrayList<Pair<Fr2SearchKind, SearchIssueRequestDto>>()
+    private val issueCalls = CopyOnWriteArrayList<String>()
+    private val issues = ConcurrentHashMap<String, Map<String, Any>>()
+    private val failingSearches = ConcurrentHashMap.newKeySet<Fr2SearchKind>()
+    private val getFailuresRemaining = ConcurrentHashMap<String, AtomicInteger>()
+    private val executor = Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "jira-fr2-integration-stub").apply { isDaemon = true }
+    }
+    private val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
 
-    companion object {
-        private const val MAX_AGENT_NAME_LENGTH = 255
-        private val log by logger()
+    init {
+        server.createContext("/internal/v1/jira/search") { exchange -> handleSearch(exchange) }
+        server.createContext("/internal/v1/jira/issue/") { exchange -> handleGet(exchange) }
+        server.executor = executor
+        server.start()
     }
 
-    /**
-     * Под блокировкой строки проверяет дату изменения и сохраняет поля ai_agent.
-     *
-     * Для инициатив, затронутых Task в текущем запуске, сравнивает дату Jira
-     * со значением updated, которое было до обработки Task.
-     * Незавершённую синхронизацию разрешает повторить после сбоя.
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = [Exception::class])
-    fun updateInitiative(
-        agentId: Long,
-        issue: SearchIssueDto,
-        jiraUpdated: LocalDateTime,
-        referenceData: JiraImportReferenceData,
-        pultUpdatedBeforeTaskSync: Map<Long, LocalDateTime?>,
-    ): JiraUpdatedInitiativeResult {
-        val agent = agentRepository.findByIdForUpdate(agentId) ?: return JiraUpdatedInitiativeResult.SKIPPED
-        if (agent.disabled == true) return JiraUpdatedInitiativeResult.SKIPPED
+    fun baseUrl() = "http://localhost:${server.address.port}"
+    fun searchRequests(kind: Fr2SearchKind) = searchCalls.filter { it.first == kind }.map { it.second }
+    fun issueRequests() = issueCalls.toList()
+    fun failSearch(kind: Fr2SearchKind) { failingSearches += kind }
+    fun failGet(issueKey: String, attempts: Int) { getFailuresRemaining[issueKey] = AtomicInteger(attempts) }
 
-        val pultUpdated = if (pultUpdatedBeforeTaskSync.containsKey(agentId)) {
-            pultUpdatedBeforeTaskSync[agentId]
-        } else {
-            agent.updated
-        }
-
-        val synchronizationIsIncomplete = agent.jiraFromStatus == "inProgress" || agent.jiraFromStatus == "error"
-
-        if (!synchronizationIsIncomplete && pultUpdated != null && pultUpdated.isAfter(jiraUpdated)) {
-            log.debug("Skipping initiative updated later in Pult: agentId={}, jiraKey={}", agentId, issue.key)
-            return JiraUpdatedInitiativeResult.SKIPPED
-        }
-
-        val fields = issue.fields ?: throw AiBadRequestException(
-            errorCode = JIRA_SYNC_ERROR,
-            message = "Jira initiative fields are missing: ${issue.key}"
-        )
-
-        val summary = fields.summary?.takeIf(String::isNotBlank) ?: throw AiBadRequestException(
-            errorCode = JIRA_SYNC_ERROR,
-            message = "Jira initiative summary is missing: ${issue.key}"
-        )
-
-        val organization = organizationResolver.resolveOrganization(
-            initiatorUnits = fields.customfield_30000,
-            executorUnits = fields.customfield_30001,
-            referenceData = referenceData
-        )
-
-        if (organization.block != null || organization.division != null) {
-            agent.block = organization.block
-            agent.division = organization.division
-        } else {
-            log.warn(
-                "Organization is not resolved from Jira; existing Pult values retained: jiraKey={}, agentId={}, block={}, division={}",
-                issue.key, agentId, agent.block?.code, agent.division?.code
-            )
-        }
-
-        agent.agentName = summary.take(MAX_AGENT_NAME_LENGTH)
-        agent.initiativeType = initiativeTypeResolver.resolveInitiativeType(
-            labels = fields.labels,
-            initiativeTypesByCode = referenceData.initiativeTypesByCode
-        )
-        agent.agentEffectOptimization = parseEffect(issue.key, "customfield_34300", fields.customfield_34300)
-        agent.agentEffectRevenue = parseEffect(issue.key, "customfield_30401", fields.customfield_30401)
-        agent.jiraFromStatus = "inProgress"
-        agent.updated = LocalDateTime.now()
-
-        agentRepository.save(agent)
-        log.debug("Updated initiative fields from Jira: agentId={}, jiraKey={}", agentId, issue.key)
-        return JiraUpdatedInitiativeResult.UPDATED
+    fun putIssue(issueKey: String, statusId: String, statusName: String, labels: List<String> = emptyList()) {
+        issues[issueKey] = mapOf("id" to issueKey.substringAfter('-'), "key" to issueKey,
+            "fields" to mapOf("status" to mapOf("id" to statusId, "name" to statusName), "labels" to labels))
     }
 
-    /** Извлекает числовой эффект общим парсером FR1/FR2. */
-    private fun parseEffect(jiraKey: String?, fieldName: String, value: String?): BigDecimal? {
-        if (value.isNullOrBlank()) return null
+    fun reset() {
+        updatedTasks.clear()
+        updatedInitiatives.clear()
+        monitoringTasks.clear()
+        searchCalls.clear()
+        issueCalls.clear()
+        issues.clear()
+        failingSearches.clear()
+        getFailuresRemaining.clear()
+    }
 
-        val effect = numericValueParser.parseFirst(value)
-        if (effect == null) {
-            log.warn("Cannot parse Jira initiative effect: jiraKey={}, field={}, value={}", jiraKey, fieldName, value)
+    fun stop() {
+        server.stop(0)
+        executor.shutdownNow()
+    }
+
+    private fun handleSearch(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "POST") return respond(exchange, 405, "Only POST")
+            val request = objectMapper.readValue(exchange.requestBody, SearchIssueRequestDto::class.java)
+            val kind = when {
+                request.jql.contains("issuetype = Инициатива") -> Fr2SearchKind.INITIATIVES
+                request.jql.contains("Мониторинг портфеля AI-Native") -> Fr2SearchKind.UPDATED_TASKS
+                request.jql.contains("\"Epic Link\"") -> Fr2SearchKind.MONITORING
+                else -> return respond(exchange, 500, "Unexpected JQL: ${request.jql}")
+            }
+            searchCalls += kind to request
+            if (kind in failingSearches) return respond(exchange, 500, "Jira Search failed")
+            val allIssues = when (kind) {
+                Fr2SearchKind.UPDATED_TASKS -> updatedTasks
+                Fr2SearchKind.INITIATIVES -> updatedInitiatives
+                Fr2SearchKind.MONITORING -> monitoringTasks
+            }
+            val response = SearchIssueResponseDto(startAt = request.startAt, maxResults = request.maxResults,
+                total = allIssues.size, issues = allIssues.drop(request.startAt ?: 0).take(request.maxResults))
+            respond(exchange, 200, objectMapper.writeValueAsString(response))
+        } catch (exception: Exception) {
+            respond(exchange, 500, "Stub Search failed: ${exception.message}")
         }
-        return effect
+    }
+
+    private fun handleGet(exchange: HttpExchange) {
+        try {
+            if (exchange.requestMethod != "GET") return respond(exchange, 405, "Only GET")
+            val issueKey = exchange.requestURI.path.substringAfterLast('/')
+            issueCalls += issueKey
+            if ((getFailuresRemaining[issueKey]?.getAndDecrement() ?: 0) > 0) {
+                return respond(exchange, 500, "Jira GET failed: $issueKey")
+            }
+            val issue = issues[issueKey] ?: return respond(exchange, 404, "No Jira issue: $issueKey")
+            respond(exchange, 200, objectMapper.writeValueAsString(issue))
+        } catch (exception: Exception) {
+            respond(exchange, 500, "Stub GET failed: ${exception.message}")
+        }
+    }
+
+    private fun respond(exchange: HttpExchange, status: Int, body: String) {
+        val bytes = body.toByteArray(StandardCharsets.UTF_8)
+        exchange.responseHeaders.set("Content-Type", if (status == 200) "application/json" else "text/plain")
+        exchange.sendResponseHeaders(status, bytes.size.toLong())
+        exchange.responseBody.use { it.write(bytes) }
     }
 }
 
-* Для поиска, сопоставления и сохранения использует существующие
- * компоненты FR1. Jira Search выполняется вне транзакций сохранения.
- */
-@Service
-class JiraUpdatedInitiativeMonitoringService(
-    private val monitoringEpicResolver: JiraMonitoringEpicResolver,
-    private val monitoringTaskSearchService: JiraMonitoringTaskSearchService,
-    private val taskQualityGateMatcher: JiraTaskQualityGateMatcher,
-    private val monitoringPersistenceService: JiraMonitoringPersistenceService,
-    private val monitoringTaskCleanupService: JiraUpdatedMonitoringTaskCleanupService,
-    private val completionService: JiraUpdatedInitiativeCompletionService,
-) {
+private fun jiraDate(value: LocalDateTime): String =
+    value.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS")) + "+0300"
 
-    private val log by logger()
-
-    /**
-     * Получает полный набор Task мониторинга и сохраняет результат.
-     *
-     * Для AI-эффективности и инициатив без monitoring Epic завершает
-     * синхронизацию без запроса Task. Epic сохраняется после успешного
-     * поиска Task и проверки наличия хотя бы одного корректного этапа.
-     */
-    fun synchronizeMonitoring(
-        agentId: Long,
-        issue: SearchIssueDto,
-        referenceData: JiraImportReferenceData,
-        maxResults: Int,
-        jiraErrorTracker: JiraErrorTracker,
-    ) {
-        val jiraKey = issue.key ?: throw AiBadRequestException(
-            errorCode = JIRA_SYNC_ERROR,
-            message = "Jira initiative key is missing: agentId=$agentId"
-        )
-
-        if (!monitoringEpicResolver.isMonitoringRequired(issue.fields?.labels)) {
-            completionService.completeWithoutMonitoring(agentId, jiraKey, referenceData.statusesByCode)
-            log.debug("Skipped monitoring for AI-effectiveness initiative: agentId={}, jiraKey={}", agentId, jiraKey)
-            return
-        }
-
-        val monitoringEpic = monitoringEpicResolver.findMonitoringEpic(jiraKey, issue.fields?.issuelinks)
-        if (monitoringEpic == null) {
-            completionService.completeWithoutMonitoring(agentId, jiraKey, referenceData.statusesByCode)
-            log.debug("Monitoring Epic was not found: agentId={}, jiraKey={}", agentId, jiraKey)
-            return
-        }
-
-        val monitoringTasks = monitoringTaskSearchService.searchMonitoringTasks(
-            epicKey = monitoringEpic.jiraKey,
-            maxResults = maxResults,
-            jiraErrorTracker = jiraErrorTracker
-        )
-
-        val taskMatches = taskQualityGateMatcher.matchTasks(
-            initiativeJiraKey = jiraKey,
-            tasks = monitoringTasks,
-            qualityGates = referenceData.qualityGates
-        )
-
-        val hasValidStage = taskMatches.any { match ->
-            match.qualityGate.type == QualityGateType.status &&
-                match.qualityGate.status?.code != null &&
-                !match.task.fields?.status?.id.isNullOrBlank()
-        }
-
-        if (!hasValidStage) {
-            throw AiBadRequestException(
-                errorCode = JIRA_SYNC_ERROR,
-                message = "No valid monitoring stages for Jira initiative $jiraKey"
-            )
-        }
-
-        val epicIssueId = monitoringPersistenceService.saveMonitoringEpic(agentId, monitoringEpic)
-
-        monitoringPersistenceService.saveMonitoringData(
-            agentId = agentId,
-            initiativeJiraKey = jiraKey,
-            monitoringEpicIssueId = epicIssueId,
-            monitoringEpicKey = monitoringEpic.jiraKey,
-            taskMatches = taskMatches,
-            referenceData = referenceData
-        )
-
-        monitoringTaskCleanupService.deleteObsoleteTasks(agentId, epicIssueId, taskMatches)
-
-        log.debug(
-            "Updated initiative monitoring: agentId={}, jiraKey={}, epicKey={}, tasks={}, matchedTasks={}",
-            agentId, jiraKey, monitoringEpic.jiraKey, monitoringTasks.size, taskMatches.size
-        )
-    }
-}
-
+private const val PAGE_SIZE = 1
+private const val MAIN_KEY = "CROSSGOAL-100"
+private const val SECOND_KEY = "CROSSGOAL-200"
+private const val ABSENT_KEY = "CROSSGOAL-300"
+private const val NEW_EPIC_KEY = "CROSSGOAL-500"
+private const val QG_TASK_KEY = "CROSSGOAL-501"
+private const val ANALYSIS_TASK_KEY = "CROSSGOAL-502"
+private const val DEVELOPMENT_TASK_KEY = "CROSSGOAL-503"
+private const val QG_CODE = "QG_ARCHITECTURE_FR2"
+private const val SECOND_QG_CODE = "QG_SECURITY_FR2"
+private const val UPDATED_SUMMARY = "Updated FR2 initiative"
+private const val SIGMA_URL_PREFIX = "http://jira.test/browse/"
 ```
