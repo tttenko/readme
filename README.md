@@ -1,35 +1,16 @@
 ```java
 
-select task.agent_id,
-       agent.agent_id as initiative_code,
-       agent.disabled,
-       task.id as task_relation_id,
-       task.parent_id,
-       epic.jira_key as monitoring_epic,
-       task.created
-from jira_issue task
-join ai_agent agent on agent.id = task.agent_id
-left join jira_issue epic on epic.id = task.parent_id
-where task.jira_key = 'CROSSGOAL-998910'
-  and task.type = 'task'
-  and lower(task.project) = 'crossgoal'
-order by task.created desc, task.agent_id;
+После удаления условия `"Epic Link"="Мониторинг портфеля AI-Native"` из JQL принадлежность Task нужному Epic нужно проверять в нашем приложении.
 
-select *
-from quality_gate
-where code in (
-    'analysis', 'development', 'pilot',
-    'targetSolution', 'feedback'
-)
-order by code;
+По присланному JSON обработку через Jackson написать можно. Но это заранее подготовленный ответ мока, поэтому он не подтверждает, что необходимые поля придут от реального сервиса.
 
-select sla.agent_status_id,
-       status.code as status_code,
-       sla.planned_date,
-       sla.completed_date
-from agent_status_sla sla
-left join status on status.id = sla.agent_status_id
-where sla.ai_agent_id = 740
-order by status.code;
+Для отбора нужны две связи:
+- `Task.fields.customfield_10008` — ключ Epic, которому принадлежит Task.
+- `initiative.fields.issuelinks` — связь инициативы с Epic, где доступны его ключ, тип и название «Мониторинг портфеля AI-Native».
 
+`inwardIssue.fields.summary` показывает название связанного Epic у инициативы. У самих Task в примере `issuelinks` отсутствует, поэтому только по этому пути отобрать Task нельзя.
+
+Сейчас `customfield_10008` и `issuetype` не запрашиваются в переданном списке `fields`, хотя мок их возвращает. Также мок содержит инициативу при условии `issuetype=Task`. Поэтому рассчитывать на такой же состав реального ответа пока нельзя.
+
+Нужно подтвердить, что Search возвращает принадлежность Task к Epic, а GET инициативы — необходимые связи. Jackson может прочитать полученные поля и игнорировать лишние, но не может восстановить отсутствующую связь. Примера достаточно для реализации и проверки на моке; для подтверждения корректной работы с реальным сервисом нужен его контракт или фактический ответ.
 ```
