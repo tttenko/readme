@@ -1,417 +1,405 @@
 ```java
 
 
-ест 2. Не передан обязательный план
-{
-  "effects": [
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "targetMonth": "2026-12"
+data class UpdateFinancialEffectsRequest(
+    val effects: List<UpdateFinancialEffectItemRequest>
+)
+
+data class UpdateFinancialEffectItemRequest(
+    val id: Long? = null,
+    val typeCode: String? = null,
+    val plan: String? = null,
+    val fact: String? = null,
+    val targetMonth: String? = null,
+    val approvalLinks: List<String>? = null
+)
+
+@Query(
+    """
+    SELECT CASE WHEN COUNT(financialEffect) > 0 THEN true ELSE false END
+    FROM InitiativeFinancialEffectEntity financialEffect
+    WHERE financialEffect.initiative.id = :initiativeId
+      AND financialEffect.effectYear = :year
+    """
+)
+fun existsAnyByInitiativeIdAndYear(
+    @Param("initiativeId") initiativeId: Long,
+    @Param("year") year: Int
+): Boolean
+
+@Service
+class FinancialEffectUpdateService(
+    private val aiAgentRepository: AIAgentRepository,
+    private val financialEffectRepository: InitiativeFinancialEffectRepository,
+    private val financialEffectTypeRepository: FinancialEffectTypeRepository,
+    private val userInfoProvider: UserInfoProvider,
+    private val objectMapper: ObjectMapper,
+    private val messageProvider: MessageProvider
+) {
+
+    companion object {
+        private val BUSINESS_ZONE = ZoneId.of("Europe/Moscow")
     }
-  ]
+
+    private data class ValidatedFinancialEffect(
+        val id: Long?,
+        val type: FinancialEffectTypeEntity,
+        val planValue: BigDecimal,
+        val factValue: BigDecimal?,
+        val targetMonth: LocalDate,
+        val approvalLinks: JsonNode
+    )
+
+    @Transactional
+    @OperationDetails("Process 'update financial effects'")
+    fun updateFinancialEffects(
+        initiativeId: Long,
+        year: Int,
+        request: UpdateFinancialEffectsRequest
+    ): FinancialEffectResponse {
+        val initiative = getInitiativeForUpdate(initiativeId)
+
+        validateYear(year)
+        validateFinancialEffectsInitialized(initiativeId, year)
+
+        val existingFinancialEffects = financialEffectRepository.findActiveByInitiativeIdAndYear(initiativeId, year)
+        val existingFinancialEffectsById = existingFinancialEffects.associateBy { it.id }
+
+        val financialEffects = validateFinancialEffects(request.effects, year, existingFinancialEffectsById)
+        val currentUserId = userInfoProvider.currentUser().id
+
+        val newFinancialEffects = saveFinancialEffects(
+            initiative, year, financialEffects, existingFinancialEffectsById, currentUserId
+        )
+
+        disableRemovedFinancialEffects(existingFinancialEffects, financialEffects, currentUserId)
+
+        if (newFinancialEffects.isNotEmpty()) {
+            financialEffectRepository.saveAll(newFinancialEffects)
+        }
+
+        financialEffectRepository.flush()
+
+        return getFinancialEffectResponse(initiativeId, year)
+    }
+
+    private fun getInitiativeForUpdate(initiativeId: Long): AIAgentEntity {
+        return aiAgentRepository.findByIdForUpdate(initiativeId)
+            ?.takeIf { it.disabled != true }
+            ?: throw AiNotFoundException(
+                errorCode = Metadata.ErrorMessages.INITIATIVE_NOT_FOUND,
+                message = MessageFormat.format(
+                    messageProvider[Metadata.ErrorMessages.INITIATIVE_NOT_FOUND], initiativeId
+                )
+            )
+    }
+
+    private fun validateYear(year: Int) {
+        val today = LocalDate.now(BUSINESS_ZONE)
+        val currentYear = today.year
+
+        val isCurrentOrPastYear = year in 1..currentYear
+        val isNextYearAvailable = today.monthValue >= 9 && year == currentYear + 1
+
+        if (!isCurrentOrPastYear && !isNextYearAvailable) {
+            throw AiBadRequestException(
+                errorCode = Metadata.ErrorMessages.FINANCIAL_EFFECT_INVALID_YEAR,
+                message = MessageFormat.format(
+                    messageProvider[Metadata.ErrorMessages.FINANCIAL_EFFECT_INVALID_YEAR], year
+                )
+            )
+        }
+    }
+
+    private fun validateFinancialEffectsInitialized(initiativeId: Long, year: Int) {
+        if (!financialEffectRepository.existsAnyByInitiativeIdAndYear(initiativeId, year)) {
+            throw AiBadRequestException(
+                errorCode = Metadata.ErrorMessages.FINANCIAL_EFFECT_NOT_INITIALIZED,
+                message = MessageFormat.format(
+                    messageProvider[Metadata.ErrorMessages.FINANCIAL_EFFECT_NOT_INITIALIZED], year
+                )
+            )
+        }
+    }
+
+    private fun validateFinancialEffects(
+        requestedFinancialEffects: List<UpdateFinancialEffectItemRequest>,
+        year: Int,
+        existingFinancialEffectsById: Map<Long, InitiativeFinancialEffectEntity>
+    ): List<ValidatedFinancialEffect> {
+        val requestedFinancialEffectIds = requestedFinancialEffects.mapNotNull { it.id }
+        val duplicateFinancialEffectId = requestedFinancialEffectIds.groupingBy { it }.eachCount()
+            .entries.firstOrNull { it.value > 1 }?.key
+
+        if (duplicateFinancialEffectId != null) {
+            throw AiBadRequestException(
+                errorCode = Metadata.ErrorMessages.FINANCIAL_EFFECT_DUPLICATE_ID,
+                message = MessageFormat.format(
+                    messageProvider[Metadata.ErrorMessages.FINANCIAL_EFFECT_DUPLICATE_ID],
+                    duplicateFinancialEffectId
+                )
+            )
+        }
+
+        val typeCodes = requestedFinancialEffects.mapNotNull { it.typeCode?.trim()?.takeIf(String::isNotEmpty) }.distinct()
+        val financialEffectTypes = financialEffectTypeRepository.findAllById(typeCodes).associateBy { it.code }
+        val currentYear = LocalDate.now(BUSINESS_ZONE).year
+
+        return requestedFinancialEffects.mapIndexed { index, requestedFinancialEffect ->
+            val cardNumber = index + 1
+
+            val typeCode = getRequiredField(requestedFinancialEffect.typeCode, "typeCode", cardNumber)
+            val plan = getRequiredField(requestedFinancialEffect.plan, "plan", cardNumber)
+            val targetMonth = getRequiredField(requestedFinancialEffect.targetMonth, "targetMonth", cardNumber)
+
+            val financialEffectType = financialEffectTypes[typeCode]
+                ?: throw AiBadRequestException(
+                    errorCode = Metadata.ErrorMessages.FINANCIAL_EFFECT_TYPE_NOT_FOUND,
+                    message = MessageFormat.format(
+                        messageProvider[Metadata.ErrorMessages.FINANCIAL_EFFECT_TYPE_NOT_FOUND], typeCode
+                    )
+                )
+
+            if (requestedFinancialEffect.id == null && year < currentYear) {
+                throw AiBadRequestException(
+                    errorCode = Metadata.ErrorMessages.FINANCIAL_EFFECT_PAST_YEAR_CREATE_FORBIDDEN,
+                    message = MessageFormat.format(
+                        messageProvider[Metadata.ErrorMessages.FINANCIAL_EFFECT_PAST_YEAR_CREATE_FORBIDDEN], year
+                    )
+                )
+            }
+
+            if (requestedFinancialEffect.id != null) {
+                val existingFinancialEffect = existingFinancialEffectsById[requestedFinancialEffect.id]
+                    ?: throw AiBadRequestException(
+                        errorCode = Metadata.ErrorMessages.FINANCIAL_EFFECT_NOT_FOUND,
+                        message = MessageFormat.format(
+                            messageProvider[Metadata.ErrorMessages.FINANCIAL_EFFECT_NOT_FOUND],
+                            requestedFinancialEffect.id
+                        )
+                    )
+
+                if (existingFinancialEffect.type?.code != typeCode) {
+                    throw AiBadRequestException(
+                        errorCode = Metadata.ErrorMessages.FINANCIAL_EFFECT_IMMUTABLE_TYPE,
+                        message = MessageFormat.format(
+                            messageProvider[Metadata.ErrorMessages.FINANCIAL_EFFECT_IMMUTABLE_TYPE],
+                            requestedFinancialEffect.id
+                        )
+                    )
+                }
+            }
+
+            ValidatedFinancialEffect(
+                id = requestedFinancialEffect.id,
+                type = financialEffectType,
+                planValue = parseNonNegativeAmount(plan, "plan", cardNumber),
+                factValue = requestedFinancialEffect.fact?.let { parseNonNegativeAmount(it, "fact", cardNumber) },
+                targetMonth = parseTargetMonth(targetMonth, cardNumber),
+                approvalLinks = objectMapper.valueToTree<JsonNode>(requestedFinancialEffect.approvalLinks.orEmpty())
+            )
+        }
+    }
+
+    private fun saveFinancialEffects(
+        initiative: AIAgentEntity,
+        year: Int,
+        financialEffects: List<ValidatedFinancialEffect>,
+        existingFinancialEffectsById: Map<Long, InitiativeFinancialEffectEntity>,
+        currentUserId: Long
+    ): List<InitiativeFinancialEffectEntity> {
+        val newFinancialEffects = mutableListOf<InitiativeFinancialEffectEntity>()
+
+        financialEffects.forEach { financialEffect ->
+            if (financialEffect.id == null) {
+                newFinancialEffects.add(
+                    InitiativeFinancialEffectEntity(
+                        initiative = initiative,
+                        effectYear = year,
+                        type = financialEffect.type,
+                        planValue = financialEffect.planValue,
+                        factValue = financialEffect.factValue,
+                        targetMonth = financialEffect.targetMonth,
+                        approvalLinks = financialEffect.approvalLinks,
+                        disabled = false,
+                        createdBy = currentUserId
+                    )
+                )
+            } else {
+                val existingFinancialEffect = existingFinancialEffectsById.getValue(financialEffect.id)
+                updateExistingFinancialEffect(existingFinancialEffect, financialEffect, currentUserId)
+            }
+        }
+
+        return newFinancialEffects
+    }
+
+    private fun updateExistingFinancialEffect(
+        existingFinancialEffect: InitiativeFinancialEffectEntity,
+        financialEffect: ValidatedFinancialEffect,
+        currentUserId: Long
+    ) {
+        val planChanged = amountsDiffer(existingFinancialEffect.planValue, financialEffect.planValue)
+        val factChanged = amountsDiffer(existingFinancialEffect.factValue, financialEffect.factValue)
+        val targetMonthChanged = existingFinancialEffect.targetMonth != financialEffect.targetMonth
+        val approvalLinksChanged = existingFinancialEffect.approvalLinks != financialEffect.approvalLinks
+
+        if (!planChanged && !factChanged && !targetMonthChanged && !approvalLinksChanged) return
+
+        existingFinancialEffect.planValue = financialEffect.planValue
+        existingFinancialEffect.factValue = financialEffect.factValue
+        existingFinancialEffect.targetMonth = financialEffect.targetMonth
+        existingFinancialEffect.approvalLinks = financialEffect.approvalLinks
+        existingFinancialEffect.updatedBy = currentUserId
+    }
+
+    private fun amountsDiffer(currentValue: BigDecimal?, newValue: BigDecimal?): Boolean {
+        if (currentValue == null || newValue == null) return currentValue != newValue
+
+        return currentValue.compareTo(newValue) != 0
+    }
+
+    private fun disableRemovedFinancialEffects(
+        existingFinancialEffects: List<InitiativeFinancialEffectEntity>,
+        financialEffects: List<ValidatedFinancialEffect>,
+        currentUserId: Long
+    ) {
+        val retainedFinancialEffectIds = financialEffects.mapNotNull { it.id }.toSet()
+
+        existingFinancialEffects.filter { it.id !in retainedFinancialEffectIds }.forEach { financialEffect ->
+            financialEffect.disabled = true
+            financialEffect.updatedBy = currentUserId
+        }
+    }
+
+    private fun getRequiredField(value: String?, fieldName: String, cardNumber: Int): String {
+        return value?.trim()?.takeIf { it.isNotEmpty() }
+            ?: throw AiBadRequestException(
+                errorCode = Metadata.ErrorMessages.FINANCIAL_EFFECT_REQUIRED_FIELD,
+                message = MessageFormat.format(
+                    messageProvider[Metadata.ErrorMessages.FINANCIAL_EFFECT_REQUIRED_FIELD], fieldName, cardNumber
+                )
+            )
+    }
+
+    private fun parseNonNegativeAmount(value: String, fieldName: String, cardNumber: Int): BigDecimal {
+        val amount = value.trim().toBigDecimalOrNull()
+
+        if (amount == null || amount.signum() < 0) {
+            throw AiBadRequestException(
+                errorCode = Metadata.ErrorMessages.FINANCIAL_EFFECT_INVALID_AMOUNT,
+                message = MessageFormat.format(
+                    messageProvider[Metadata.ErrorMessages.FINANCIAL_EFFECT_INVALID_AMOUNT], fieldName, cardNumber
+                )
+            )
+        }
+
+        return amount
+    }
+
+    private fun parseTargetMonth(value: String, cardNumber: Int): LocalDate {
+        return try {
+            YearMonth.parse(value).atDay(1)
+        } catch (exception: DateTimeParseException) {
+            throw AiBadRequestException(
+                errorCode = Metadata.ErrorMessages.FINANCIAL_EFFECT_INVALID_TARGET_MONTH,
+                message = MessageFormat.format(
+                    messageProvider[Metadata.ErrorMessages.FINANCIAL_EFFECT_INVALID_TARGET_MONTH], cardNumber
+                )
+            )
+        }
+    }
+
+    private fun getFinancialEffectResponse(initiativeId: Long, year: Int): FinancialEffectResponse {
+        val financialEffects = financialEffectRepository.findActiveByInitiativeIdAndYear(initiativeId, year)
+
+        return FinancialEffectResponse(
+            initiativeId = initiativeId,
+            effects = financialEffects.map { buildFinancialEffectResponse(it) }
+        )
+    }
+
+    private fun buildFinancialEffectResponse(
+        financialEffect: InitiativeFinancialEffectEntity
+    ): FinancialEffectItemResponse {
+        val financialEffectType = financialEffect.type!!
+        val planValue = financialEffect.planValue!!
+        val targetMonth = financialEffect.targetMonth!!
+        val created = financialEffect.created!!
+
+        return FinancialEffectItemResponse(
+            id = financialEffect.id,
+            typeCode = financialEffectType.code,
+            typeName = financialEffectType.name,
+            unit = financialEffectType.unit,
+            plan = planValue.toPlainString(),
+            fact = financialEffect.factValue?.toPlainString(),
+            targetMonth = YearMonth.from(targetMonth).toString(),
+            approvalLinks = financialEffect.approvalLinks?.map { it.asText() }.orEmpty(),
+            isPlanAchieved = calculatePlanAchievement(planValue, financialEffect.factValue, financialEffectType),
+            createdAt = created.atZone(ZoneId.systemDefault()).toInstant()
+        )
+    }
+
+    private fun calculatePlanAchievement(
+        planValue: BigDecimal,
+        factValue: BigDecimal?,
+        financialEffectType: FinancialEffectTypeEntity
+    ): Boolean {
+        if (factValue == null) return false
+
+        return if (financialEffectType.moreIsBetter) {
+            factValue >= planValue
+        } else {
+            factValue <= planValue
+        }
+    }
 }
 
-
-Ожидаем 400, код financial.effect.required.field.
-Тест 3. Не передан тип эффекта
-{
-  "effects": [
-    {
-      "plan": "1000000",
-      "targetMonth": "2026-12"
-    }
-  ]
+@PutMapping("/{initiativeId}/financial-effects/{year}")
+@ResponseStatus(HttpStatus.OK)
+@Operation(
+    summary = "Сохранение финансовых эффектов инициативы",
+    responses = [
+        ApiResponse(
+            responseCode = "200",
+            content = [
+                Content(
+                    mediaType = "application/json",
+                    schema = Schema(implementation = FinancialEffectResponse::class)
+                )
+            ]
+        )
+    ]
+)
+@PlatformAudit(
+    dataType = AuditParams.DataType.UpdateFinancialEffects,
+    actionType = AuditParams.ActionType.Update,
+    value = "Изменение финансовых эффектов инициативы"
+)
+@ExceptionApiResponses
+@PreAuthorize("hasAnyAuthority('PROJECT_OFFICE', 'CMS_ADMIN', 'TRANSFORMATION_OFFICE')")
+fun updateFinancialEffects(
+    @PathVariable initiativeId: Long,
+    @PathVariable year: Int,
+    @RequestBody request: UpdateFinancialEffectsRequest
+): FinancialEffectResponse {
+    return financialEffectUpdateService.updateFinancialEffects(initiativeId, year, request)
 }
 
+const val UpdateFinancialEffects = "put_financial_effect_types"
 
-Ожидаем 400, код financial.effect.required.field.
-Тест 4. Отрицательный план
-{
-  "effects": [
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "-1000000",
-      "targetMonth": "2026-12"
-    }
-  ]
-}
+const val FINANCIAL_EFFECT_NOT_INITIALIZED = "financial.effect.not.initialized"
+const val FINANCIAL_EFFECT_NOT_FOUND = "financial.effect.not.found"
+const val FINANCIAL_EFFECT_DUPLICATE_ID = "financial.effect.duplicate.id"
+const val FINANCIAL_EFFECT_IMMUTABLE_TYPE = "financial.effect.immutable.type"
+const val FINANCIAL_EFFECT_PAST_YEAR_CREATE_FORBIDDEN = "financial.effect.past.year.create.forbidden"
 
-
-Ожидаем 400, код financial.effect.invalid.amount.
-Тест 5. Отрицательный факт
-{
-  "effects": [
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "1000000",
-      "fact": "-500000",
-      "targetMonth": "2026-12"
-    }
-  ]
-}
+financial.effect.not.initialized=Финансовые эффекты за {0} год ещё не были созданы
+financial.effect.not.found=Финансовый эффект с ID {0} не найден среди активных карточек инициативы за выбранный год
+financial.effect.duplicate.id=Финансовый эффект с ID {0} передан несколько раз
+financial.effect.immutable.type=Нельзя изменять тип сохранённого финансового эффекта с ID {0}
+financial.effect.past.year.create.forbidden=Создание новых финансовых эффектов за {0} год запрещено
 
 
-Ожидаем 400, код financial.effect.invalid.amount.
-Тест 6. Некорректные числовые значения
-{
-  "effects": [
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "abc",
-      "fact": "100",
-      "targetMonth": "2026-12"
-    }
-  ]
-}
-
-
-Ожидаем 400, код financial.effect.invalid.amount.
-Также проверь fact = "abc" с корректным планом.
-Тест 7. Несуществующий тип эффекта
-{
-  "effects": [
-    {
-      "typeCode": "UNKNOWN_TYPE",
-      "plan": "1000000",
-      "targetMonth": "2026-12"
-    }
-  ]
-}
-
-
-Ожидаем 400, код financial.effect.type.not.found.
-Тест 8. Некорректный месяц
-{
-  "effects": [
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "1000000",
-      "targetMonth": "2026-13"
-    }
-  ]
-}
-
-
-Ожидаем 400, код financial.effect.invalid.target.month.
-Дополнительно проверь:
-targetMonth	Ожидаемый результат
-"2026-00"	400
-"2026-1"	400
-"2026-12-15"	400
-null	400
-"2026-12"	Валидно
-Тест 9. Запрещённый год создания
-Измени URL:
-POST /api/v1/ai-agent/740/financial-effects/2028
-
-
-Body:
-{
-  "effects": [
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "1000000",
-      "targetMonth": "2028-12"
-    }
-  ]
-}
-
-
-Ожидаем 400, код financial.effect.invalid.year.
-Сейчас октябрь 2026 года, поэтому согласно требованиям можно создавать эффекты за 2026 и 2027 годы.
-Тест 10. Несуществующая инициатива
-Используй заведомо несуществующий ID:
-POST /api/v1/ai-agent/999999999/financial-effects/2026
-
-
-Body:
-{
-  "effects": [
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "1000000",
-      "targetMonth": "2026-12"
-    }
-  ]
-}
-
-
-Ожидаем 404 Not Found, код initiative.not.found.
-Тест 11. Одна валидная карточка, вторая невалидная
-Это очень важный тест для проверки транзакционности.
-{
-  "effects": [
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "1000000",
-      "targetMonth": "2026-12"
-    },
-    {
-      "typeCode": "RELEASED_FTE_COUNT",
-      "plan": "-100",
-      "targetMonth": "2026-11"
-    }
-  ]
-}
-
-
-Ожидаем:
-- HTTP 400.
-- Ни одна карточка не сохраняется.
-Проверь БД:
-SELECT COUNT(*)
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-  AND effect_year = 2026;
-
-
-Если изначально записей не было, результат должен быть 0.
-
-Этап 3. Успешное создание
-Теперь проверяем основной Happy Path.
-Тест 12. Создание трёх карточек за 2026 год
-URL:
-POST /api/v1/ai-agent/740/financial-effects/2026
-
-
-Body:
-{
-  "effects": [
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "10000000",
-      "fact": "12000000",
-      "targetMonth": "2026-12",
-      "approvalLinks": [
-        "https://example.com/approval/1",
-        "https://example.com/approval/2"
-      ]
-    },
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "5000000",
-      "targetMonth": "2026-11"
-    },
-    {
-      "typeCode": "RELEASED_FTE_COUNT",
-      "plan": "0",
-      "fact": "0",
-      "targetMonth": "2026-10",
-      "approvalLinks": []
-    }
-  ]
-}
-
-
-Ожидаемый HTTP-статус
-201 Created
-
-Ожидаемое поведение:
-- Создаются три самостоятельные карточки.
-- Две карточки имеют одинаковый typeCode — это разрешено.
-- id у всех трёх карточек разные и имеют тип Long.
-- У второй карточки fact = null, isPlanAchieved = false.
-- Для первой карточки isPlanAchieved = true, если more_is_better = true.
-- Для третьей карточки isPlanAchieved = true при plan = 0, fact = 0 и реализованном сравнении с равенством.
-- Отсутствующий approvalLinks заменяется на [].
-
-Пример структуры ответа (ID и время будут другими):
-{
-  "initiativeId": 740,
-  "effects": [
-    {
-      "id": 1,
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "typeName": "Рост доходов Группы",
-      "unit": "RUB",
-      "plan": "10000000",
-      "fact": "12000000",
-      "targetMonth": "2026-12",
-      "approvalLinks": [
-        "https://example.com/approval/1",
-        "https://example.com/approval/2"
-      ],
-      "isPlanAchieved": true,
-      "createdAt": "2026-10-13T12:00:00Z"
-    }
-  ]
-}
-
-
-Это сокращённый пример первой карточки. Реальный ответ должен содержать все три.
-Проверка в PostgreSQL
-SELECT
-    id,
-    initiative_id,
-    effect_year,
-    type_code,
-    plan_value,
-    fact_value,
-    target_month,
-    approval_links,
-    disabled,
-    created,
-    created_by,
-    updated,
-    updated_by
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-  AND effect_year = 2026
-ORDER BY created ASC, id ASC;
-
-
-Ожидаем:
-Поле	Результат
-Количество строк	3
-effect_year	2026
-disabled	false
-created	Заполнено
-created_by	ID текущего пользователя
-updated	NULL
-updated_by	NULL
-approval_links	Корректный JSON-массив
-fact_value второй карточки	NULL
-Проверка количества:
-SELECT COUNT(*)
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-  AND effect_year = 2026
-  AND disabled = false;
-
-
-Результат должен быть 3.
-
-Этап 4. Повторное создание
-Тест 13. Повторный POST за 2026 год
-Теперь отправь ещё раз запрос из теста 12.
-Ожидаем:
-400 Bad Request
-
-
-Код ошибки:
-financial.effect.already.initialized
-
-
-Почему? Потому что у инициативы 740 уже есть активные финансовые эффекты за 2026 год.
-После ошибки выполни:
-SELECT COUNT(*)
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-  AND effect_year = 2026
-  AND disabled = false;
-
-
-Должно остаться 3 карточки, а не 6.
-
-Этап 5. Создание следующего года
-Тест 14. Создание карточки за 2027 год
-URL:
-POST /api/v1/ai-agent/740/financial-effects/2027
-
-
-Body:
-{
-  "effects": [
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "15000000",
-      "fact": "5000000",
-      "targetMonth": "2027-12",
-      "approvalLinks": []
-    }
-  ]
-}
-
-
-Ожидаем HTTP 201 Created.
-Проверяем:
-SELECT
-    effect_year,
-    COUNT(*) AS effects_count
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-  AND disabled = false
-GROUP BY effect_year
-ORDER BY effect_year;
-
-
-Ожидаемый результат:
-effect_year	effects_count
-2026	3
-2027	1
-Таким образом подтверждаем, что эффекты за разные годы хранятся отдельно.
-
-Этап 6. Проверка moreIsBetter = false
-Для этого теста возьмём другую инициативу из твоей БД — 739, если у неё нет активных карточек за 2026 год.
-Тест 15. Когда меньше — лучше
-URL:
-POST /api/v1/ai-agent/739/financial-effects/2026
-
-
-Body:
-{
-  "effects": [
-    {
-      "typeCode": "TEST_LOWER_IS_BETTER",
-      "plan": "100",
-      "fact": "80",
-      "targetMonth": "2026-12"
-    },
-    {
-      "typeCode": "TEST_LOWER_IS_BETTER",
-      "plan": "100",
-      "fact": "120",
-      "targetMonth": "2026-12"
-    },
-    {
-      "typeCode": "RELEASED_FTE_COUNT",
-      "plan": "10.5",
-      "fact": "8.25",
-      "targetMonth": "2026-12"
-    }
-  ]
-}
-
-
-Ожидаем HTTP 201.
-Карточка	План	Факт	isPlanAchieved
-TEST_LOWER_IS_BETTER	100	80	true
-TEST_LOWER_IS_BETTER	100	120	false
-RELEASED_FTE_COUNT	10.5	8.25	false
-Третья карточка также проверяет сохранение дробных значений через BigDecimal.
-
-Этап 7. Проверка JSONB, дат и сортировки
-После успешных тестов выполни:
-SELECT
-    id,
-    effect_year,
-    type_code,
-    plan_value,
-    fact_value,
-    jsonb_typeof(approval_links) AS links_type,
-    jsonb_array_length(approval_links) AS links_count,
-    created,
-    disabled
-FROM initiative_financial_effect
-WHERE initiative_id IN (740, 739)
-ORDER BY initiative_id, effect_year, created, id;
-
-
-Проверяем, что:
-- links_type = array.
-- Количество ссылок совпадает с запросом.
-- created заполнено.
-- disabled = false.
-- Порядок карточек соответствует created ASC, id ASC.
-Для дополнительной проверки времени:
-SELECT
-    CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS utc_now,
-    created
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-ORDER BY id DESC
-LIMIT 1;
-
-
-Значение created должно соответствовать UTC, если JVM приложения настроена на UTC. Само по себе преобразование в Instant при формировании ответа не исправляет время, записанное в другой зоне.
 ```
