@@ -1,364 +1,263 @@
 ```java
 
 
-Этап 1. Подготовка
-1.1. Проверяем состояние БД после POST
-Выполни:
-SELECT
-    id,
-    initiative_id,
-    effect_year,
-    type_code,
-    plan_value,
-    fact_value,
-    target_month,
-    approval_links,
-    disabled,
-    created,
-    updated,
-    updated_by
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-ORDER BY effect_year, created, id;
+data class FinancialEffectsResponse(
+    val initiativeId: Long,
+    val effects: List<FinancialEffectWithYearResponse>
+)
 
+data class FinancialEffectWithYearResponse(
+    val id: Long,
+    val typeCode: String,
+    val typeName: String,
+    val year: Int,
+    val unit: String,
+    val plan: String,
+    val fact: String?,
+    val targetMonth: String,
+    val approvalLinks: List<String>,
+    val isPlanAchieved: Boolean,
+    val createdAt: Instant
+)
 
-Если все тесты POST успешно выполнены, у инициативы должны быть три активные карточки за 2026 год и одна за 2027 год.
-Нам нужны реальные ID трёх карточек за 2026 год.
-Обозначение	Тип	План
-ID_A	GROUP_REVENUE_GROWTH	10 000 000
-ID_B	GROUP_REVENUE_GROWTH	5 000 000
-ID_C	RELEASED_FTE_COUNT	0
-Во всех запросах ниже я буду использовать примерные ID 101, 102, 103. Замени их на реальные значения из своей БД.
-1.2. Настраиваем Insomnia
-PUT
-Сохранение финансовых эффектов
+data class FinancialEffectTypesResponse(
+    val items: List<FinancialEffectTypeItemResponse>
+)
 
-URL
-http://localhost:8080/api/v1/ai-agent/740/financial-effects/2026
+data class FinancialEffectTypeItemResponse(
+    val code: String,
+    val name: String,
+    val unit: String
+)
 
- Копировать
-Headers: Content-Type: application/json и тот же Authorization, который использовался для POST.
+@Query(
+    """
+    SELECT financialEffect
+    FROM InitiativeFinancialEffectEntity financialEffect
+    JOIN FETCH financialEffect.type
+    WHERE financialEffect.initiative.id = :initiativeId
+      AND financialEffect.effectYear IN :years
+      AND financialEffect.disabled = false
+    ORDER BY financialEffect.created ASC, financialEffect.id ASC
+    """
+)
+fun findActiveByInitiativeIdAndYears(
+    @Param("initiativeId") initiativeId: Long,
+    @Param("years") years: Collection<Int>
+): List<InitiativeFinancialEffectEntity>
 
-Главное правило PUT: передаём полный актуальный список карточек. Если не передать ID существующей карточки, Backend воспримет это как команду удалить её через disabled = true.
+import org.springframework.data.repository.findByIdOrNull
+import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Transactional
+import java.math.BigDecimal
+import java.text.MessageFormat
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.ZoneId
+import java.time.Instant
 
-Этап 2. Негативные тесты
-Все негативные тесты лучше выполнить до успешного PUT, чтобы первоначальные три карточки оставались неизменными.
-Тест 1. Год ещё не инициализирован
-Если за 2025 год у инициативы 740 нет вообще никаких карточек, включая отключённые, отправь:
-PUT /api/v1/ai-agent/740/financial-effects/2025
-{
-  "effects": []
-}
+@Service
+class FinancialEffectReadService(
+    private val aiAgentRepository: AIAgentRepository,
+    private val financialEffectRepository: InitiativeFinancialEffectRepository,
+    private val financialEffectTypeRepository: FinancialEffectTypeRepository,
+    private val messageProvider: MessageProvider
+) {
 
-
-Ожидаем:
-400 Bad Request
-financial.effect.not.initialized
-
-
-Обоснование: PUT разрешён только для года, за который ранее уже сохраняли финансовые эффекты.
-Тест 2. Несуществующий ID карточки
-Верни URL на 2026 год.
-{
-  "effects": [
-    {
-      "id": 999999999,
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "10000000",
-      "fact": "12000000",
-      "targetMonth": "2026-12",
-      "approvalLinks": []
+    companion object {
+        private val BUSINESS_ZONE = ZoneId.of("Europe/Moscow")
     }
-  ]
-}
 
+    @Transactional(readOnly = true)
+    @OperationDetails("Process 'get financial effects'")
+    fun getFinancialEffects(initiativeId: Long, year: Int? = null): FinancialEffectsResponse {
+        validateInitiativeExists(initiativeId)
 
-Ожидаем 400:
-financial.effect.not.found
+        val selectedYears = getSelectedYears(year)
+        val financialEffects = financialEffectRepository.findActiveByInitiativeIdAndYears(initiativeId, selectedYears)
 
-
-Карточки 101, 102, 103 должны остаться активными. Несмотря на то что они отсутствуют в запросе, валидация должна остановить операцию до Soft Delete.
-Тест 3. Попытка изменить тип сохранённой карточки
-Для этого используем ID_A, у которого исходный тип GROUP_REVENUE_GROWTH.
-{
-  "effects": [
-    {
-      "id": 101,
-      "typeCode": "RELEASED_FTE_COUNT",
-      "plan": "10000000",
-      "fact": "12000000",
-      "targetMonth": "2026-12",
-      "approvalLinks": []
+        return FinancialEffectsResponse(
+            initiativeId = initiativeId,
+            effects = financialEffects.map { buildFinancialEffectResponse(it) }
+        )
     }
-  ]
-}
 
+    @Transactional(readOnly = true)
+    @OperationDetails("Process 'get financial effect types'")
+    fun getFinancialEffectTypes(): FinancialEffectTypesResponse {
+        val financialEffectTypes = financialEffectTypeRepository.findAll()
 
-Ожидаем 400:
-financial.effect.immutable.type
-
-
-Проверяем, что в БД у карточки 101 остался прежний type_code.
-Тест 4. Повторяющийся ID в запросе
-{
-  "effects": [
-    {
-      "id": 101,
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "10000000",
-      "targetMonth": "2026-12"
-    },
-    {
-      "id": 101,
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "15000000",
-      "targetMonth": "2026-11"
+        return FinancialEffectTypesResponse(
+            items = financialEffectTypes.map { financialEffectType ->
+                FinancialEffectTypeItemResponse(
+                    code = financialEffectType.code,
+                    name = financialEffectType.name,
+                    unit = financialEffectType.unit
+                )
+            }
+        )
     }
-  ]
-}
 
-
-Ожидаем 400:
-financial.effect.duplicate.id
-
-
-Одна карточка не должна обновляться дважды в рамках одного PUT.
-Тест 5. Невалидная карточка среди валидных
-{
-  "effects": [
-    {
-      "id": 101,
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "15000000",
-      "fact": "14000000",
-      "targetMonth": "2026-12"
-    },
-    {
-      "id": 102,
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "-5000000",
-      "targetMonth": "2026-11"
+    private fun validateInitiativeExists(initiativeId: Long) {
+        aiAgentRepository.findByIdOrNull(initiativeId)
+            ?.takeIf { it.disabled != true }
+            ?: throw AiNotFoundException(
+                errorCode = Metadata.ErrorMessages.INITIATIVE_NOT_FOUND,
+                message = messageProvider[Metadata.ErrorMessages.INITIATIVE_NOT_FOUND]
+            )
     }
-  ]
-}
 
+    private fun getSelectedYears(year: Int?): List<Int> {
+        if (year != null) {
+            if (year < 1) {
+                throw AiBadRequestException(
+                    errorCode = Metadata.ErrorMessages.FINANCIAL_EFFECT_INVALID_READ_YEAR,
+                    message = MessageFormat.format(
+                        messageProvider[Metadata.ErrorMessages.FINANCIAL_EFFECT_INVALID_READ_YEAR], year
+                    )
+                )
+            }
 
-Ожидаем 400:
-financial.effect.invalid.amount
+            return listOf(year)
+        }
 
+        val today = LocalDate.now(BUSINESS_ZONE)
+        val currentYear = today.year
 
-Самая важная проверка: план у карточки 101 должен остаться 10000000, а карточка 103 не должна отключиться.
-Выполни:
-SELECT id, plan_value, disabled, updated
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-  AND effect_year = 2026
-ORDER BY id;
-
-
-Все три карточки должны остаться в первоначальном состоянии.
-Тест 6. ID принадлежит другому году
-Из предыдущего тестирования POST у нас есть карточка за 2027 год.
-Возьми её реальный ID из БД и попробуй передать его в PUT за 2026 год.
-Ожидаем:
-400 Bad Request — financial.effect.not.found.
-Так мы убедимся, что нельзя обновить карточку другого года через неправильный URL.
-
-Этап 3. Happy Path — создание, обновление и удаление одновременно
-Это главный тест PUT.
-Мы должны одним запросом выполнить сразу четыре действия.
-Карточка	Действие	Ожидаемый результат
-ID_A (101)	Изменить план, факт и ссылки	UPDATE
-ID_B (102)	Оставить без изменений	No-op
-ID_C (103)	Не передать в запросе	Soft Delete
-Без ID	Добавить новую карточку	INSERT
-Тест 7. Полное сохранение финансовых эффектов
-PUT /api/v1/ai-agent/740/financial-effects/2026
-Body → JSON:
-
-{
-  "effects": [
-    {
-      "id": 101,
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "15000000",
-      "fact": "13000000",
-      "targetMonth": "2026-12",
-      "approvalLinks": [
-        "https://example.com/approval/1",
-        "https://example.com/approval/updated"
-      ]
-    },
-    {
-      "id": 102,
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "5000000",
-      "targetMonth": "2026-11",
-      "approvalLinks": []
-    },
-    {
-      "typeCode": "RELEASED_FTE_COUNT",
-      "plan": "10.5",
-      "fact": "8.25",
-      "targetMonth": "2026-12",
-      "approvalLinks": [
-        "https://example.com/approval/new"
-      ]
+        return if (today.monthValue >= 9) {
+            listOf(currentYear, currentYear + 1)
+        } else {
+            listOf(currentYear)
+        }
     }
-  ]
-}
 
+    private fun buildFinancialEffectResponse(
+        financialEffect: InitiativeFinancialEffectEntity
+    ): FinancialEffectWithYearResponse {
+        val financialEffectType = financialEffect.type!!
+        val planValue = financialEffect.planValue!!
+        val targetMonth = financialEffect.targetMonth!!
+        val created = financialEffect.created!!
 
-
-200 OK
-Ожидаемый результат
-
-После сохранения Backend должен вернуть полный актуальный список из трёх карточек: 101, 102 и новой с автоматически созданным ID.
-Карточки 103 в ответе быть не должно.
-
-Проверяем PostgreSQL
-SELECT
-    id,
-    effect_year,
-    type_code,
-    plan_value,
-    fact_value,
-    target_month,
-    approval_links,
-    disabled,
-    created,
-    created_by,
-    updated,
-    updated_by
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-  AND effect_year = 2026
-ORDER BY created ASC, id ASC;
-
-
-Ожидаем:
-Карточка	disabled	updated	updated_by
-101	false	Заполнено	Текущий пользователь
-102	false	NULL	NULL
-103	true	Заполнено	Текущий пользователь
-Новая	false	NULL	NULL
-Предполагается, что до PUT карточки ещё не редактировались.
-Также важно проверить, что у 101 и 102 не изменилось поле created.
-Проверка количества:
-SELECT
-    COUNT(*) AS total_count,
-    COUNT(*) FILTER (WHERE disabled = false) AS active_count,
-    COUNT(*) FILTER (WHERE disabled = true) AS disabled_count
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-  AND effect_year = 2026;
-
-
-4
-Всего строк
-
-3
-Активные
-
-1
-Отключённая
-
-
-
-
-Этап 4. Проверяем отсутствие лишних обновлений
-Тест 8. Повторный PUT с теми же значениями
-Сначала сохрани текущие значения updated и updated_by для всех трёх активных карточек.
-Затем отправь тот же набор из теста 7, но новой карточке обязательно поставь её реальный ID, полученный из ответа теста 7.
-После повторного PUT ожидаем:
-- HTTP 200 OK.
-- Количество карточек не изменилось.
-- Не появилось новых строк.
-- updated и updated_by остались прежними.
-Для сравнения:
-SELECT id, plan_value, fact_value, updated, updated_by
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-  AND effect_year = 2026
-  AND disabled = false
-ORDER BY id;
-
-
-Почему это важно: в новом FinancialEffectUpdateService есть проверка изменения значений. Если пользователь ничего не поменял, Hibernate не должен отправлять лишний UPDATE.
-Тест 9. Изменение только ссылок
-Теперь у одной существующей карточки измени только approvalLinks, оставив plan, fact и targetMonth прежними.
-В PUT обязательно передай остальные активные карточки без изменений.
-Ожидаем:
-- Только изменённая карточка получает новое updated.
-- У неё меняется updatedBy.
-- Остальные карточки не обновляются.
-- В PostgreSQL сохраняется новый JSON-массив ссылок.
-Это дополнительно подготовит проверку историчности, когда подключим Hibernate Envers.
-
-Этап 5. Удаление всех карточек
-Тест 10. Пустой массив
-Этот тест выполняй после остальных, поскольку он отключит все активные карточки за 2026 год.
-PUT /api/v1/ai-agent/740/financial-effects/2026
-{
-  "effects": []
-}
-
-
-Ожидаем:
-{
-  "initiativeId": 740,
-  "effects": []
-}
-
-
-HTTP 200 OK.
-Проверяем БД:
-SELECT id, disabled, updated, updated_by
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-  AND effect_year = 2026
-ORDER BY id;
-
-
-Все строки за 2026 год должны иметь disabled = true.
-Физически записи не удаляются.
-Тест 11. Повторный PUT с пустым массивом
-Отправь тот же запрос ещё раз:
-{
-  "effects": []
-}
-
-
-Ожидаем 200 OK и effects: [].
-updated у ранее отключённых карточек не должен измениться.
-Это проверяет важный сценарий: после Soft Delete всех карточек PUT должен продолжать работать, поскольку первоначальное сохранение этого года уже происходило.
-
-Этап 6. Проверка сохранения после удаления всех карточек
-Тест 12. Добавление новой карточки через PUT
-Когда все карточки отключены, отправь:
-{
-  "effects": [
-    {
-      "typeCode": "GROUP_REVENUE_GROWTH",
-      "plan": "25000000",
-      "fact": "20000000",
-      "targetMonth": "2026-12",
-      "approvalLinks": []
+        return FinancialEffectWithYearResponse(
+            id = financialEffect.id,
+            typeCode = financialEffectType.code,
+            typeName = financialEffectType.name,
+            year = financialEffect.effectYear,
+            unit = financialEffectType.unit,
+            plan = planValue.toPlainString(),
+            fact = financialEffect.factValue?.toPlainString(),
+            targetMonth = YearMonth.from(targetMonth).toString(),
+            approvalLinks = financialEffect.approvalLinks?.map { it.asText() }.orEmpty(),
+            isPlanAchieved = calculatePlanAchievement(
+                planValue, financialEffect.factValue, financialEffectType
+            ),
+            createdAt = created.atZone(ZoneId.systemDefault()).toInstant()
+        )
     }
-  ]
+
+    private fun calculatePlanAchievement(
+        planValue: BigDecimal,
+        factValue: BigDecimal?,
+        financialEffectType: FinancialEffectTypeEntity
+    ): Boolean {
+        if (factValue == null) return false
+
+        return if (financialEffectType.moreIsBetter) {
+            factValue >= planValue
+        } else {
+            factValue <= planValue
+        }
+    }
 }
 
+ @GetMapping("/{initiativeId}/financial-effects")
+    @Operation(
+        summary = "Получение финансовых эффектов инициативы",
+        responses = [
+            ApiResponse(
+                responseCode = "200",
+                content = [
+                    Content(
+                        mediaType = "application/json",
+                        schema = Schema(implementation = FinancialEffectsResponse::class)
+                    )
+                ]
+            )
+        ]
+    )
+    @PlatformAudit(
+        dataType = AuditParams.DataType.GetFinancialEffectTypes,
+        actionType = AuditParams.ActionType.Get,
+        value = "Получение финансовых эффектов инициативы"
+    )
+    @ExceptionApiResponses
+    @PreAuthorize("hasAnyAuthority('PROJECT_OFFICE', 'CMS_ADMIN', 'TRANSFORMATION_OFFICE')")
+    fun getFinancialEffects(
+        @PathVariable initiativeId: Long
+    ): FinancialEffectsResponse {
+        return financialEffectReadService.getFinancialEffects(initiativeId)
+    }
 
-Ожидаем 200 OK.
-Backend должен создать новую карточку, не восстанавливая старые автоматически.
-Проверь:
-SELECT id, type_code, plan_value, disabled, created
-FROM initiative_financial_effect
-WHERE initiative_id = 740
-  AND effect_year = 2026
-ORDER BY id;
+    @GetMapping("/{initiativeId}/financial-effects/{year}")
+    @Operation(
+        summary = "Получение финансовых эффектов инициативы за выбранный год",
+        responses = [
+            ApiResponse(
+                responseCode = "200",
+                content = [
+                    Content(
+                        mediaType = "application/json",
+                        schema = Schema(implementation = FinancialEffectsResponse::class)
+                    )
+                ]
+            )
+        ]
+    )
+    @PlatformAudit(
+        dataType = AuditParams.DataType.GetFinancialEffectTypes,
+        actionType = AuditParams.ActionType.Get,
+        value = "Получение финансовых эффектов инициативы за выбранный год"
+    )
+    @ExceptionApiResponses
+    @PreAuthorize("hasAnyAuthority('PROJECT_OFFICE', 'CMS_ADMIN', 'TRANSFORMATION_OFFICE')")
+    fun getFinancialEffectsByYear(
+        @PathVariable initiativeId: Long,
+        @PathVariable year: Int
+    ): FinancialEffectsResponse {
+        return financialEffectReadService.getFinancialEffects(initiativeId, year)
+    }
 
+    @GetMapping("/financial-effect/types")
+    @Operation(
+        summary = "Получение типов финансовых эффектов",
+        responses = [
+            ApiResponse(
+                responseCode = "200",
+                content = [
+                    Content(
+                        mediaType = "application/json",
+                        schema = Schema(implementation = FinancialEffectTypesResponse::class)
+                    )
+                ]
+            )
+        ]
+    )
+    @PlatformAudit(
+        dataType = AuditParams.DataType.GetFinancialEffectTypes,
+        actionType = AuditParams.ActionType.Get,
+        value = "Получение актуальных типов финансовых эффектов"
+    )
+    @ExceptionApiResponses
+    @PreAuthorize("hasAnyAuthority('PROJECT_OFFICE', 'CMS_ADMIN', 'TRANSFORMATION_OFFICE')")
+    fun getFinancialEffectTypes(): FinancialEffectTypesResponse {
+        return financialEffectReadService.getFinancialEffectTypes()
+    }
 
-Ожидаем, что старые карточки остались disabled = true, а новая — disabled = false.
+    const val GetFinancialEffectTypes = "get_financial_effect_types"
+
+    const val FINANCIAL_EFFECT_INVALID_READ_YEAR = "financial.effect.invalid.read.year"
+
+    financial.effect.invalid.read.year=Некорректный год финансового эффекта: {0}
 
 ```
