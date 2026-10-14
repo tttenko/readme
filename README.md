@@ -2,15 +2,80 @@
 
 
 data class ShowcaseFinancialEffectResponse(
+
+    @field:Schema(
+        description = "Идентификатор карточки финансового эффекта",
+        type = "integer",
+        format = "int64",
+        example = "125"
+    )
     val id: Long,
+
+    @field:Schema(
+        description = "Технический код типа финансового эффекта",
+        type = "string",
+        maxLength = 60,
+        example = "GROUP_REVENUE_GROWTH"
+    )
     val typeCode: String,
+
+    @field:Schema(
+        description = "Наименование типа финансового эффекта",
+        type = "string",
+        maxLength = 255,
+        example = "Рост доходов Группы"
+    )
     val typeName: String,
+
+    @field:Schema(
+        description = "Единица измерения финансового эффекта",
+        type = "string",
+        example = "RUB"
+    )
     val unit: String,
+
+    @field:Schema(
+        description = "Направление достижения плана: true — больше лучше, false — меньше лучше",
+        type = "boolean",
+        example = "true"
+    )
     val moreIsBetter: Boolean,
+
+    @field:Schema(
+        description = "Плановое значение финансового эффекта",
+        type = "string",
+        example = "15000000"
+    )
     val plan: String,
+
+    @field:Schema(
+        description = "Фактическое значение финансового эффекта",
+        type = "string",
+        nullable = true,
+        example = "12500000"
+    )
     val fact: String?,
+
+    @field:Schema(
+        description = "Месяц и год достижения финансового эффекта",
+        type = "string",
+        pattern = "^\\d{4}-(0[1-9]|1[0-2])$",
+        example = "2026-12"
+    )
     val targetMonth: String,
+
+    @field:ArraySchema(
+        arraySchema = Schema(description = "Ссылки на согласование финансового эффекта"),
+        schema = Schema(type = "string", example = "https://example.com/approval")
+    )
     val approvalLinks: List<String>,
+
+    @field:Schema(
+        description = "Дата и время создания карточки финансового эффекта",
+        type = "string",
+        format = "date-time",
+        example = "2026-05-01T10:00:00Z"
+    )
     val createdAt: Instant
 )
 
