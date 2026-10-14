@@ -64,5 +64,8 @@ fun getAIAgentDetail(id: Long): AiAgentDetailResponse {
 
     financialEffects = financialEffects.map { it.toShowcaseFinancialEffectResponse() }
 
-
+@field:ArraySchema(
+        schema = Schema(implementation = ShowcaseFinancialEffectResponse::class)
+    )
+    val financialEffects: List<ShowcaseFinancialEffectResponse> = emptyList()
 ```
