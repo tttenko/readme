@@ -1,70 +1,73 @@
 ```java
 
-@ArraySchema(schema = Schema(implementation = InitiativeDeviationResponse::class))
-val deviations: List<InitiativeDeviationResponse> = emptyList()
 
+WITH initiative_deviations AS (
+    SELECT
+        agent.id,
+        agent.agent_id,
+        agent.agent_name,
+        status.code AS status_code,
 
-private val initiativeDeviationCalculator: InitiativeDeviationCalculatorService
+        -- Просрочен дедлайн этапа (priority = 1)
+        EXISTS (
+            SELECT 1
+            FROM agent_status_sla sla
+            JOIN status stage ON stage.id = sla.agent_status_id
+            WHERE sla.ai_agent_id = agent.id
+              AND sla.completed_date IS NULL
+              AND stage.disabled = false
+              AND stage.ordering >= status.ordering
+              AND sla.planned_date::date <
+                  (NOW() AT TIME ZONE 'Europe/Moscow')::date
+        ) AS deadline_expired,
 
-fun getAIAgentDetail(id: Long): AiAgentDetailResponse {
-    val aiAgent = aiAgentRepository.findByIdOrNull(id)
+        -- Не заполнены дедлайны этапов (priority = 3)
+        EXISTS (
+            SELECT 1
+            FROM status stage
+            LEFT JOIN agent_status_sla sla
+                ON sla.agent_status_id = stage.id
+                AND sla.ai_agent_id = agent.id
+            WHERE stage.disabled = false
+              AND stage.ordering >= status.ordering
+              AND (
+                  sla.ai_agent_id IS NULL
+                  OR (
+                      sla.completed_date IS NULL
+                      AND sla.planned_date IS NULL
+                  )
+              )
+        ) AS deadlines_not_filled,
 
-    if (aiAgent == null || aiAgent.disabled == true) {
-        throw AiResponseException(
-            status = HttpStatus.NOT_FOUND,
-            errorCode = AI_AGENT_NOT_FOUND,
-            message = MessageFormat.format(messageProvider[AI_AGENT_NOT_FOUND])
-        )
-    }
+        -- Не заполнены энейблеры (priority = 5)
+        NOT EXISTS (
+            SELECT 1
+            FROM agent_enabler enabler
+            WHERE enabler.agent_id = agent.id
+        ) AS enablers_not_filled
 
-    val userIds = aiAgent.agentContact.mapNotNull { it.userId }.toSet()
-
-    val usersMap = if (userIds.isNotEmpty()) {
-        try {
-            authFeignClient.getUsers(ids = userIds, null).body?.associateBy { it.id }
-        } catch (exception: Exception) {
-            log.info(messageProvider[USER_NOT_FOUND])
-            emptyMap()
-        }
-    } else {
-        emptyMap()
-    }
-
-    var jiraUrl = aiAgent.agentJiraUrl?.let { jiraUrl ->
-        when {
-            jiraUrl.startsWith("CROSSGOALD") -> jiraService.getJiraDeltaUrl().plus(jiraUrl)
-            jiraUrl.startsWith("CROSSGOAL") -> jiraService.getJiraSigmaUrl().plus(jiraUrl)
-            else -> jiraUrl
-        }
-    }
-
-    if (jiraUrl.isNullOrBlank()) {
-        val jiraIssue = jiraIssueRepository.findByAgentIdAndTypeAndProject(aiAgent.id, "initiative", "crossgoal")
-            .sortedBy { it.created }.firstOrNull()
-
-        jiraUrl = jiraIssue?.jiraUrl
-
-        if (jiraUrl.isNullOrBlank()) {
-            jiraUrl = jiraIssue?.jiraKey
-        }
-    }
-
-    val agentTypes = initiativeMetricTypeRepository.findAllByAiAgentId(aiAgent.id)
-        .mapNotNull { it.agentType }
-        .toSet()
-
-    val currentYear = LocalDate.now(ZoneId.of("Europe/Moscow")).year
-    val financialEffects = financialEffectRepository.findActiveByInitiativeIdAndYear(aiAgent.id, currentYear)
-
-    val deviations = initiativeDeviationCalculator.calculate(setOf(id))[id].orEmpty()
-
-    return aiAgent.toAiAgentDetailResponse(
-        userAccountDtoMap = usersMap,
-        jiraUrl = jiraUrl,
-        agentTypes = agentTypes,
-        financialEffects = financialEffects
-    ).copy(deviations = deviations)
-}
+    FROM ai_agent agent
+    LEFT JOIN status ON status.id = agent.agent_status_id
+    WHERE agent.disabled = false
+)
+SELECT
+    id,
+    agent_id,
+    agent_name,
+    status_code,
+    deadline_expired,
+    deadlines_not_filled,
+    enablers_not_filled
+FROM initiative_deviations
+WHERE deadline_expired
+   OR deadlines_not_filled
+   OR enablers_not_filled
+ORDER BY
+    (deadline_expired::int +
+     deadlines_not_filled::int +
+     enablers_not_filled::int) DESC,
+    id
+LIMIT 20;
 
 
 ```
