@@ -4,8 +4,8 @@
  * Проверяет реальный Excel-импорт в Embedded PostgreSQL (Zonky).
  * Мокается только внешний Feign-клиент тербанков; бизнес-сервисы реальные.
  *
- * ВАЖНО: @SpykBean для ProcessRepository используется для контролируемого
- * сбоя в самом конце бизнес-обработки. Метод до этого момента не подменяется.
+ * Поздняя ошибка проверяется временным PostgreSQL trigger в тестовой БД.
+ * Spring Data репозитории не подменяются mock/spy.
  */
 internal class ExcelImportIntegrationTest : AbstractIntegrationTest() {
 
@@ -19,9 +19,6 @@ internal class ExcelImportIntegrationTest : AbstractIntegrationTest() {
 
     @MockkBean(relaxed = true)
     private lateinit var internalTerBanksApiClient: InternalTerBanksApiClient
-
-    @SpykBean
-    private lateinit var processRepository: ProcessRepository
 
     private val createdUploadIds = mutableSetOf<Long>()
     private val asyncUploadIds = mutableSetOf<Long>()
@@ -71,6 +68,7 @@ internal class ExcelImportIntegrationTest : AbstractIntegrationTest() {
     fun cleanup() {
         // Нельзя TRUNCATE бизнес-таблицы, пока продолжается async worker.
         asyncUploadIds.forEach { waitUntilFinishedAndUnlocked(it) }
+        removeLateFailureTrigger()
 
         executeSqlScript("integration/sql/clearTables.sql")
 
@@ -213,58 +211,71 @@ internal class ExcelImportIntegrationTest : AbstractIntegrationTest() {
         }
     }
 
+    /**
+     * Ошибка на завершающем UPDATE file_upload.status=SUCCESS, когда все
+     * бизнес-изменения уже выполнены в этой же транзакции.
+     * PostgreSQL trigger создаётся только в embedded БД теста.
+     * Никаких production-миграций или дополнительных таблиц.
+     */
+    private fun installLateFailureTrigger() {
+        jdbcTemplate.execute(
+            """
+                CREATE OR REPLACE FUNCTION integration_fail_excel_import_success()
+                RETURNS trigger AS ${'$'}${'$'}
+                BEGIN
+                    RAISE EXCEPTION '$FORCED_ROLLBACK_MESSAGE';
+                END;
+                ${'$'}${'$'} LANGUAGE plpgsql
+            """.trimIndent()
+        )
+        jdbcTemplate.execute(
+            """
+                CREATE TRIGGER integration_fail_excel_import_success
+                BEFORE UPDATE OF status ON file_upload
+                FOR EACH ROW WHEN (lower(NEW.status::text) = 'success')
+                EXECUTE FUNCTION integration_fail_excel_import_success()
+            """.trimIndent()
+        )
+    }
+
+    private fun removeLateFailureTrigger() {
+        jdbcTemplate.execute("DROP TRIGGER IF EXISTS integration_fail_excel_import_success ON file_upload")
+        jdbcTemplate.execute("DROP FUNCTION IF EXISTS integration_fail_excel_import_success()")
+    }
+
     @Test
-    fun `should roll back all business tables when a late import stage fails`() {
+    fun `should roll back all business tables when final success update fails`() {
         val before = businessSnapshot()
         val agentCountBefore = aiAgentRepository.count()
-        val lateStageReached = AtomicBoolean(false)
-
-        // Метод вызывается ПОСЛЕ сохранения агентов, SLA, метрик и QualityGate.
-        // Ошибка в нём должна откатить также справочники и предшествующие пачки.
-        every { processRepository.refreshStatusesFromAgents() } answers {
-            lateStageReached.set(true)
-            val agentsVisibleInsideTransaction = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM ai_agent", Long::class.java
-            ) ?: 0L
-            assertTrue(
-                agentsVisibleInsideTransaction > agentCountBefore,
-                "Ошибка должна возникнуть ПОСЛЕ реальной записи агентов внутри транзакции"
-            )
-            throw IllegalStateException(FORCED_ROLLBACK_MESSAGE)
-        }
+        installLateFailureTrigger()
 
         val failed = waitUntilFinishedAndUnlocked(startImport())
-        assertTrue(lateStageReached.get(), "Тест не дошёл до позднего этапа импорта")
         assertEquals(FileUploadStatus.ERROR, failed.status)
         assertTrue(
             failed.errorDescription?.contains(FORCED_ROLLBACK_MESSAGE) == true,
-            "Ожидалась искусственная ошибка, получено: ${failed.errorDescription}"
+            "Ошибка должна быть от тестового PostgreSQL trigger: ${failed.errorDescription}"
         )
         assertEquals(before, businessSnapshot(), "После ERROR остались частично применённые данные")
+        assertEquals(agentCountBefore, aiAgentRepository.count())
         assertTrue(isUploadAllowed(), "После rollback не освободилась блокировка")
     }
 
     @Test
-    fun `should roll back updates to existing agents when late stage fails`() {
+    fun `should roll back updates to existing agents when final success update fails`() {
         val initial = waitUntilFinishedAndUnlocked(startImport())
         assertEquals(FileUploadStatus.SUCCESS, initial.status, initial.errorDescription)
         val before = businessSnapshot()
         val (modifiedFile, changedAgentId, changedName) = xlsxWithChangedAgentName()
-        val changeWasVisibleBeforeRollback = AtomicBoolean(false)
-
-        every { processRepository.refreshStatusesFromAgents() } answers {
-            val nameInsideTransaction = jdbcTemplate.queryForObject(
-                "SELECT agent_name FROM ai_agent WHERE agent_id = ? ORDER BY disabled ASC, id DESC LIMIT 1",
-                String::class.java, changedAgentId
-            )
-            changeWasVisibleBeforeRollback.set(nameInsideTransaction == changedName)
-            throw IllegalStateException(FORCED_ROLLBACK_MESSAGE)
-        }
+        installLateFailureTrigger()
 
         val failed = waitUntilFinishedAndUnlocked(startImport(modifiedFile))
         assertEquals(FileUploadStatus.ERROR, failed.status)
-        assertTrue(changeWasVisibleBeforeRollback.get(), "Обновление агента не дошло до БД")
+        assertTrue(
+            failed.errorDescription?.contains(FORCED_ROLLBACK_MESSAGE) == true,
+            "Ошибка должна быть от тестового PostgreSQL trigger: ${failed.errorDescription}"
+        )
         assertEquals(before, businessSnapshot(), "Изменения существующих данных не откатились")
+        assertNotEquals(changedName, aiAgentRepository.findFirstByAgentId(changedAgentId)?.agentName)
     }
 
     @Test
@@ -340,5 +351,6 @@ internal class ExcelImportIntegrationTest : AbstractIntegrationTest() {
         assertTrue(isUploadAllowed(), "GLOBAL не освободился после release")
     }
 }
+
 
 ```
