@@ -1,1528 +1,1352 @@
 ```java
+interface AppliedMetricRepository: JpaRepository<AppliedMetricsEntity, Long> {
 
-@Suppress("UNUSED_EXPRESSION")
+    @Modifying
+    @Query("DELETE FROM AppliedMetricsEntity a WHERE a.aiAgent.id = :aiAgentId")
+    fun deleteAllByAiAgentId(@Param("aiAgentId") aiAgentId: Long)
+
+    /**
+     * Метрики загружаются пачкой, а импорт меняет только изменённые строки.
+     * Неизменённые записи сохраняют id, created и updated.
+     */
+    fun findAllByAiAgentId(aiAgentId: Long): List<AppliedMetricsEntity>
+
+    @EntityGraph(attributePaths = ["metric"])
+    fun findAllByAiAgentIdIn(aiAgentIds: Collection<Long>): List<AppliedMetricsEntity>
+
+}
+
+interface AgentContactRepository : JpaRepository<AgentContactEntity, Long> {
+
+    /** Оставлено для сторонних текущих потребителей; импорт больше не вызывает. */
+    @Transactional
+    @Modifying
+    @Query(
+        value = """
+            delete from agent_contact ac
+            using ai_agent a
+            where ac.agent_id = a.id
+              and a.agent_id not like '%PULT%'
+              and a.import_status is distinct from 'blocked'
+        """,
+        nativeQuery = true
+    )
+    fun deleteAllForImportedNonBlockedAgents(): Int
+
+    /** Удаляются только связи агентов, которых импорт НЕ обработал. */
+    @Modifying
+    @Query(value = "DELETE FROM agent_contact WHERE agent_id IN (:ids)", nativeQuery = true)
+    fun deleteForAgentIds(@Param("ids") agentIds: Collection<Long>): Int
+}
+
 @Service
-class AgentSheetService(
-    private val aIAgentRepository: AIAgentRepository,
-    private val agentStatusSlaRepository: AgentStatusSlaRepository,
-    private val appliedMetricRepository: AppliedMetricRepository,
-    private val contactRepository: ContactRepository,
+class DictAndProcessService(
+    private val blockRepository: BlockRepository,
+    private val platformRepository: PlatformRepository,
+    private val programRepository: ProgramRepository,
     private val processRepository: ProcessRepository,
-    private val fileUploadRepository: FileUploadRepository,
-    private val aiAgentQualityGateService: AiAgentQualityGateService,
-    private val dateTimeProvider: DateTimeProvider,
-    private val messageProvider: MessageProvider,
-    private val transactionTemplate: TransactionTemplate,
-    private val agentContactRepository: AgentContactRepository,
-    private val entityManager: EntityManager,
-    private val dictionariesProvider: AgentImportDictionariesProvider,
+    private val messageProvider: MessageProvider
 ) {
     private val log by logger()
-    private val emailRegex = Regex("^[a-zA-Z0-9._%+-]+@(sberbank\\.ru|sber\\.ru)$")
 
-
-    private companion object {
-        const val AGENT_BATCH_SIZE = 100
-        const val BULK_BATCH_SIZE = 500
-    }
-
+    /** Применение только во внешней бизнес-транзакции. */
     @Transactional(propagation = Propagation.MANDATORY)
-    fun processAgentSheet(
-        context: DictAndProcessContext,
-        agentSheet: PreparedSheet,
-        userId: Long
-    ) {
-        log.info("Agent import started. fileUploadId=${context.fileUploadId}")
+    fun applyPreparedDictionaries(
+        workbook: PreparedExcelWorkbook,
+        fileUploadId: Long,
+        userId: Long,
+        terBanksRefs: MutableList<TerBank>?
+    ): DictAndProcessContext = doUpdateDictionaries(workbook, fileUploadId, userId, terBanksRefs)
 
-        val operationDetails = "Request 'process Agent page' with user=$userId "
+    private fun doUpdateDictionaries(
+        workbook: PreparedExcelWorkbook,
+        fileUploadId: Long,
+        userId: Long,
+        terBanksRefs: MutableList<TerBank>?
+    ): DictAndProcessContext {
+        val operationDetails = "Request 'process DICT and PROCESSES pages' with user=$userId "
+        log.logBefore(operationDetails)
 
-        transactionTemplate.execute { status ->
-            try {
-                log.logBefore(operationDetails)
+        val availablePlatforms = platformRepository.findAll().toMutableList()
+        val availablePrograms = programRepository.findAll().toMutableList()
+        val availableProcesses = processRepository.findAll().toMutableList()
 
-                /*
-                 * Provider строит immutable snapshot справочников один раз на весь импорт.
-                 * После этого persistence context очищается, а внутри batch используются
-                 * только id/scalar snapshot и managed references текущей пачки.
-                 */
-                val dictionaries = dictionariesProvider.load()
-                entityManager.clear()
-
-                val sheetStructure = getSheetStructure(agentSheet)
-                val agentsInFile = mutableSetOf<String>()
-                val savedAgentIds = mutableListOf<Long>()
-                val blockedAgents = mutableListOf<BlockedAgent>()
-
-                val duration = measureTimeMillis {
-                    agentSheet.readRows { rowIterator ->
-                        val batch = ArrayList<PreparedRow>(AGENT_BATCH_SIZE)
-                        var currentRowIndex = 0
-
-                        while (rowIterator.hasNext()) {
-                            val row = rowIterator.next()
-                            currentRowIndex++
-
-                            if (currentRowIndex <= DATA_START_ROW_INDEX) {
-                                continue
-                            }
-
-                            batch.add(row)
-
-                            if (batch.size == AGENT_BATCH_SIZE) {
-                                savedAgentIds += processBatch(
-                                    rows = batch,
-                                    sheetStructure = sheetStructure,
-                                    dictionaries = dictionaries,
-                                    context = context,
-                                    agentsInFile = agentsInFile,
-                                    blockedAgents = blockedAgents,
-                                    userId = userId
-                                )
-
-                                entityManager.flush()
-                                entityManager.clear()
-                                batch.clear()
-                            }
-                        }
-
-                        if (batch.isNotEmpty()) {
-                            savedAgentIds += processBatch(
-                                rows = batch,
-                                sheetStructure = sheetStructure,
-                                dictionaries = dictionaries,
-                                context = context,
-                                agentsInFile = agentsInFile,
-                                blockedAgents = blockedAgents,
-                                userId = userId
-                            )
-                            entityManager.flush()
-                            entityManager.clear()
-                            batch.clear()
-                        }
-                    } // освобождаем дескриптор подготовленного листа
-
-                    val qualityGateDuration = measureTimeMillis {
-                        savedAgentIds.chunked(BULK_BATCH_SIZE).forEach { ids ->
-                            aiAgentQualityGateService.createOrUpdateByAgent(ids)
-                            aiAgentQualityGateService.removeIrrelevant(ids)
-                        }
-                    }
-                    log.debug("Operation QualityGateRefresh took $qualityGateDuration ms")
-                }
-
-                log.debug("Operation update entity took $duration ms")
-
-                if (agentsInFile.isEmpty()) {
-                    throw AiFileUploadException(
-                        errorCode = AI_UPLOAD_EMPTY_FILE,
-                        message = MessageFormat.format(messageProvider[AI_UPLOAD_EMPTY_FILE]),
-                        fileId = context.fileUploadId
-                    )
-                }
-
-                // Сохраняем старое глобальное правило удаления контактов отсутствующих,
-                // дублей и других не-PULT/не-blocked агентов, но не удаляем
-                // контакты обработанных агентов ради последующего пересоздания.
-                clearContactsForUnprocessedAgents(savedAgentIds.toSet())
-                disableDeletedAgents(agentsInFile)
-
-                /*
-                 * Не загружаем process.agents целиком.
-                 */
-                updateProcessStatus()
-
-                /*
-                 * После последнего clear() заново получаем только одну FileUploadEntity.
-                 * Это гарантирует, что она managed и изменения blockedAgents/status
-                 * попадут в текущую транзакцию.
-                 */
-                val fileUploadEntity = fileUploadRepository.findById(context.fileUploadId)
-                    .orElseThrow {
-                        IllegalStateException("FileUploadEntity not found: ${context.fileUploadId}")
-                    }
-
-                fileUploadEntity.blockedAgents = blockedAgents
-                fileUploadEntity.status = SUCCESS
-                fileUploadEntity.errorDescription = null
-                fileUploadEntity.updatedBy = userId
-                fileUploadEntity.uploaded = LocalDateTime.now()
-                // @PreUpdate установит updated при flush в общей транзакции.
-                fileUploadRepository.save(fileUploadEntity)
-
-                entityManager.flush()
-                log.logSuccess(operationDetails)
-            } catch (exception: Exception) {
-                status.setRollbackOnly()
-                throw exception
-            }
-        }
-    }
-
-
-    private fun selectActualAgent(agents: List<AIAgentEntity>): AIAgentEntity {
-        return agents.sortedWith(
-            compareBy<AIAgentEntity> { it.disabled == true }
-                .thenByDescending { it.updated ?: it.created ?: LocalDateTime.MIN }
-                .thenByDescending { it.id ?: 0L }
-        ).first()
-    }
-
-
-    private fun processBatch(
-        rows: List<PreparedRow>,
-        sheetStructure: SheetStructure,
-        dictionaries: AgentImportDictionaries,
-        context: DictAndProcessContext,
-        agentsInFile: MutableSet<String>,
-        blockedAgents: MutableList<BlockedAgent>,
-        userId: Long
-    ): List<Long> {
-
-        log.info(
-            "Processing agent import batch: size={}, firstRow={}, lastRow={}",
-            rows.size, rows.firstOrNull()?.rowNum, rows.lastOrNull()?.rowNum
+        val readDictData = readDictData(workbook)
+        val divisionsDict = readDictData.divisions
+        val platformsDict = readDictData.platforms
+        val blocksDict = readDictData.blocks
+        val programsDict = readDictData.programms
+        val processData = readProcessData(
+            workbook = workbook,
+            blockCodes = blocksDict.map { it.code }.toList(),
+            programCodes = programsDict.map { it.code }.toList()
         )
 
-        val batchAgentIds = rows.mapNotNull { row ->
-            sheetStructure.headers[AGENT_ID]
-                ?.takeIf { it >= 0 }
-                ?.let { index -> row.getCell(index)?.let(::getValueOrNull) }
-                ?.takeIf { it.isNotBlank() }
-        }.toSet()
-
-        val existingAgents = if (batchAgentIds.isEmpty()) {
-            emptyList()
-        } else {
-            aIAgentRepository.findAllByAgentIdIn(batchAgentIds)
-        }
-
-        val groupedAgentsByAgentId = existingAgents
-            .filter { !it.agentId.isNullOrBlank() }
-            .groupBy { it.agentId!! }
-
-        val actualAgentsByAgentId = groupedAgentsByAgentId
-            .mapValues { (_, agents) -> selectActualAgent(agents) }
-            .toMutableMap()
-
-        val duplicatedAgentsToDisable = groupedAgentsByAgentId
-            .flatMap { (_, agents) ->
-                val actualAgent = selectActualAgent(agents)
-                agents.filter { it.id != actualAgent.id && it.disabled != true }
-            }
-
-        if (duplicatedAgentsToDisable.isNotEmpty()) {
-            val now = LocalDateTime.now()
-            duplicatedAgentsToDisable.forEach { duplicate ->
-                duplicate.disabled = true
-                duplicate.updated = now
-            }
-        }
-
-        val actualAgentIds = actualAgentsByAgentId.values.mapNotNull { it.id }
-
-        val slasByAgentId: MutableMap<Long, MutableList<AgentStatusSlaEntity>> =
-            if (actualAgentIds.isEmpty()) {
-                mutableMapOf()
-            } else {
-                agentStatusSlaRepository.findAllByAiAgentIdIn(actualAgentIds)
-                    .filter { it.aiAgent?.id != null }
-                    .groupBy { it.aiAgent!!.id!! }
-                    .mapValues { (_, slas) -> slas.toMutableList() }
-                    .toMutableMap()
-            }
-
-        val contactsByEmail = loadContactsForBatch(
-            rows = rows,
-            headers = sheetStructure.headers
+        updatePlatformDict(platformsDict, availablePlatforms)
+        updatePrograms(programsDict, availablePrograms)
+        val actualBlocks = blockRepository.findAll().toMutableList()
+        updateProcesses(
+            processDict = processData.first,
+            availableProcesses = availableProcesses,
+            availablePrograms = availablePrograms,
+            availableBlocks = actualBlocks
         )
 
-        // Два fetch-запроса гарантируют, что managed inverse-коллекции Hibernate
-        // инициализированы ДО обхода каждой строки. Никакого N+1 в iterator().
-        if (actualAgentIds.isNotEmpty()) {
-            aIAgentRepository.fetchPlatformsForExcelImport(actualAgentIds)
-            aIAgentRepository.fetchResourcesForExcelImport(actualAgentIds)
-            aIAgentRepository.fetchContactsForExcelImport(actualAgentIds)
-        }
-        val existingPlatformsByAgentId = actualAgentsByAgentId.values
-            .associate { current ->
-                current.id to current.platforms
-                    .mapNotNull { platform ->
-                        platform.primaryKey.platformId?.let { it to platform }
-                    }.toMap()
-            }
-        val existingResourcesByAgentId = actualAgentsByAgentId.values
-            .associate { current -> current.id to current.involvedResource.toList() }
-
-        val existingMetricsByAgentId: Map<Long, List<AppliedMetricsEntity>> =
-            if (actualAgentIds.isEmpty()) emptyMap()
-            else appliedMetricRepository.findAllByAiAgentIdIn(actualAgentIds)
-                .groupBy { it.aiAgent!!.id }
-
-        val savedIds = ArrayList<Long>(rows.size)
-
-        rows.forEach { row ->
-            val oneEntityDuration = measureTimeMillis {
-                processSingleRow(
-                    row = row,
-                    headers = sheetStructure.headers,
-                    headerRow = sheetStructure.headerRow,
-                    agentsInFile = agentsInFile,
-                    dictionaries = dictionaries,
-                    agentsByAgentId = actualAgentsByAgentId,
-                    slasByAgentId = slasByAgentId,
-                    contactsByEmail = contactsByEmail,
-                    existingPlatformsByAgentId = existingPlatformsByAgentId,
-                    existingResourcesByAgentId = existingResourcesByAgentId,
-                    existingMetricsByAgentId = existingMetricsByAgentId,
-                    context = context,
-                    fileId = context.fileUploadId,
-                    blockedAgents = blockedAgents,
-                    platformsStartIndex = sheetStructure.platformsStartIndex,
-                    platformsEndIndex = sheetStructure.platformsEndIndex,
-                    metricsStartIndex = sheetStructure.metricsStartIndex,
-                    metricsEndIndex = sheetStructure.metricsEndIndex,
-                    resourcesStartIndex = sheetStructure.resourcesStartIndex,
-                    userId = userId
-                )?.let(savedIds::add)
-            }
-            log.debug("Operation update one entity took $oneEntityDuration ms")
-        }
-
-        log.info("Agent import batch completed: size={}, saved={}", rows.size, savedIds.size)
-
-        return savedIds
+        return DictAndProcessContext(
+            divisionsDict = divisionsDict,
+            blocksDict = blocksDict,
+            fileUploadId = fileUploadId, // Используем переданный fileUploadId
+            processData = processData,
+            terBanksRefs = terBanksRefs,
+        ).also { log.logSuccess(operationDetails) }
     }
 
-    private fun loadContactsForBatch(
-        rows: List<PreparedRow>,
-        headers: Map<String, Int>
-    ): MutableMap<String, ContactEntity> {
-        val emails = rows.asSequence()
-            .flatMap { row ->
-                sequenceOf(CUSTOMER_CONTACT, DEVELOPER_CONTACT)
-                    .mapNotNull { header ->
-                        headers[header]
-                            ?.let { row.getCell(it) }
-                            ?.let(::getValueOrNull)
-                            ?.let(::extractContactEmail)
-                    }
-            }
-            .toSet()
+    private fun readDictData(workbook: PreparedExcelWorkbook): DictData {
+        val divisions = mutableListOf<DivisionsDto>()
+        val platforms = mutableListOf<PlatformsDto>()
+        val blocks = mutableListOf<BlocksDto>()
+        val programms = mutableListOf<ProgramDto>()
 
-        if (emails.isEmpty()) {
-            return mutableMapOf()
-        }
-
-        return contactRepository.findAllByEmailIn(emails)
-            .filter { !it.email.isNullOrBlank() }
-            .associateByTo(mutableMapOf()) { it.email!! }
-    }
-
-    private fun extractContactEmail(contact: String): String? {
-        if (contact == "0") return null
-
-        val email = contact.split(',', ';').getOrNull(1) ?: return null
-        if (!email.contains("@")) return null
-
-        val pureEmail = email.removeSurrounding("<", ">").trim()
-        return pureEmail.takeIf(emailRegex::matches)
-    }
-
-
-    private fun <T : Any> managedReference(type: Class<T>, id: Any): T =
-        entityManager.getReference(type, id)
-
-    private fun normalizeKey(value: String): String = value.trim().lowercase()
-
-
-    private fun getSheetStructure(sheet: PreparedSheet): SheetStructure {
+        val sheet = workbook.getSheet(DICT)
         return sheet.readRows { iterator ->
+            val columnHeaders = mutableMapOf<Int, String?>()
             var currentRowIndex = 0
-            var headers = emptyMap<String, Int>()
-            var platformsStartIndex = -1
-            var platformsEndIndex = -1
-            var metricsStartIndex = -1
-            var metricsEndIndex = -1
-            var resourcesStartIndex = -1
-            var headerRow: PreparedRow? = null
 
+            // Собираем заголовки
+            while (iterator.hasNext()) {
+                val row = iterator.next()
+                if (currentRowIndex == DICT_HEADER_ROW_INDEX) {
+                    for (cell in row) {
+                        columnHeaders[cell.columnIndex] = cell.stringCellValue?.trim()
+                    }
+                    break
+                }
+                currentRowIndex++
+            }
+
+            // Ищем колонки в пределах заданных секций
+            val tribeLabelCol = findColumnInRange(columnHeaders, DIVISIONS_SECTION_START..DIVISIONS_SECTION_END, DICT_LABEL_SUBHEADER)
+            val tribeShortNameCol = findColumnInRange(columnHeaders, DIVISIONS_SECTION_START..DIVISIONS_SECTION_END, DICT_SHORT_NAME_SUBHEADER)
+            val tribeCodeCol = findColumnInRange(columnHeaders, DIVISIONS_SECTION_START..DIVISIONS_SECTION_END, DICT_CODE_SUBHEADER)
+            val tribeBlockCol = findColumnInRange(columnHeaders, DIVISIONS_SECTION_START..DIVISIONS_SECTION_END, DICT_BLOCK_SUBHEADER)
+            val tribeNameCol = findColumnInRange(columnHeaders, DIVISIONS_SECTION_START..DIVISIONS_SECTION_END, DICT_NAME_SUBHEADER)
+
+            val surfaceNameCol = findColumnInRange(columnHeaders, PLATFORMS_SECTION_START..PLATFORMS_SECTION_END, DICT_NAME_SUBHEADER)
+            val surfaceCodeCol = findColumnInRange(columnHeaders, PLATFORMS_SECTION_START..PLATFORMS_SECTION_END, DICT_CODE_SUBHEADER)
+
+            val blockCodeCol = findColumnInRange(columnHeaders, BLOCKS_SECTION_START..BLOCKS_SECTION_END, DICT_CODE_SUBHEADER)
+            val blockNameCol = findColumnInRange(columnHeaders, BLOCKS_SECTION_START..BLOCKS_SECTION_END, DICT_NAME_SUBHEADER)
+            val blockCuratorNameCol = findColumnInRange(columnHeaders, BLOCKS_SECTION_START..BLOCKS_SECTION_END, DICT_CURATOR_NAME_SUBHEADER)
+            val blockShortNameCol = findColumnInRange(columnHeaders, BLOCKS_SECTION_START..BLOCKS_SECTION_END, DICT_SHORTNAME_BLOCKS_SUBHEADER)
+
+            val programCodeCol = findColumnInRange(columnHeaders, PROGRAMS_SECTION_START..PROGRAMS_SECTION_END, DICT_CODE_SUBHEADER)
+            val programFileNameCol = findColumnInRange(columnHeaders, PROGRAMS_SECTION_START..PROGRAMS_SECTION_END, DICT_FILENAME_PROGRAM_SUBHEADER)
+            val programNameCol = findColumnInRange(columnHeaders, PROGRAMS_SECTION_START..PROGRAMS_SECTION_END, DICT_NAME_SUBHEADER)
+
+            // Проверяем найденные колонки
+            val missingColumns = checkRequiredColumns(
+                tribeLabelCol, tribeShortNameCol, tribeCodeCol, tribeBlockCol, tribeNameCol,
+                surfaceNameCol, surfaceCodeCol,
+                blockShortNameCol, blockNameCol, blockCodeCol, blockCuratorNameCol,
+                programCodeCol, programFileNameCol, programNameCol
+            )
+
+            if (missingColumns.isNotEmpty()) {
+                throw AiResponseException(
+                    status = HttpStatus.BAD_REQUEST,
+                    errorCode = AI_UPLOAD_EMPTY_DICT_FILE,
+                    message = "Missing columns in DICT file: ${missingColumns.joinToString()}"
+                )
+            }
+
+            // Обрабатываем данные
             while (iterator.hasNext()) {
                 val row = iterator.next()
                 currentRowIndex++
 
-                when (currentRowIndex) {
-                    1 -> {
-                        for (cell in row) {
-                            when (cell.stringCellValue) {
-                                FRONTAL_CELL_INDEX -> platformsStartIndex = cell.columnIndex
-                                RESOURCES_CELL_INDEX -> resourcesStartIndex = cell.columnIndex
-                                METRICS_CELL_INDEX -> metricsStartIndex = cell.columnIndex
-                            }
-                        }
-                        if (platformsStartIndex != -1 && resourcesStartIndex != -1) {
-                            platformsEndIndex = resourcesStartIndex - 1
-                        }
-                        if (metricsStartIndex != -1 && platformsStartIndex != -1) {
-                            metricsEndIndex = platformsStartIndex - 1
-                        }
-                    }
-
-                    2 -> {
-                        headerRow = row
-                        headers = row.associate { cell ->
-                            cell.stringCellValue to cell.columnIndex
-                        }
-                        break
-                    }
-                }
-            }
-
-            SheetStructure(
-                headers = headers,
-                headerRow = headerRow,
-                platformsStartIndex = platformsStartIndex,
-                platformsEndIndex = platformsEndIndex,
-                metricsStartIndex = metricsStartIndex,
-                metricsEndIndex = metricsEndIndex,
-                resourcesStartIndex = resourcesStartIndex
-            )
-        }
-    }
-
-    private data class SheetStructure(
-        val headers: Map<String, Int>,
-        val headerRow: PreparedRow?,
-        val platformsStartIndex: Int,
-        val platformsEndIndex: Int,
-        val metricsStartIndex: Int,
-        val metricsEndIndex: Int,
-        val resourcesStartIndex: Int
-    )
-
-    private fun processSingleRow(
-        row: PreparedRow,
-        headers: Map<String, Int>,
-        headerRow: PreparedRow?,
-        agentsInFile: MutableSet<String>,
-        dictionaries: AgentImportDictionaries,
-        agentsByAgentId: MutableMap<String, AIAgentEntity>,
-        slasByAgentId: MutableMap<Long, MutableList<AgentStatusSlaEntity>>,
-        contactsByEmail: MutableMap<String, ContactEntity>,
-        existingPlatformsByAgentId: Map<Long, Map<Long, ImplementedPlatformEntity>>,
-        existingResourcesByAgentId: Map<Long, List<InvolvedResourceEntity>>,
-        existingMetricsByAgentId: Map<Long, List<AppliedMetricsEntity>>,
-        context: DictAndProcessContext,
-        fileId: Long,
-        blockedAgents: MutableList<BlockedAgent>,
-        platformsStartIndex: Int,
-        platformsEndIndex: Int,
-        metricsStartIndex: Int,
-        metricsEndIndex: Int,
-        resourcesStartIndex: Int,
-        userId: Long
-    ): Long? {
-        val agentId = headers[AGENT_ID]?.takeIf { it >= 0 }?.let { index ->
-            row.getCell(index)?.let(::getValueOrNull)
-        }
-
-        if (agentId.isNullOrBlank()) return null
-
-        checkDoublesAndAdd(agentId, agentsInFile, fileId = fileId)
-
-        var newEntity = false
-
-        var entity = agentsByAgentId[agentId]?.also { existing ->
-            if (existing.importStatus == "blocked") {
-                blockedAgents.add(
-                    BlockedAgent(agentId = existing.id.toString(), agentName = existing.agentName ?: "")
-                )
-                return null
-            }
-
-            existing.agentStatus = updateAgentStatus(
-                headers = headers,
-                row = row,
-                dictionaries = dictionaries,
-                fileId = fileId
-            )
-            existing.updated = LocalDateTime.now()
-        } ?: AIAgentEntity().also { created ->
-            created.agentId = agentId
-            created.agentStatus = updateAgentStatus(
-                headers = headers,
-                row = row,
-                dictionaries = dictionaries,
-                fileId = fileId
-            )
-            newEntity = true
-        }
-
-        updateAgentDivisionOrBlock(
-            entity = entity,
-            headers = headers,
-            row = row,
-            divisionsDict = context.divisionsDict,
-            dictionaries = dictionaries,
-            fileId = fileId
-        )
-
-        val entityUpdateDuration = measureTimeMillis {
-            updateBaseEntityFields(
-                entity = entity,
-                headers = headers,
-                row = row,
-                dictionaries = dictionaries,
-                processesMappingDtos = context.processData.second,
-                contactsByEmail = contactsByEmail,
-                fileId = fileId,
-                userId = userId
-            )
-        }
-        log.debug("Operation entity fields update took $entityUpdateDuration ms")
-
-        if (newEntity) {
-            entity = aIAgentRepository.save(entity)
-        }
-
-        agentsByAgentId[agentId] = entity
-
-        // Этап 2: точечный diff вместо DELETE-all + INSERT (см. updateAppliedMetric).
-        updateAppliedMetric(
-            row = row,
-            metricsStartIndex = metricsStartIndex,
-            metricsEndIndex = metricsEndIndex,
-            headerRow = headerRow,
-            dictionaries = dictionaries,
-            entity = entity,
-            fileId = fileId,
-            existingMetrics = existingMetricsByAgentId[entity.id].orEmpty()
-        )
-
-        val agentSlas = slasByAgentId.getOrPut(entity.id!!) { mutableListOf() }
-
-        val pocMvpTargetDecisionMetricDuration = measureTimeMillis {
-            updateImplementationStatusesOfAgent(
-                agent = entity,
-                headers = headers,
-                row = row,
-                dictionaries = dictionaries,
-                headerTypes = listOf(POC, MVP, TARGET_DECISION, CONFIRM_EFFECT),
-                agentSlas = agentSlas
-            )
-        }
-        log.debug("Operation pocMvpTargetDecision took $pocMvpTargetDecisionMetricDuration ms")
-
-        updateInvolvedResource(
-            row = row,
-            headerRow = headerRow,
-            resourcesStartIndex = resourcesStartIndex,
-            dictionaries = dictionaries,
-            entity = entity,
-            fileId = fileId,
-            existingResources = existingResourcesByAgentId[entity.id]
-        )
-
-        updateAgentStatusSla(
-            row = row,
-            dictionaries = dictionaries,
-            entity = entity,
-            headers = headers,
-            agentStatusesSla = agentSlas
-        )
-
-        if (context.terBanksRefs != null) {
-            updateTerBanks(
-                row = row,
-                headers = headers,
-                entity = entity,
-                terBanksRefs = context.terBanksRefs,
-                fileId = fileId
-            )
-        }
-
-        updateImplementedPlatform(
-            platformsStartIndex = platformsStartIndex,
-            platformsEndIndex = platformsEndIndex,
-            headerRow = headerRow,
-            row = row,
-            entity = entity,
-            dictionaries = dictionaries,
-            existingByPlatformId = existingPlatformsByAgentId[entity.id]
-        )
-
-        return entity.id
-    }
-
-    private fun updateAgentDivisionOrBlock(
-        entity: AIAgentEntity,
-        headers: Map<String, Int>,
-        row: PreparedRow,
-        divisionsDict: List<DivisionsDto>,
-        dictionaries: AgentImportDictionaries,
-        fileId: Long
-    ) {
-        val divisionCellValue = headers[DIVISION]?.let { headerIndex ->
-            getValueOrNull(row.getCell(headerIndex))
-                ?.takeUnless(String::isBlank)
-        }
-
-        if (divisionCellValue == null) {
-            val blockCellValue = headers[BLOCK]?.let { headerIndex ->
-                getValueOrNull(row.getCell(headerIndex))
-                    ?.takeUnless(String::isBlank)
-            }
-
-            val blockRef = blockCellValue
-                ?.let(::normalizeKey)
-                ?.let(dictionaries.blocksByShortName::get)
-
-            if (blockRef == null) {
-                throw AiFileUploadException(
-                    AI_UPLOAD_EMPTY_TRIBE_NAME,
-                    messageProvider[AI_UPLOAD_EMPTY_TRIBE_NAME, blockCellValue, row.rowNum.plus(1)],
-                    fileId = fileId
-                )
-            }
-
-            entity.division = null
-            entity.block = managedReference(BlockEntity::class.java, blockRef.id)
-            return
-        }
-
-        val divisionRef = divisionsDict
-            .firstOrNull { it.shortName.equals(divisionCellValue.trim(), ignoreCase = true) }
-            ?.code
-            ?.let(::normalizeKey)
-            ?.let(dictionaries.divisionsByCode::get)
-
-        if (divisionRef == null) {
-            throw AiFileUploadException(
-                AI_UPLOAD_EMPTY_TRIBE_NAME,
-                messageProvider[AI_UPLOAD_EMPTY_TRIBE_NAME, row.rowNum.plus(1)],
-                fileId = fileId
-            )
-        }
-
-        entity.division = managedReference(DivisionEntity::class.java, divisionRef.id)
-        entity.block = divisionRef.blockId?.let { blockId ->
-            managedReference(BlockEntity::class.java, blockId)
-        }
-    }
-
-    private fun updateProcessStatus() {
-        processRepository.refreshStatusesFromAgents()
-    }
-
-    private fun updateAgentStatus(
-        headers: Map<String, Int>,
-        row: PreparedRow,
-        dictionaries: AgentImportDictionaries,
-        fileId: Long
-    ): StatusEntity? {
-        return headers[AGENT_STATUS]
-            ?.let(row::getCell)
-            ?.let { statusCell ->
-                val statusValue = getValueOrNullFromFormula(statusCell)
-                val statusRef = statusValue
-                    ?.let(::normalizeKey)
-                    ?.let(dictionaries.statusesByName::get)
-                    ?: throw createException(
-                        exceptionType = AI_UPLOAD_UNKNOWN_AGENT_STATUS,
+                if (currentRowIndex >= DICT_DATA_START_ROW_INDEX) {
+                    processDictRow(
                         row = row,
-                        cell = statusCell,
-                        fileId = fileId
-                    )
-
-                managedReference(StatusEntity::class.java, statusRef.id)
-            }
-    }
-
-    private fun updateBaseEntityFields(
-        entity: AIAgentEntity,
-        headers: Map<String, Int>,
-        row: PreparedRow,
-        dictionaries: AgentImportDictionaries,
-        processesMappingDtos: List<ProcessesMappingDto>,
-        contactsByEmail: MutableMap<String, ContactEntity>,
-        fileId: Long,
-        userId: Long
-    ) {
-        entity.also { currentEntity ->
-            currentEntity.processes =
-                headers[PROCESS_CODE]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let { cell ->
-                        mapProcesses(
-                            processesMappingDtos = processesMappingDtos,
-                            processCodesFromCell = getProcessCodesFromCell(cell),
-                            dictionaries = dictionaries,
-                            rowNum = cell.rowIndex,
-                            fileId = fileId
-                        )
-                    }
-                } ?: mutableSetOf()
-
-            currentEntity.program = headers[PROGRAM]?.let { columnIndex ->
-                getValueOrNull(row.getCell(columnIndex))?.let { programFileName ->
-                    val programRef = dictionaries.programsByFileName[normalizeKey(programFileName)]
-                        ?: throw AiFileUploadException(
-                            AI_UPLOAD_UNKNOWN_PROGRAM,
-                            MessageFormat.format(
-                                messageProvider[AI_UPLOAD_UNKNOWN_PROGRAM],
-                                programFileName,
-                                row.rowNum.plus(1)
-                            ),
-                            fileId = fileId
-                        )
-
-                    managedReference(ProgramEntity::class.java, programRef.id)
-                }
-            }
-
-            currentEntity.agentName = headers[AGENT_NAME]?.let { columnIndex ->
-                row.getCell(columnIndex)?.let(::getValueOrNull)
-                    ?: throw AiFileUploadException(
-                        AI_UPLOAD_AGENT_NAME_EMPTY,
-                        MessageFormat.format(
-                            messageProvider[AI_UPLOAD_AGENT_NAME_EMPTY],
-                            row.rowNum.plus(1)
-                        ),
-                        fileId = fileId
-                    )
-            }
-
-            currentEntity.agentDescription =
-                headers[AGENT_DESCRIPTION]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let(::getValueOrNull)?.take(2000)
-                }
-
-            currentEntity.agentProblem =
-                headers[AGENT_PROBLEM]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let(::getValueOrNull)?.take(1000)
-                }
-
-            currentEntity.agentSolution =
-                headers[AGENT_SOLUTION]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let(::getValueOrNull)?.take(1000)
-                }
-
-            currentEntity.agentJiraUrl =
-                headers[AGENT_JIRA_URL]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let(::getValueOrNull)
-                }
-
-            currentEntity.initiativeType =
-                headers[AGENT_INITIATIVE_TYPE]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let(::getValueOrNull)
-                }?.let { fieldValue ->
-                    val code = if (fieldValue.lowercase().contains("агент")) {
-                        "agent"
-                    } else {
-                        "genAiSolution"
-                    }
-
-                    dictionaries.initiativeTypesByCode[code]?.let { ref ->
-                        managedReference(InitiativeTypeEntity::class.java, ref.id)
-                    }
-                }
-
-            val customerContact = headers[CUSTOMER_CONTACT]?.let { columnIndex ->
-                row.getCell(columnIndex)?.let(::getValueOrNull)?.let { contactValue ->
-                    createContact(
-                        contact = contactValue,
-                        contactsByEmail = contactsByEmail,
-                        agent = currentEntity,
-                        userId = userId,
-                        type = "customer"
+                        tribeLabelCol = tribeLabelCol,
+                        tribeShortNameCol = tribeShortNameCol,
+                        tribeCodeCol = tribeCodeCol,
+                        tribeBlockCol = tribeBlockCol,
+                        tribeNameCol = tribeNameCol,
+                        surfaceNameCol = surfaceNameCol,
+                        surfaceCodeCol = surfaceCodeCol,
+                        blockCodeCol = blockCodeCol,
+                        blockNameCol = blockNameCol,
+                        blockCuratorNameCol = blockCuratorNameCol,
+                        blockShortNameCol = blockShortNameCol,
+                        programCodeCol = programCodeCol,
+                        programFileNameCol = programFileNameCol,
+                        programNameCol = programNameCol,
+                        divisions = divisions,
+                        platforms = platforms,
+                        blocks = blocks,
+                        programms = programms
                     )
                 }
             }
 
-            val developerContact = headers[DEVELOPER_CONTACT]?.let { columnIndex ->
-                row.getCell(columnIndex)?.let(::getValueOrNull)?.let { contactValue ->
-                    createContact(
-                        contact = contactValue,
-                        contactsByEmail = contactsByEmail,
-                        agent = currentEntity,
-                        userId = userId,
-                        type = "developer"
-                    )
-                }
-            }
-            synchronizeAgentContacts(
-                agent = currentEntity,
-                desiredContacts = listOfNotNull(customerContact, developerContact)
-            )
-
-            currentEntity.agentEffectOptimization =
-                headers[AGENT_EFFECT_OPTIMIZATION]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let(::getValueOrNull)?.toDouble()?.toBigDecimal()
-                }
-
-            currentEntity.agentEffectRevenue =
-                headers[AGENT_EFFECT_REVENUE]?.let { columnIndex ->
-                    row.getCell(columnIndex)?.let(::getValueOrNull)?.toDouble()?.toBigDecimal()
-                }
-
-            currentEntity.disabled = false
+            DictData(divisions = divisions, platforms = platforms, blocks = blocks, programms = programms)
         }
     }
 
-
-    data class SlaData(
-        val status: String,
-        var dateValue: LocalDateTime? = null,
-        var stringValue: String? = null
-    )
-
-    private fun updateImplementationStatusesOfAgent(
-        agent: AIAgentEntity,
-        headers: Map<String, Int>,
-        row: PreparedRow,
-        dictionaries: AgentImportDictionaries,
-        headerTypes: List<String>,
-        agentSlas: MutableList<AgentStatusSlaEntity>
-    ) {
-        val slas = headerTypes.mapNotNull { headerType ->
-            headers[headerType]
-                ?.let { columnIndex -> row.getCell(columnIndex) }
-                ?.let { cell ->
-                    SlaData(headerType).apply {
-                        if (cell.cellType == CellType.NUMERIC) {
-                            dateValue = extractDateTime(cell)
-                        }
-                        if (cell.cellType == CellType.STRING) {
-                            stringValue = cell.stringCellValue
-                        }
-                    }
-                }
-        }.associateBy { it.status }
-
-        slas.forEach { sla ->
-            val statusCode = when (sla.key) {
-                POC -> "analysis"
-                MVP -> "development"
-                TARGET_DECISION -> "pilot"
-                CONFIRM_EFFECT -> "targetSolution"
-                else -> null
-            }
-
-            val statusRef = statusCode?.let(::normalizeKey)?.let(dictionaries.statusesByCode::get)
-
-            val agentSla = statusRef?.let { ref -> agentSlas.find { it.primaryKey.agentStatusId == ref.id } }
-
-            if (sla.value.dateValue != null && statusRef != null) {
-                val saved = agentStatusSlaRepository.save(
-                    (agentSla ?: AgentStatusSlaEntity().apply {
-                        agentStatus = managedReference(StatusEntity::class.java, statusRef.id)
-                        aiAgent = agent
-                    }).apply {
-                        plannedDate = sla.value.dateValue
-                    }
-                )
-
-                agentSlas.removeIf {
-                    it.primaryKey.agentStatusId == saved.primaryKey.agentStatusId
-                }
-                agentSlas.add(saved)
-            }
-
-            if (sla.key == CONFIRM_EFFECT && !slas[TARGET_DECISION]?.stringValue.equals(
-                    "Завершен",
-                    ignoreCase = true
-                )
-            ) {
-                agentSla?.apply {
-                    completedDate = null
-                }?.let { changed ->
-                    val saved = agentStatusSlaRepository.save(changed)
-                    agentSlas.removeIf {
-                        it.primaryKey.agentStatusId == saved.primaryKey.agentStatusId
-                    }
-                    agentSlas.add(saved)
-                }
-            }
-
-            if (
-                slas[TARGET_DECISION]?.stringValue.equals("Завершен", ignoreCase = true) &&
-                sla.key == CONFIRM_EFFECT &&
-                statusRef != null
-            ) {
-                val saved = agentStatusSlaRepository.save(
-                    (agentSla ?: AgentStatusSlaEntity().apply {
-                        agentStatus = managedReference(StatusEntity::class.java, statusRef.id)
-                        aiAgent = agent
-                    }).apply {
-                        completedDate = sla.value.dateValue ?: LocalDateTime.now()
-                        plannedDate = this.plannedDate ?: sla.value.dateValue ?: LocalDateTime.now()
-                    }
-                )
-
-                agentSlas.removeIf { it.primaryKey.agentStatusId == saved.primaryKey.agentStatusId }
-                agentSlas.add(saved)
-            }
-        }
+    private fun findColumnInRange(columnHeaders: Map<Int, String?>, range: IntRange, headerName: String): Int {
+        return range.firstOrNull { index ->
+            columnHeaders[index]?.equals(headerName, ignoreCase = true) == true
+        } ?: -1
     }
 
-
-    private fun extractDateTime(cell: PreparedCell?): LocalDateTime? {
-        if (cell == null) return null
-
-        return when (cell.cellType) {
-            CellType.NUMERIC -> {
-                if (cell.isDateFormatted) {
-                    cell.dateCellValue
-                        ?.toInstant()
-                        ?.atZone(ZoneId.systemDefault())
-                        ?.toLocalDate()
-                        ?.atStartOfDay()
-                } else {
-                    null
-                }
-            }
-
-            CellType.FORMULA -> {
-                if (cell.cachedFormulaResultType == CellType.NUMERIC && cell.isDateFormatted) {
-                    cell.dateCellValue
-                        ?.toInstant()
-                        ?.atZone(ZoneId.systemDefault())
-                        ?.toLocalDate()
-                        ?.atStartOfDay()
-                } else {
-                    null
-                }
-            }
-
-            else -> null
-        }
-    }
-
-    private fun updateImplementedPlatform(
-        platformsStartIndex: Int,
-        platformsEndIndex: Int,
-        headerRow: PreparedRow?,
-        row: PreparedRow,
-        entity: AIAgentEntity,
-        dictionaries: AgentImportDictionaries,
-        existingByPlatformId: Map<Long, ImplementedPlatformEntity>?
-    ) {
-        val implementedPlatformDuration = measureTimeMillis {
-            if (platformsStartIndex == -1 || platformsEndIndex == -1 || headerRow == null) {
-                return@measureTimeMillis
-            }
-
-            val agentId = requireNotNull(entity.id) {
-                "Agent id must be initialized before implemented platforms update"
-            }
-
-            val desiredPlatforms = linkedMapOf<Long, Boolean>()
-
-            row.filter { it.columnIndex in platformsStartIndex..platformsEndIndex }
-                .forEach { platformCell ->
-                    val cellHeader = headerRow
-                        .getCell(platformCell.columnIndex)
-                        ?.stringCellValue
-                        ?.trim()
-                        ?.takeIf { it.isNotBlank() }
-                        ?: return@forEach
-
-                    val rawValue = getValueOrNull(row.getCell(platformCell.columnIndex))
-                        ?.takeIf { it.isNotBlank() }
-                        ?: return@forEach
-
-                    val platformRef = dictionaries.platformsByName[cellHeader] ?: return@forEach
-
-                    val released = when {
-                        rawValue.equals("Внедрен", ignoreCase = true) -> true
-                        rawValue.equals("В разработке", ignoreCase = true) -> false
-                        else -> return@forEach
-                    }
-
-                    desiredPlatforms[platformRef.id] = released
-                }
-
-            // Этап 3: база для сверки приходит пакетно (из processBatch), без отдельной
-            // загрузки inverse-коллекции. Добавления/удаления по-прежнему идут через
-            // entity.platforms ради orphan-removal/cascade.
-            val iterator = entity.platforms.iterator()
-
-            while (iterator.hasNext()) {
-                val existing = iterator.next()
-
-                if (existing.primaryKey.platformId !in desiredPlatforms) {
-                    iterator.remove()
-                }
-            }
-
-            desiredPlatforms.forEach { (platformId, released) ->
-
-                val existing =
-                    existingByPlatformId?.get(platformId)
-
-                if (existing != null) {
-                    existing.released = released
-                    existing.aiAgent = entity
-                } else {
-                    entity.platforms.add(
-                        ImplementedPlatformEntity().apply {
-                            primaryKey =
-                                AIAgentPlatformPK().apply {
-                                    aiAgentId = agentId
-                                    this.platformId = platformId
-                                }
-
-                            platform = managedReference(PlatformEntity::class.java, platformId)
-                            aiAgent = entity
-                            this.released = released
-                        }
-                    )
-                }
-            }
-        }
-
-        log.debug(
-            "Operation implemented platforms took $implementedPlatformDuration ms"
+    private fun checkRequiredColumns(vararg columns: Int): List<String> {
+        val missing = mutableListOf<String>()
+        val columnNames = arrayOf(
+            "tribeLabel", "tribeShortName", "tribeCode", "tribeBlock", "tribeName",
+            "surfaceName", "surfaceCode",
+            "blockShortName", "blockName", "blockCode", "blockCuratorName",
+            "programCode", "programFileName", "programName"
         )
+
+        columns.forEachIndexed { index, col ->
+            if (col == -1) {
+                missing.add(columnNames[index])
+            }
+        }
+        return missing
     }
 
-
-    private fun updateTerBanks(
+    private fun processDictRow(
         row: PreparedRow,
-        headers: Map<String, Int>,
-        entity: AIAgentEntity,
-        terBanksRefs: MutableList<TerBank>,
-        fileId: Long
+        tribeLabelCol: Int,
+        tribeShortNameCol: Int,
+        tribeCodeCol: Int,
+        tribeBlockCol: Int,
+        tribeNameCol: Int,
+        surfaceNameCol: Int,
+        surfaceCodeCol: Int,
+        blockCodeCol: Int,
+        blockNameCol: Int,
+        blockCuratorNameCol: Int,
+        blockShortNameCol: Int,
+        programCodeCol: Int,
+        programFileNameCol: Int,
+        programNameCol: Int,
+        divisions: MutableList<DivisionsDto>,
+        platforms: MutableList<PlatformsDto>,
+        blocks: MutableList<BlocksDto>,
+        programms: MutableList<ProgramDto>
     ) {
-        headers[TER_BANK]?.let { headerIndex ->
-            getCellValueAsString(row.getCell(headerIndex))?.let { terBankCellValue ->
-                val terBank = terBanksRefs.find { it.shortName.lowercase() == terBankCellValue.lowercase() }
-                if (terBank != null) {
-                    entity.terbankId = terBank.id
-                } else {
-                    throw AiFileUploadException(
-                        AI_UPLOAD_UNKNOWN_TER_BANK,
-                        MessageFormat.format(
-                            messageProvider[AI_UPLOAD_UNKNOWN_TER_BANK],
-                            terBankCellValue,
-                            row.rowNum.plus(1)
-                        ),
-                        fileId = fileId
-                    )
+        val tribeLabel = row.getCell(tribeLabelCol)?.stringCellValue ?: ""
+        val shortName = row.getCell(tribeShortNameCol)?.stringCellValue ?: ""
+        val tribeCode = row.getCell(tribeCodeCol)?.stringCellValue ?: ""
+        val tribeBlock = row.getCell(tribeBlockCol)?.stringCellValue ?: ""
+        val tribeName = row.getCell(tribeNameCol)?.stringCellValue ?: ""
+        if (tribeLabel.isNotBlank() || shortName.isNotBlank() || tribeCode.isNotBlank() || tribeBlock.isNotBlank() || tribeName.isNotBlank()) {
+            divisions.add(DivisionsDto(tribeLabel, shortName, tribeCode, tribeBlock, tribeName))
+        }
+
+        val surfaceName = row.getCell(surfaceNameCol)?.stringCellValue ?: ""
+        val surfaceCode = row.getCell(surfaceCodeCol)?.stringCellValue ?: ""
+        if (surfaceName.isNotBlank() || surfaceCode.isNotBlank()) {
+            platforms.add(PlatformsDto(surfaceName, surfaceCode))
+        }
+
+        val blockShortName = row.getCell(blockShortNameCol)?.stringCellValue ?: ""
+        val blockCode = row.getCell(blockCodeCol)?.stringCellValue ?: ""
+        val blockName = row.getCell(blockNameCol)?.stringCellValue ?: ""
+        val blockCurator = row.getCell(blockCuratorNameCol)?.stringCellValue ?: ""
+        if (blockShortName.isNotBlank() || blockCode.isNotBlank() || blockName.isNotBlank() || blockCurator.isNotBlank()) {
+            blocks.add(BlocksDto(blockCode, blockShortName, blockName, blockCurator))
+        }
+
+        val programFileName = row.getCell(programFileNameCol)?.stringCellValue ?: ""
+        val programCode = row.getCell(programCodeCol)?.stringCellValue ?: ""
+        val programName = row.getCell(programNameCol)?.stringCellValue ?: ""
+        if (programFileName.isNotBlank() || programCode.isNotBlank() || programName.isNotBlank()) {
+            programms.add(
+                ProgramDto(
+                    fileName = programFileName,
+                    code = programCode,
+                    name = programName
+                )
+            )
+        }
+    }
+
+    private fun readProcessData(
+        workbook: PreparedExcelWorkbook,
+        blockCodes: List<String>,
+        programCodes: List<String>
+    ): Pair<List<ProcessDto>, List<ProcessesMappingDto>> {
+        val processes = mutableListOf<ProcessDto>()
+        val processesMapping = mutableListOf<ProcessesMappingDto>()
+
+        val sheet = workbook.getSheet(PROCESSES)
+        return sheet.readRows { iterator ->
+            val columnHeaders = mutableMapOf<Int, String?>()
+            var currentRowIndex = 0
+
+            // Собираем заголовки
+            while (iterator.hasNext()) {
+                val row = iterator.next()
+                if (currentRowIndex == DICT_HEADER_ROW_INDEX) {
+                    for (cell in row) {
+                        columnHeaders[cell.columnIndex] = cell.stringCellValue?.trim()
+                    }
+                    break
                 }
+                currentRowIndex++
+            }
+
+            // Ищем колонки в пределах секций процессов
+            val processShortNameCol = findColumnInRange(columnHeaders, PROCESSES_SECTION_START..PROCESSES_SECTION_END, DICT_SHORTNAME_BLOCKS_SUBHEADER)
+            val processNameCol = findColumnInRange(columnHeaders, PROCESSES_SECTION_START..PROCESSES_SECTION_END, DICT_NAME_SUBHEADER)
+            val processBlockCol = findColumnInRange(columnHeaders, PROCESSES_SECTION_START..PROCESSES_SECTION_END, DICT_BLOCK_SUBHEADER)
+            val processProgramCol = findColumnInRange(columnHeaders, PROCESSES_SECTION_START..PROCESSES_SECTION_END, PROCESS_PROGRAM_SUBHEADER)
+
+            // Ищем колонки в пределах секций маппинга процессов
+            val processMappingDpssCol = findColumnInRange(columnHeaders, PROCESSES_MAPPINGS_SECTION_START..PROCESSES_MAPPINGS_SECTION_END, PROCESS_MAPPINGS_CODE_DPSS_SUBHEADER)
+            val processMappingArisCol = findColumnInRange(columnHeaders, PROCESSES_MAPPINGS_SECTION_START..PROCESSES_MAPPINGS_SECTION_END, PROCESS_MAPPINGS_CODE_ARIS_SUBHEADER)
+
+            // Проверяем найденные колонки
+            val missingColumns = mutableListOf<String>()
+            if (processShortNameCol == -1) missingColumns.add("processShortName")
+            if (processNameCol == -1) missingColumns.add("processName")
+            if (processBlockCol == -1) missingColumns.add("processBlock")
+            if (processProgramCol == -1) missingColumns.add("processProgram")
+            if (processMappingDpssCol == -1) missingColumns.add("processMappingDpss")
+            if (processMappingArisCol == -1) missingColumns.add("processMappingAris")
+
+            if (missingColumns.isNotEmpty()) {
+                throw AiResponseException(
+                    status = HttpStatus.BAD_REQUEST,
+                    errorCode = AI_UPLOAD_EMPTY_DICT_FILE,
+                    message = "Missing columns in PROCESSES file: ${missingColumns.joinToString()}"
+                )
+            }
+
+            // Обрабатываем данные
+            while (iterator.hasNext()) {
+                val row = iterator.next()
+                currentRowIndex++
+
+                if (currentRowIndex >= DICT_DATA_START_ROW_INDEX) {
+                    val processShortName = row.getCell(processShortNameCol)?.stringCellValue ?: ""
+                    val processProgram = row.getCell(processProgramCol)?.stringCellValue ?: ""
+                    val processBlock = row.getCell(processBlockCol)?.stringCellValue ?: ""
+                    val processName = row.getCell(processNameCol)?.stringCellValue ?: ""
+
+                    if (processShortName.isNotBlank() || processProgram.isNotBlank() || processBlock.isNotBlank() || processName.isNotBlank()) {
+                        if (!blockCodes.contains(processBlock)) {
+                            throw AiResponseException(
+                                status = HttpStatus.BAD_REQUEST,
+                                errorCode = AI_PROCESS_NOT_FOUND_BLOCK,
+                                message = MessageFormat.format(messageProvider[AI_PROCESS_NOT_FOUND_BLOCK], processShortName)
+                            )
+                        }
+                        if (processProgram.isNotBlank() && !programCodes.contains(processProgram)) {
+                            throw AiResponseException(
+                                status = HttpStatus.BAD_REQUEST,
+                                errorCode = AI_PROCESS_NOT_FOUND_PROGRAM,
+                                message = MessageFormat.format(messageProvider[AI_PROCESS_NOT_FOUND_PROGRAM], processShortName)
+                            )
+                        }
+
+                        processes.add(
+                            ProcessDto(
+                                shortName = processShortName,
+                                program = processProgram,
+                                block = processBlock,
+                                name = processName,
+                                rowNum = row.rowNum
+                            )
+                        )
+                    }
+
+                    val processMappingDpss = row.getCell(processMappingDpssCol)?.stringCellValue ?: ""
+                    val processMappingAris = row.getCell(processMappingArisCol)?.stringCellValue ?: ""
+                    if (processMappingDpss.isNotBlank() || processMappingAris.isNotBlank()) {
+                        processesMapping.add(
+                            ProcessesMappingDto(
+                                codeDpss = processMappingDpss,
+                                codeAris = processMappingAris,
+                                rowNum = row.rowNum
+                            )
+                        )
+                    }
+                }
+            }
+
+            Pair(processes, processesMapping)
+        }
+    }
+
+    private fun updatePrograms(programsDict: List<ProgramDto>, availablePrograms: MutableList<ProgramEntity>) {
+        val platformUpdateDuration = measureTimeMillis {
+            // Старый поиск firstOrNull выбирал ПЕРВОЕ совпадение.
+            // Существующий код не trim-ится: это важно для точной совместимости.
+            val programsByCode = linkedMapOf<String?, ProgramEntity>()
+            availablePrograms.forEach { program ->
+                programsByCode.putIfAbsent(program.code?.lowercase(), program)
+            }
+            programsDict.forEach { programFromDict ->
+                programsByCode[programFromDict.code.trim().lowercase()]
+                    ?.let { existingEntity ->
+                        existingEntity.name = programFromDict.name.trim()
+                        existingEntity.fileName = programFromDict.fileName.trim()
+                        existingEntity.disabled = false
+                        // Managed-сущность сохранится через dirty checking при flush/commit.
+                    } ?: programRepository.save(
+                    ProgramEntity().apply {
+                        fileName = programFromDict.fileName.trim()
+                        name = programFromDict.name.trim()
+                        code = programFromDict.code.trim()
+                    }).also { availablePrograms.add(it); programsByCode[programFromDict.code.trim().lowercase()] = it }
+            }
+        }
+        disableEntitiesByCode(codesInFile = programsDict.map { it.code }.toSet(),
+            allEntities = availablePrograms,
+            codeExtractor = { it.code },
+            isDisabled = { it.disabled },
+            setDisabled = { entity, disabled -> entity.disabled = disabled })
+        log.debug("Operation update programs from dict took $platformUpdateDuration ms")
+    }
+
+    private fun updateProcesses(
+        processDict: List<ProcessDto>,
+        availableProcesses: MutableList<ProcessEntity>,
+        availablePrograms: MutableList<ProgramEntity>,
+        availableBlocks: MutableList<BlockEntity>
+    ) {
+        val platformUpdateDuration = measureTimeMillis {
+            // firstOrNull по исходному списку -> первая запись выигрывает.
+            val processesByName = linkedMapOf<String?, ProcessEntity>()
+            availableProcesses.forEach { process ->
+                processesByName.putIfAbsent(process.shortName?.lowercase(), process)
+            }
+            val blocksByCode = linkedMapOf<String?, BlockEntity>()
+            availableBlocks.forEach { block -> blocksByCode.putIfAbsent(block.code, block) }
+            val programsByCode = linkedMapOf<String?, ProgramEntity>()
+            availablePrograms.forEach { program -> programsByCode.putIfAbsent(program.code, program) }
+            processDict.forEach { processFromDict ->
+                if (!blocksByCode.containsKey(processFromDict.block)) return@forEach
+                processesByName[processFromDict.shortName.trim().lowercase()]
+                    ?.let { existingEntity ->
+                        existingEntity.name = processFromDict.name.trim()
+                        existingEntity.program = programsByCode[processFromDict.program]
+                        existingEntity.block = blocksByCode[processFromDict.block]
+                        existingEntity.disabled = false
+                        // Managed-сущность сохранится через dirty checking при flush/commit.
+                    } ?: processRepository.save(
+                    ProcessEntity().apply {
+                        shortName = processFromDict.shortName
+                        name = processFromDict.name.trim()
+                        program = programsByCode[processFromDict.program]
+                        block = blocksByCode[processFromDict.block]
+                    }).also {
+                        availableProcesses.add(it)
+                        processesByName.putIfAbsent(it.shortName?.lowercase(), it)
+                    }
+            }
+        }
+        disableEntitiesByCode(codesInFile = processDict.map { it.shortName }.toSet(),
+            allEntities = availableProcesses,
+            codeExtractor = { it.shortName },
+            isDisabled = { it.disabled },
+            setDisabled = { entity, disabled -> entity.disabled = disabled })
+        log.debug("Operation update processes from dict took $platformUpdateDuration ms")
+    }
+
+    private fun <ENTITY : Any> disableEntitiesByCode(
+        codesInFile: Set<String?>,
+        allEntities: MutableList<ENTITY>,
+        codeExtractor: (ENTITY) -> String?,
+        isDisabled: (ENTITY) -> Boolean?,
+        setDisabled: (ENTITY, Boolean) -> Unit
+    ) {
+        allEntities.forEach { entity ->
+            val shouldDisable = codeExtractor(entity) !in codesInFile
+            if (isDisabled(entity) != shouldDisable) {
+                setDisabled(entity, shouldDisable)
+                // managed entity: Hibernate dirty-checking сохранит изменения при flush
             }
         }
     }
 
-    private fun updateAgentStatusSla(
-        row: PreparedRow,
-        dictionaries: AgentImportDictionaries,
-        entity: AIAgentEntity,
-        headers: Map<String, Int>,
-        agentStatusesSla: List<AgentStatusSlaEntity>
-    ) {
-        val agentStatusSlaDuration = measureTimeMillis {
-            headers[AGENT_STATUS]?.let { headerIndex ->
-                var expirationDate: DeadlineExpiredType? = DeadlineExpiredType.ontime
-
-                getValueOrNullFromFormula(row.getCell(headerIndex))?.let { status ->
-                    val statusRef = dictionaries.statusesByName[normalizeKey(status)]
-
-                    if (statusRef != null) {
-                        val filteredStatusSlas = agentStatusesSla.filter { statusSla ->
-                            val slaOrdering = statusSla.primaryKey.agentStatusId
-                                ?.let(dictionaries.statusesById::get)
-                                ?.ordering
-                                ?: Long.MIN_VALUE
-
-                            slaOrdering > (statusRef.ordering ?: Long.MIN_VALUE)
-                        }
-
-                        filteredStatusSlas.forEach { statusSla ->
-                            statusSla.plannedDate?.let { plannedDate ->
-                                if (
-                                    plannedDate.toLocalDate().minusDays(14) <
-                                    dateTimeProvider.currentDate()
-                                ) {
-                                    expirationDate = DeadlineExpiredType.expiration
-                                }
-
-                                if (
-                                    plannedDate.toLocalDate() <
-                                    dateTimeProvider.currentDate()
-                                ) {
-                                    expirationDate = DeadlineExpiredType.expired
-                                }
+    private fun updatePlatformDict(platformsDict: List<PlatformsDto>, availablePlatforms: MutableList<PlatformEntity>) {
+        val platformUpdateDuration = measureTimeMillis {
+            // Не использовать associateBy(): при дублирующихся кодах он выбирает
+            // последнюю запись, тогда как старый firstOrNull выбирал первую.
+            val platformsByCode = linkedMapOf<String?, PlatformEntity>()
+            availablePlatforms.forEach { platform ->
+                platformsByCode.putIfAbsent(platform.code?.lowercase(), platform)
+            }
+            platformsDict.forEach { platformFromDict ->
+                platformsByCode[platformFromDict.code.trim().lowercase()]
+                    ?.let { existingEntity ->
+                        availablePlatforms.filter { it.code != existingEntity.code }
+                            .firstOrNull { it.name.equals(platformFromDict.name.trim(), ignoreCase = true) }?.let {
+                                throw AiResponseException(
+                                    status = HttpStatus.BAD_REQUEST,
+                                    errorCode = AI_UPLOAD_PLATFORM_NAME_DUPLICATE,
+                                    message = MessageFormat.format(
+                                        messageProvider[AI_UPLOAD_PLATFORM_NAME_DUPLICATE],
+                                        platformFromDict.name.trim(),
+                                        it.code
+                                    )
+                                )
                             }
+                        existingEntity.name = platformFromDict.name.trim()
+                        existingEntity.disabled = false
+                        // Managed-сущность сохранится через dirty checking при flush/commit.
+                    } ?: run {
+                    availablePlatforms.firstOrNull { it.name.equals(platformFromDict.name.trim(), ignoreCase = true) }
+                        ?.let {
+                            throw AiResponseException(
+                                status = HttpStatus.BAD_REQUEST,
+                                errorCode = AI_UPLOAD_PLATFORM_NAME_DUPLICATE,
+                                message = MessageFormat.format(
+                                    messageProvider[AI_UPLOAD_PLATFORM_NAME_DUPLICATE],
+                                    platformFromDict.name.trim(),
+                                    it.code
+                                )
+                            )
                         }
-                    } else if (
-                        expirationDate != DeadlineExpiredType.expired &&
-                        expirationDate != DeadlineExpiredType.expiration
-                    ) {
-                        expirationDate = DeadlineExpiredType.ontime
-                    }
-
-                    entity.deadlineExpired = expirationDate
+                    platformRepository.save(
+                        PlatformEntity().apply {
+                            name = platformFromDict.name.trim()
+                            code = platformFromDict.code.trim()
+                        }).also { availablePlatforms.add(it); platformsByCode[platformFromDict.code.trim().lowercase()] = it }
                 }
             }
         }
-
-        log.debug("Operation agent status took $agentStatusSlaDuration ms")
-    }
-
-    private fun updateInvolvedResource(
-        row: PreparedRow,
-        headerRow: PreparedRow?,
-        resourcesStartIndex: Int,
-        dictionaries: AgentImportDictionaries,
-        entity: AIAgentEntity,
-        fileId: Long,
-        existingResources: List<InvolvedResourceEntity>?
-    ) {
-        val involvedResourceDuration = measureTimeMillis {
-            if (resourcesStartIndex == -1 || headerRow == null) {
-                return@measureTimeMillis
-            }
-
-            val agentId = requireNotNull(entity.id) {
-                "Agent id must be initialized before involved resources update"
-            }
-
-            val resourcesEndIndex = resourcesStartIndex + 3
-
-            val desiredResources = linkedMapOf<Pair<String?, String?>, BigDecimal>()
-
-            row.filter { it.columnIndex in resourcesStartIndex..resourcesEndIndex }
-                .forEach { resourceCell ->
-                    val resourceName = headerRow
-                        .getCell(resourceCell.columnIndex)
-                        ?.stringCellValue
-                        ?.trim()
-                        ?.takeIf { it.isNotBlank() }
-                        ?: return@forEach
-
-                    val rawValue = getValueOrNull(row.getCell(resourceCell.columnIndex))
-                        ?.takeIf { it.isNotBlank() }
-                        ?: return@forEach
-
-                    val resourceRef = dictionaries.resourcesByName[resourceName]
-                        ?: throw AiFileUploadException(
-                            AI_UPLOAD_UNKNOWN_METRIC_NAME,
-                            MessageFormat.format(
-                                messageProvider[AI_UPLOAD_UNKNOWN_METRIC_NAME],
-                                resourceCell.columnIndex.plus(1),
-                                row.rowNum.plus(1)
-                            ),
-                            fileId = fileId
-                        )
-
-                    val numericValue = try {
-                        rawValue
-                            .replace(',', '.')
-                            .toBigDecimal()
-                    } catch (e: NumberFormatException) {
-                        throw AiFileUploadException(
-                            AI_UPLOAD_UNKNOWN_METRIC_NAME,
-                            MessageFormat.format(
-                                messageProvider[AI_UPLOAD_UNKNOWN_METRIC_NAME],
-                                resourceCell.columnIndex.plus(1),
-                                row.rowNum.plus(1)
-                            ),
-                            fileId = fileId
-                        )
-                    }
-
-                    val key =
-                        resourceRef.source to resourceRef.type
-
-                    desiredResources[key] = numericValue
-                }
-
-            // Этап 3: база для сверки приходит пакетно (из processBatch), без отдельной
-            // загрузки inverse-коллекции involvedResource.
-            val existingByKey = existingResources
-                ?.associateBy { resource -> resource.id.source to resource.id.type }
-                .orEmpty()
-
-            val iterator = entity.involvedResource.iterator()
-
-            while (iterator.hasNext()) {
-                val existing = iterator.next()
-
-                val key = existing.id.source to existing.id.type
-
-                if (key !in desiredResources) {
-                    iterator.remove()
-                }
-            }
-
-            val now = LocalDateTime.now()
-
-            desiredResources.forEach { (key, value) ->
-
-                val existing = existingByKey[key]
-
-                if (existing != null) {
-                    existing.value = value
-                    existing.updated = now
-                    existing.aiAgent = entity
-                } else {
-                    entity.involvedResource.add(
-                        InvolvedResourceEntity().apply {
-                            id = InvolvedResourceEmbeddedId(aiAgentId = agentId, source = key.first, type = key.second)
-                            this.value = value
-                            aiAgent = entity
-                            updated = now
-                        }
-                    )
-                }
-            }
-        }
-
-        log.debug(
-            "Operation involved Resource took $involvedResourceDuration ms"
+        disableEntitiesByCode(codesInFile = platformsDict.map { it.code }.toSet(),
+            allEntities = availablePlatforms,
+            codeExtractor = { it.code },
+            isDisabled = { it.disabled },
+            setDisabled = { entity, disabled -> entity.disabled = disabled }
         )
+        log.debug("Operation update platform from dict took $platformUpdateDuration ms")
     }
 
-    /**
-     * Сверка всего набора метрик, а не SELECT/DELETE по одной метрике на агента.
-     * Сохраняет старое правило: строки всех типов, отсутствующие в целевом STANDARD-наборе,
-     * удаляются. Поддерживает несколько строк одного metric.id (без associateBy-потерь).
-     */
-    private fun updateAppliedMetric(
-        row: PreparedRow,
-        metricsStartIndex: Int,
-        metricsEndIndex: Int,
-        headerRow: PreparedRow?,
-        dictionaries: AgentImportDictionaries,
-        entity: AIAgentEntity,
-        fileId: Long,
-        existingMetrics: List<AppliedMetricsEntity>
-    ) {
-        if (metricsStartIndex == -1 || metricsEndIndex == -1 || headerRow == null) {
-            // Как в старом обработчике: отсутствие секции метрик означает пустой
-            // импортируемый набор; прежние метрики этого агента удаляются.
-            if (existingMetrics.isNotEmpty()) {
-                appliedMetricRepository.deleteAll(existingMetrics)
-            }
-            return
-        }
-
-        val reusableByMetricId = existingMetrics
-            .filter { it.type == STANDARD && it.metric?.id != null }
-            .groupBy { it.metric!!.id }
-            .mapValues { (_, matches) -> ArrayDeque(matches) }
-        val retainedIds = mutableSetOf<Long>()
-        val newMetrics = mutableListOf<AppliedMetricsEntity>()
-
-        row.filter { it.columnIndex in metricsStartIndex..metricsEndIndex }.forEach { metricCell ->
-            val metricName = headerRow.getCell(metricCell.columnIndex)?.stringCellValue?.trim()
-            if (metricName.equals("Индивидуальная метрика", ignoreCase = true)) return@forEach
-            val rawValue = getValueOrNull(metricCell)?.takeIf { it.isNotBlank() } ?: return@forEach
-            val metricRef = metricName?.let(::normalizeKey)?.let(dictionaries.metricsByFileName::get)
-                ?: throw AiFileUploadException(
-                    AI_UPLOAD_UNKNOWN_METRIC_NAME,
-                    MessageFormat.format(
-                        messageProvider[AI_UPLOAD_UNKNOWN_METRIC_NAME],
-                        metricCell.columnIndex + 1, row.rowNum + 1
-                    ), fileId = fileId
-                )
-            val amount = try {
-                BigDecimal.valueOf(rawValue.replace(',', '.').toDouble())
-            } catch (exception: NumberFormatException) {
-                throw AiFileUploadException(
-                    AI_UPLOAD_UNKNOWN_METRIC_NAME,
-                    MessageFormat.format(
-                        messageProvider[AI_UPLOAD_UNKNOWN_METRIC_NAME],
-                        metricCell.columnIndex + 1, row.rowNum + 1
-                    ), fileId = fileId
-                )
-            }
-            val metricId = (metricRef.id as Number).toLong()
-            val current = reusableByMetricId[metricId]?.pollFirst()
-            if (current == null) {
-                newMetrics.add(AppliedMetricsEntity().apply {
-                    aiAgent = entity
-                    metric = managedReference(MetricEntity::class.java, metricId)
-                    currentValue = amount
-                    type = STANDARD
-                    updated = LocalDateTime.now()
-                })
-            } else {
-                retainedIds.add(current.id)
-                // Прежняя операция DELETE+INSERT обнуляла эти поля;
-                // сохраняем итоговое бизнес-состояние, но не меняем PK без причины.
-                val changed = current.currentValue != amount || current.name != null ||
-                        current.dataType != null || current.direction != null || current.targetValue != null
-                if (changed) {
-                    current.currentValue = amount
-                    current.name = null
-                    current.dataType = null
-                    current.direction = null
-                    current.targetValue = null
-                    current.updated = LocalDateTime.now()
-                }
-            }
-        }
-        val obsolete = existingMetrics.filter { it.id !in retainedIds }
-        if (obsolete.isNotEmpty()) appliedMetricRepository.deleteAll(obsolete)
-        if (newMetrics.isNotEmpty()) appliedMetricRepository.saveAll(newMetrics)
-    }
-
-    private fun disableDeletedAgents(agentsInFile: Set<String>) {
-        aIAgentRepository.findAllImportManagedNonPultAgentRefs()
-            .asSequence()
-            .filter { it.agentId !in agentsInFile }
-            .map { it.id }
-            .chunked(BULK_BATCH_SIZE)
-            .forEach { ids ->
-                if (ids.isNotEmpty()) {
-                    aIAgentRepository.disableByIds(ids)
-                }
-            }
-    }
-
-    /**
-     * Прежний глобальный DELETE затрагивал всех не-PULT и не-blocked агентов,
-     * в том числе отсутствующих в файле и дублирующие записи.
-     * Теперь нетронутые контакты выбранных агентов сохраняют ID; остальные
-     * глобально очищаются отдельными bulk DELETE только ПОСЛЕ обработки файла.
-     */
-    private fun clearContactsForUnprocessedAgents(processedAgentIds: Set<Long>) {
-        aIAgentRepository.findAllImportManagedNonPultAgentRefs()
-            .asSequence()
-            .map { it.id }
-            .filterNot(processedAgentIds::contains)
-            .chunked(BULK_BATCH_SIZE)
-            .forEach { ids ->
-                if (ids.isNotEmpty()) agentContactRepository.deleteForAgentIds(ids)
-            }
-    }
-
-    /**
-     * Сверяет ссылки контактов без удаления/вставки неизменённых строк.
-     *
-     * Для non-PULT удаляем только устаревшие и повторяющиеся ссылки.
-     * userId у импортируемой ссылки приводим к null, как после старой
-     * глобальной очистки и повторного создания: это влияет на фильтр
-     * AIAgentRepository по agent_contact.user_id.
-     *
-     * Для PULT сохраняем чужие, отсутствующие в Excel ссылки: старая
-     * глобальная очистка их не затрагивала. Добавляем только отсутствующие,
-     * исключая размножение одинаковых строк при повторном импорте.
-     */
-    private fun synchronizeAgentContacts(
-        agent: AIAgentEntity,
-        desiredContacts: List<AgentContactEntity>
-    ) {
-        val desiredByKey = linkedMapOf<Pair<String?, Long?>, AgentContactEntity>()
-        desiredContacts.forEach { desired ->
-            desiredByKey.putIfAbsent(desired.type to desired.contact?.id, desired)
-        }
-
-        val isPultAgent = agent.agentId?.contains("PULT") == true
-        val retainedKeys = mutableSetOf<Pair<String?, Long?>>()
-        val existingIterator = agent.agentContact.iterator()
-
-        while (existingIterator.hasNext()) {
-            val existing = existingIterator.next()
-            val key = existing.type to existing.contact?.id
-            val importedContact = key in desiredByKey
-
-            if (isPultAgent) {
-                // Чужие/старые PULT-связи не удаляем. Даже если существовали
-                // дубли, не создаём поверх них новую копию.
-                if (importedContact) retainedKeys.add(key)
-                continue
-            }
-
-            if (!importedContact || !retainedKeys.add(key)) {
-                existingIterator.remove()
-                continue
-            }
-
-            // Прежний non-PULT импорт создавал ссылку с userId=null.
-            // Сохраняем то же значение без нового id / физического пересоздания.
-            if (existing.userId != null) {
-                existing.userId = null
-            }
-        }
-
-        desiredByKey.forEach { (key, newLink) ->
-            if (key !in retainedKeys) {
-                agent.agentContact.add(newLink)
-            }
-        }
-    }
-
-    private fun createContact(
-        contact: String,
-        contactsByEmail: MutableMap<String, ContactEntity>,
-        agent: AIAgentEntity?,
-        type: String,
-        userId: Long
-    ): AgentContactEntity? {
-
-        val pureEmail = extractContactEmail(contact) ?: return null
-        val fields = contact.split(',', ';')
-
-        val contactEntity = contactsByEmail[pureEmail]?.apply {
-            fio = fields.getOrNull(0)
-        } ?: createAndSaveContactEntity(
-            contactsByEmail = contactsByEmail,
-            fields = fields,
-            pureEmail = pureEmail
-        )
-
-        return AgentContactEntity(agent = agent, type = type, contact = contactEntity)
-    }
-
-    private fun createAndSaveContactEntity(
-        contactsByEmail: MutableMap<String, ContactEntity>,
-        fields: List<String>,
-        pureEmail: String
-    ): ContactEntity {
-
-        val contactEntity = contactRepository.save(
-            ContactEntity().apply {
-                fio = fields.getOrNull(0)
-                email = pureEmail
-            }
-        )
-
-        contactsByEmail[pureEmail] = contactEntity
-        return contactEntity
-    }
-
-
-    private fun getValueOrNull(cell: PreparedCell?): String? {
-        if (cell == null) return null
-        return when (cell.cellType) {
-            CellType.STRING -> cell.stringCellValue.trim().takeIf { it !in listOf("-", "", "`") }
-
-            CellType.FORMULA -> {
-                when (cell.cachedFormulaResultType) {
-                    CellType.STRING -> cell.stringCellValue.trim().takeIf { it !in listOf("-", "", "`") }
-                    CellType.NUMERIC -> cell.numericCellValue.toString().trim().takeIf { it !in listOf("-", "", "`") }
-                    CellType.BOOLEAN -> cell.booleanCellValue.toString().trim().takeIf { it !in listOf("-", "", "`") }
-                    else -> null
-                }
-            }
-
-            CellType.NUMERIC -> cell.numericCellValue.toString().trim().takeIf { it !in listOf("-", "", "`") }
-
-            else -> null
-        }
-    }
-
-    private fun mapProcesses(
-        processesMappingDtos: List<ProcessesMappingDto>,
-        processCodesFromCell: List<String>,
-        dictionaries: AgentImportDictionaries,
-        rowNum: Int,
-        fileId: Long
-    ): MutableSet<ProcessEntity> {
-
-        val resultProcesses = mutableSetOf<ProcessEntity>()
-
-        processCodesFromCell.forEach { codeFromCell ->
-            var dpssCode = findDpssCode(processesMappingDtos = processesMappingDtos, searchString = codeFromCell)
-
-            if (dpssCode.isNullOrBlank()) {
-                dpssCode = codeFromCell
-            }
-
-            val processRef = dictionaries.processesByShortName[dpssCode]
-                ?: throw AiFileUploadException(
-                    AI_UPLOAD_UNKNOWN_PROCESS_CODE,
-                    messageProvider[AI_UPLOAD_UNKNOWN_PROCESS_CODE, codeFromCell, rowNum],
-                    fileId = fileId
-                )
-
-            resultProcesses.add(managedReference(ProcessEntity::class.java, processRef.id))
-        }
-
-        return resultProcesses
-    }
-
-
-    fun findDpssCode(processesMappingDtos: List<ProcessesMappingDto>, searchString: String): String? {
-        return processesMappingDtos.firstOrNull { it.codeAris == searchString }?.codeDpss
-    }
-
-    private fun getProcessCodesFromCell(cell: PreparedCell): List<String> {
-        val cellValue = getCellValueAsString(cell) ?: return emptyList()
-
-        return cellValue.split(", ")
-            .map { it.trim() }
-            .filter { it.isNotBlank() && it !in listOf("-", "", "`") }
-            .distinct()
-    }
-
-    private fun getCellValueAsString(cell: PreparedCell?): String? {
-        if (cell == null) return null
-        return when (cell.cellType) {
-            CellType.STRING ->
-                cell.stringCellValue.trim().takeIf { it.isNotBlank() && it !in listOf("-", "`") }
-
-            CellType.FORMULA -> {
-                when (cell.cachedFormulaResultType) {
-                    CellType.STRING -> cell.stringCellValue.trim().takeIf { it.isNotBlank() && it !in listOf("-", "`") }
-                    CellType.NUMERIC -> cell.numericCellValue.toString().trim()
-                        .takeIf { it.isNotBlank() && it !in listOf("-", "`") }
-
-                    CellType.BOOLEAN -> cell.booleanCellValue.toString().trim()
-                        .takeIf { it.isNotBlank() && it !in listOf("-", "`") }
-
-                    else -> null
-                }
-            }
-
-            CellType.NUMERIC ->
-                cell.numericCellValue.toString().trim()
-                    .takeIf { it.isNotBlank() && it !in listOf("-", "`") }
-
-            else -> null
-        }
-    }
-
-    private fun getValueOrNullFromFormula(cell: PreparedCell?): String? {
-        if (cell == null) return null
-        return when {
-            cell.cellType == CellType.FORMULA -> {
-                when (cell.cachedFormulaResultType) {
-                    CellType.STRING -> cell.stringCellValue.trim()
-                    CellType.NUMERIC -> cell.numericCellValue.toString().trim()
-                    CellType.BOOLEAN -> cell.booleanCellValue.toString().trim()
-                    else -> null
-                }
-            }
-
-            cell.cellType == CellType.STRING -> cell.stringCellValue.trim().takeIf { it !in listOf("-", "", "`") }
-            cell.cellType == CellType.NUMERIC -> cell.numericCellValue.toString().trim()
-                .takeIf { it !in listOf("-", "", "`") }
-
-            else -> null
-        }
-    }
-
-    private fun checkDoublesAndAdd(aiAgent: String, processedAiAgents: MutableSet<String>, fileId: Long) {
-        if (processedAiAgents.contains(aiAgent)) {
-            throw AiFileUploadException(
-                errorCode = AI_UPLOAD_DOUBLES,
-                message = MessageFormat.format(messageProvider[AI_UPLOAD_DOUBLES], aiAgent),
-                fileId = fileId
-            )
-        }
-        processedAiAgents.add(aiAgent)
-    }
-
-    private fun createException(exceptionType: String, row: PreparedRow, cell: PreparedCell, fileId: Long): AiFileUploadException {
-        return AiFileUploadException(
-            errorCode = exceptionType,
-            message = MessageFormat.format(messageProvider[exceptionType, cell.columnIndex.plus(1), row.rowNum.plus(1)]),
-            fileId = fileId
-        )
-    }
 
 }
 
+class PreparedExcelWorkbook(private val sheets: Map<String, PreparedSheet>, private val paths: List<Path>) : Closeable {
+
+    fun getSheet(name: String): PreparedSheet = sheets[name]
+        ?: throw IllegalArgumentException("Missing required Excel sheet: $name")
+
+    override fun close() {
+        paths.forEach { path -> runCatching { Files.deleteIfExists(path) } }
+    }
+
+    companion object {
+        // Не вводим дополнительный пользовательский лимит ячеек:
+        // исходный импорт ограничивал файл 20 МБ и число строк листа агентов.
+        fun create(source: Path, requiredSheetNames: List<String>): PreparedExcelWorkbook {
+            val sheetPaths = mutableListOf<Path>()
+            val result = linkedMapOf<String, PreparedSheet>()
+            try {
+                Files.newInputStream(source).use { sourceStream ->
+                    StreamingReader.builder().rowCacheSize(100).bufferSize(4096).open(sourceStream).use { workbook ->
+                        requiredSheetNames.distinct().forEach { name ->
+                            val sheet = workbook.getSheet(name)
+                                ?: throw IllegalArgumentException("Missing required Excel sheet: $name")
+                            val stagePath = Files.createTempFile("excel-import-rows-", ".stage")
+                            sheetPaths.add(stagePath)
+                            var rowCount = 0
+                            ObjectOutputStream(BufferedOutputStream(Files.newOutputStream(stagePath))).use { output ->
+                                sheet.forEach { row ->
+                                    val stagedCells = row.map { cell ->
+                                        PreparedCell.capture(cell)
+                                    }
+                                    output.writeObject(PreparedRow(row.rowNum, stagedCells))
+                                    output.reset() // Не удерживаем ссылки на прежние строки
+                                    rowCount++
+                                }
+                            }
+                            result[name] = PreparedSheet(stagePath, rowCount)
+                        }
+                    }
+                }
+                return PreparedExcelWorkbook(result, sheetPaths)
+            } catch (failure: Exception) {
+                sheetPaths.forEach { runCatching { Files.deleteIfExists(it) } }
+                throw failure
+            }
+        }
+    }
+}
+
+@Service
+class ExcelUploadService(
+    private val localFileTypeValidator: LocalFileTypeValidator,
+    private val messageProvider: MessageProvider,
+    private val fileUploadRepository: FileUploadRepository,
+    private val fileUploadStatusService: FileUploadStatusService,
+    private val registrationService: ExcelImportRegistrationService,
+    private val preparationService: ExcelImportPreparationService,
+    private val applicationService: ExcelImportApplyService,
+    private val uploadPermissionService: UploadPermissionService,
+    private val memoryMonitor: MemoryMonitor
+) {
+    private val log by logger()
+    private val executor = ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS,
+        SynchronousQueue(),
+        { task -> Thread(task, "excel-import-worker").apply { isDaemon = false } },
+        ThreadPoolExecutor.AbortPolicy()
+    )
+
+    fun getFileUploadInfo(id: Long): FileUploadInfoResponse = FileUploadInfoResponse(
+        fileUploadRepository.findByIdOrNull(id) ?: throw AiNotFoundException(
+            errorCode = FILE_UPLOAD_NOT_FOUND,
+            message = messageProvider[FILE_UPLOAD_NOT_FOUND]
+        )
+    )
+
+    /** Здесь НЕТ @Transactional: нельзя запускать worker до commit регистрации. */
+    fun upload(file: MultipartFile, userId: Long): Long {
+        // Как раньше: если слот занят, вернуть 403 ещё до проверки типа и содержимого файла.
+        // Это только пред-проверка для прежнего HTTP-контракта; реальный CAS — в register().
+        if (!uploadPermissionService.isUploadAllowed()) {
+            throw AiResponseException(
+                HttpStatus.FORBIDDEN,
+                FILE_UPLOAD_NOT_AllOWED,
+                message = messageProvider[FILE_UPLOAD_NOT_AllOWED]
+            )
+        }
+        if (!localFileTypeValidator.isFileTypeValid(file)) {
+            throw PrmResponseException(HttpStatus.BAD_REQUEST, FileNotValid, messageProvider[FileNotValid])
+        }
+        if (file.size > 20L * 1024 * 1024) {
+            throw AiResponseException(
+                HttpStatus.BAD_REQUEST,
+                AI_UPLOAD_MAX_FILE_SIZE,
+                MessageFormat.format(messageProvider[AI_UPLOAD_MAX_FILE_SIZE])
+            )
+        }
+
+        val source = java.nio.file.Files.createTempFile("excel-upload-source-", ".xlsx")
+        try {
+            // Диск, а не byte[] размера Excel внутри длительной задачи.
+            file.inputStream.use { input ->
+                java.nio.file.Files.newOutputStream(source).use { output -> input.copyTo(output) }
+            }
+            validateAgentRowCount(source)
+            val registered = registrationService.register(file.originalFilename.orEmpty(), userId)
+            try {
+                executor.execute { processAsync(source, registered) }
+            } catch (rejected: RejectedExecutionException) {
+                // Регистрация уже зафиксирована, поэтому ERROR — отдельной транзакцией.
+                runCatching {
+                    fileUploadStatusService.updateStatus(registered.fileUploadId, ERROR, "Import executor rejected task", registered.userId)
+                }.onFailure { log.error("Could not set ERROR after rejected import", it) }
+                runCatching { uploadPermissionService.release(registered.acquiredAt, registered.userId) }
+                    .onFailure { log.error("Could not release rejected import lock", it) }
+                throw rejected
+            }
+            return registered.fileUploadId
+        } catch (failure: Exception) {
+            // Worker уже получил путь и сам удалит его при успешном execute();
+            // здесь файл удаляется лишь при синхронной ошибке регистрации/валидации/submit.
+            // Выход из метода после execute() происходит раньше асинхронной обработки,
+            // и в успешном случае сюда не попадаем.
+            runCatching { java.nio.file.Files.deleteIfExists(source) }
+            throw failure
+        }
+    }
+
+    private fun validateAgentRowCount(path: Path) {
+        try {
+            java.nio.file.Files.newInputStream(path).use { source ->
+                StreamingReader.builder().rowCacheSize(100).bufferSize(4096).open(source).use { workbook ->
+                    val sheet = workbook.getSheet(AGENTS_SHEET_NAME)
+                        ?: throw IllegalArgumentException("Missing agents sheet")
+                    var rows = 0
+                    val iterator = sheet.iterator()
+                    while (iterator.hasNext()) {
+                        iterator.next()
+                        if (++rows > 10_000) {
+                            throw AiResponseException(
+                                HttpStatus.BAD_REQUEST,
+                                AI_UPLOAD_MAX_ROWS_SIZE,
+                                MessageFormat.format(messageProvider[AI_UPLOAD_MAX_ROWS_SIZE])
+                            )
+                        }
+                    }
+                    if (DATA_START_ROW_INDEX >= rows - 1) {
+                        throw AiResponseException(
+                            HttpStatus.BAD_REQUEST,
+                            AI_UPLOAD_EMPTY_FILE,
+                            MessageFormat.format(messageProvider[AI_UPLOAD_EMPTY_FILE])
+                        )
+                    }
+                }
+            }
+        } catch (known: AiResponseException) {
+            throw known
+        } catch (failure: Exception) {
+            throw AiResponseException(
+                HttpStatus.BAD_REQUEST,
+                AI_UPLOAD_CORRUPTED_FILE,
+                MessageFormat.format(messageProvider[AI_UPLOAD_CORRUPTED_FILE])
+            )
+        }
+    }
+
+    private fun processAsync(source: Path, registration: RegisteredExcelImport) {
+        try {
+            preparationService.prepare(source).use { prepared ->
+                // ВАЖНО: apply — отдельный Spring bean, иначе @Transactional не сработает.
+                applicationService.apply(prepared, registration)
+            }
+            log.info("Excel import completed successfully: fileUploadId={}", registration.fileUploadId)
+        } catch (failure: Exception) {
+            log.error("Excel import failed: fileUploadId={}", registration.fileUploadId, failure)
+            try {
+                fileUploadStatusService.updateStatus(
+                    registration.fileUploadId, ERROR, failure.message, registration.userId
+                )
+            } catch (statusFailure: Exception) {
+                log.error("Unable to update failed Excel import status", statusFailure)
+            }
+        } finally {
+            runCatching { uploadPermissionService.release(registration.acquiredAt, registration.userId) }
+                .onFailure { log.error("Unable to release owned Excel import lock", it) }
+            runCatching { java.nio.file.Files.deleteIfExists(source) }
+                .onFailure { log.warn("Unable to delete temporary Excel file", it) }
+            memoryMonitor.logMemoryUsage("- IMPORT FINISHED")
+        }
+    }
+
+    /** Контракт старого контроллера сохранён; принудительный unlock инвалидирует token worker. */
+    fun unlockFileUpload(userId: Long) {
+        uploadPermissionService.administrativeUnlock(userId)
+    }
+
+    @PreDestroy
+    fun shutdown() {
+        executor.shutdown()
+    }
+}
+
+@Service
+class UploadPermissionService(
+    private val permissionRepository: UploadPermissionRepository
+) {
+
+    /**
+     * Выполнить внутри транзакции регистрации file_upload.
+     *
+     * @return timestamp-токen захвата либо `null`, если слот занят (403).
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    fun acquire(userId: Long): LocalDateTime? {
+        // PostgreSQL TIMESTAMP хранит микросекунды; округляем до той же точности.
+        val acquiredAt = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS)
+        if (!permissionRepository.existsById("GLOBAL")) {
+            // Строка GLOBAL создаётся лениво, как в исходной схеме: первый импорт
+            // на чистой БД инициализирует блокировку, а не падает. Без новых миграций.
+            permissionRepository.saveAndFlush(
+                UploadPermission(
+                    id = "GLOBAL",
+                    uploadAllowed = true,
+                    lastUpdated = acquiredAt
+                )
+            )
+        }
+        return when (permissionRepository.tryAcquire(acquiredAt, userId)) {
+            1 -> acquiredAt
+            0 -> if (permissionRepository.existsById("GLOBAL")) null
+            else throw IllegalStateException("More than one GLOBAL upload permission row")
+            else -> throw IllegalStateException("More than one GLOBAL upload permission row")
+        }
+    }
+
+    /**
+     * Вызвать последним DB-действием основной apply-транзакции.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    fun confirmBeforeCommit(acquiredAt: LocalDateTime) {
+        if (permissionRepository.stillOwnerForUpdate(acquiredAt) != true) {
+            throw IllegalStateException("Excel import lost GLOBAL ownership before commit")
+        }
+    }
+
+    /**
+     * Отдельная короткая транзакция после commit/rollback; чужой lock не освобождает.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun release(acquiredAt: LocalDateTime, userId: Long) {
+        permissionRepository.releaseIfOwner(acquiredAt, userId)
+    }
+
+    /** Быстрая проверка для сохранения старого приоритета ошибки 403 над ошибкой файла.
+     * Атомарное получение блокировки происходит позже внутри register().
+     */
+    @Transactional(readOnly = true)
+    fun isUploadAllowed(): Boolean = permissionRepository.readPermissionFlag() ?: true
+
+    /** Прежний контракт ручной разблокировки без новых recovery-шедулеров. */
+    @Transactional
+    fun administrativeUnlock(userId: Long) {
+        if (permissionRepository.forceReleaseForAdmin(userId) != 1) {
+            throw IllegalStateException("GLOBAL upload permission row is missing")
+        }
+    }
+}
+
+@Repository
+interface UploadPermissionRepository : JpaRepository<UploadPermission, String> {
+
+    /**
+     * Атомарный CAS-захват глобального права на импорт: true→false.
+     * `last_updated` — микросекундный token владения текущей загрузкой.
+     */
+    @Modifying
+    @Query(
+        value = """
+            UPDATE upload_permission
+            SET upload_allowed = false,
+                last_updated = :acquiredAt,
+                updated_by = :userId
+            WHERE id = 'GLOBAL' AND upload_allowed = true
+        """,
+        nativeQuery = true
+    )
+    fun tryAcquire(@Param("acquiredAt") acquiredAt: LocalDateTime, @Param("userId") userId: Long): Int
+
+    /**
+     * Условное освобождение права только владельцем по timestamp-токену.
+     */
+    @Modifying
+    @Query(
+        value = """
+            UPDATE upload_permission
+            SET upload_allowed = true,
+                last_updated = clock_timestamp(),
+                updated_by = :userId
+            WHERE id = 'GLOBAL' AND upload_allowed = false
+              AND last_updated = :acquiredAt
+        """,
+        nativeQuery = true
+    )
+    fun releaseIfOwner(@Param("acquiredAt") acquiredAt: LocalDateTime, @Param("userId") userId: Long): Int
+
+    /**
+     * FOR UPDATE держит row lock до COMMIT основной транзакции.
+     * Проверяется и флаг, и timestamp-токен, чтобы старый worker не закоммитил
+     * после ручной разблокировки и запуска следующего worker.
+     */
+    @Query(
+        value = """
+            SELECT (upload_allowed = false AND last_updated = :acquiredAt)
+            FROM upload_permission
+            WHERE id = 'GLOBAL'
+            FOR UPDATE
+        """,
+        nativeQuery = true
+    )
+    fun stillOwnerForUpdate(@Param("acquiredAt") acquiredAt: LocalDateTime): Boolean?
+
+    /**
+     * Публичный административный unlock работает как раньше: принудительно открывает слот.
+     * Текущий worker перед COMMIT обязательно обнаружит потерю владения и откатится.
+     * Вызывать вручную только после проверки, что активный импорт не выполняется.
+     */
+    @Modifying
+    @Query(
+        value = """
+            UPDATE upload_permission
+            SET upload_allowed = true,
+                last_updated = clock_timestamp(),
+                updated_by = :userId
+            WHERE id = 'GLOBAL'
+        """,
+        nativeQuery = true
+    )
+    fun forceReleaseForAdmin(@Param("userId") userId: Long): Int
+
+    @Query(value = "SELECT upload_allowed FROM upload_permission WHERE id='GLOBAL'", nativeQuery = true)
+    fun readPermissionFlag(): Boolean?
+}
+
+internal class ExcelImportIntegrationTest : AbstractIntegrationTest() {
+
+    @Autowired private lateinit var excelUploadService: ExcelUploadService
+    @Autowired private lateinit var registrationService: ExcelImportRegistrationService
+    @Autowired private lateinit var permissionService: UploadPermissionService
+    @Autowired private lateinit var fileUploadRepository: FileUploadRepository
+    @Autowired private lateinit var aiAgentRepository: AIAgentRepository
+    @Autowired private lateinit var appliedMetricRepository: AppliedMetricRepository
+    @Autowired private lateinit var jdbcTemplate: JdbcTemplate
+
+    @MockkBean(relaxed = true)
+    private lateinit var internalTerBanksApiClient: InternalTerBanksApiClient
+
+    private val createdUploadIds = mutableSetOf<Long>()
+    private val asyncUploadIds = mutableSetOf<Long>()
+
+    private companion object {
+        const val TEST_USER_ID = 1L
+        const val TEST_BLOCK_CODE = "integration-block"
+        const val TEST_BLOCK_NAME = "КИБ"
+        const val FIXTURE_PATH = "src/test/resources/integration/xlsx/agents.xlsx"
+        const val FORCED_ROLLBACK_MESSAGE = "integration-forced-rollback-after-agents"
+
+        // Исключаем только технические поля: даты создания и обновления
+        // могут намеренно меняться при повторном импорте.
+        val BUSINESS_TABLES = listOf(
+            "ai_agent", "applied_metric", "agent_contact", "contact",
+            "implemented_platform", "involved_resource", "agent_status_sla",
+            "agent_quality_gate", "agent_process", "agent_enabler",
+            "platform", "program", "process", "block", "division"
+        )
+    }
+
+    @BeforeEach
+    fun prepareTest() {
+        createdUploadIds.clear()
+        asyncUploadIds.clear()
+        mockCurrentDate(LocalDate.of(2025, 1, 1))
+
+        every { internalTerBanksApiClient.findAll() } returns ResponseEntity.ok(
+            listOf(TerBank().apply {
+                id = 12
+                code = 0
+                name = "Центральный аппарат"
+                shortName = "ЦА"
+            })
+        )
+
+        // Используем integration-block: этот код уже есть в предоставленном
+        // integration/clearTables.sql. В отличие от aib-integration-block,
+        // он будет удалён существующей очисткой.
+        seedBlockIfMissing(TEST_BLOCK_CODE, TEST_BLOCK_NAME, "Корпоративно-инвестиционный бизнес")
+        jdbcTemplate.update(
+            "UPDATE upload_permission SET upload_allowed = true, last_updated = clock_timestamp() WHERE id = 'GLOBAL'"
+        )
+    }
+
+    @AfterEach
+    fun cleanup() {
+        // Нельзя TRUNCATE бизнес-таблицы, пока продолжается async worker.
+        asyncUploadIds.forEach { waitUntilFinishedAndUnlocked(it) }
+        removeLateFailureTrigger()
+
+        executeSqlScript("integration/sql/clearTables.sql")
+
+        // Существующий скрипт не очищает file_upload. Удаляем только записи
+        // конкретно этого теста, не затрагивая соседние тесты.
+        createdUploadIds.forEach { uploadId ->
+            if (fileUploadRepository.existsById(uploadId)) {
+                fileUploadRepository.deleteById(uploadId)
+            }
+        }
+        jdbcTemplate.update(
+            "UPDATE upload_permission SET upload_allowed = true, last_updated = clock_timestamp() WHERE id = 'GLOBAL'"
+        )
+    }
+
+    private fun seedBlockIfMissing(code: String, shortName: String, name: String) {
+        val count = jdbcTemplate.queryForObject(
+            "SELECT count(*) FROM block WHERE code = ?", Int::class.java, code
+        ) ?: 0
+        if (count == 0) {
+            jdbcTemplate.update(
+                "INSERT INTO block (code, short_name, name, disabled) VALUES (?, ?, ?, false)",
+                code, shortName, name
+            )
+        }
+    }
+
+    private fun xlsx(): MockMultipartFile = multipart(Files.readAllBytes(Paths.get(FIXTURE_PATH)))
+
+    private fun multipart(bytes: ByteArray): MockMultipartFile = MockMultipartFile(
+        "file", "agents.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes
+    )
+
+    private fun startImport(file: MockMultipartFile = xlsx()): Long {
+        val fileUploadId = excelUploadService.upload(file, TEST_USER_ID)
+        createdUploadIds.add(fileUploadId)
+        asyncUploadIds.add(fileUploadId)
+        return fileUploadId
+    }
+
+    /**
+     * SUCCESS/ERROR в БД может появиться раньше, чем сработает finally worker.
+     * Поэтому возвращаемся только когда status терминальный И GLOBAL освобождён.
+     */
+    private fun waitUntilFinishedAndUnlocked(fileUploadId: Long): FileUploadEntity {
+        await().atMost(120, TimeUnit.SECONDS).untilAsserted {
+            val status = fileUploadRepository.findById(fileUploadId).orElseThrow().status
+            assertTrue(
+                status == FileUploadStatus.SUCCESS || status == FileUploadStatus.ERROR,
+                "Импорт $fileUploadId ещё выполняется: status=$status"
+            )
+            assertTrue(isUploadAllowed(), "Импорт $fileUploadId завершился, но GLOBAL ещё заблокирован")
+        }
+        return fileUploadRepository.findById(fileUploadId).orElseThrow()
+    }
+
+    private fun isUploadAllowed(): Boolean = jdbcTemplate.queryForObject(
+        "SELECT upload_allowed FROM upload_permission WHERE id = 'GLOBAL'", Boolean::class.java
+    ) == true
+
+    /**
+     * Снимок бизнес-значений для проверки повторного импорта и rollback.
+     * PK agent_contact/applied_metric включены: неизменённые строки теперь
+     * должны сохранять идентификаторы, а не физически пересоздаваться.
+     * Исключены только временные и аудиторские поля, зависящие от момента загрузки.
+     */
+    private fun businessSnapshot(): Map<String, List<String>> = BUSINESS_TABLES.associateWith { table ->
+        jdbcTemplate.queryForList(
+            """
+                SELECT (to_jsonb(t) - 'created' - 'updated' - 'created_by' - 'updated_by')::text
+                FROM "$table" t
+                ORDER BY 1
+            """.trimIndent(),
+            String::class.java
+        )
+    }
+
+    @Test
+    fun `should import same Excel twice without changing business data or increasing counts`() {
+        val first = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, first.status, "Первая загрузка: ${first.errorDescription}")
+
+        val firstSnapshot = businessSnapshot()
+        val agentCount = aiAgentRepository.count()
+        val metricCount = appliedMetricRepository.count()
+        assertTrue(agentCount > 0, "Фикстура не создала агентов: проверка была бы бесполезна")
+
+        val second = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, second.status, "Повторная загрузка: ${second.errorDescription}")
+        assertTrue(isUploadAllowed())
+        assertEquals(agentCount, aiAgentRepository.count())
+        assertEquals(metricCount, appliedMetricRepository.count())
+        assertEquals(firstSnapshot, businessSnapshot(), "Повторный импорт изменил бизнес-данные")
+    }
+
+    @Test
+    fun `should fill legacy success audit fields`() {
+        val uploaded = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, uploaded.status)
+        assertNull(uploaded.errorDescription, "SUCCESS не должен оставлять Processing started...")
+        assertEquals(TEST_USER_ID, uploaded.updatedBy)
+        assertNotNull(uploaded.uploaded)
+        assertNotNull(uploaded.updated)
+    }
+
+    @Test
+    fun `should preserve unchanged metric ids and audit timestamps on repeated import`() {
+        val first = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, first.status)
+
+        val before = jdbcTemplate.queryForList(
+            "SELECT id, ai_agent_id, metric_id, type, current_value, created, updated FROM applied_metric ORDER BY id"
+        )
+        assertTrue(before.isNotEmpty(), "Для этого теста XLSX должен содержать хотя бы одну метрику")
+
+        val second = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, second.status)
+
+        val after = jdbcTemplate.queryForList(
+            "SELECT id, ai_agent_id, metric_id, type, current_value, created, updated FROM applied_metric ORDER BY id"
+        )
+        assertEquals(before, after, "Неизменённые метрики не должны пересоздаваться или обновляться")
+    }
+
+    @Test
+    fun `should update changed metric value without replacing its row`() {
+        val first = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, first.status)
+
+        val before = jdbcTemplate.queryForMap(
+            "SELECT id, current_value, created FROM applied_metric ORDER BY id LIMIT 1"
+        )
+        val metricId = (before.getValue("id") as Number).toLong()
+        val originalValue = before.getValue("current_value") as java.math.BigDecimal
+        val created = before["created"]
+
+        jdbcTemplate.update(
+            "UPDATE applied_metric SET current_value = ? WHERE id = ?",
+            originalValue.add(java.math.BigDecimal("123.0")), metricId
+        )
+
+        val second = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, second.status)
+        val after = jdbcTemplate.queryForMap(
+            "SELECT id, current_value, created FROM applied_metric WHERE id = ?", metricId
+        )
+        assertEquals(metricId, (after.getValue("id") as Number).toLong())
+        assertEquals(0, (after.getValue("current_value") as java.math.BigDecimal).compareTo(originalValue))
+        assertEquals(created, after["created"], "Изменение значения не должно заменять метрику")
+    }
+
+    @Test
+    fun `should preserve imported contact row but clear legacy non PULT user ownership`() {
+        val first = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, first.status)
+
+        // Ищем импортированную ссылку из настоящего XLSX, а не синтетическую:
+        // после повторного импорта ссылка должна иметь тот же id.
+        val contactLink = jdbcTemplate.queryForList(
+            """
+                SELECT ac.id, ac.agent_id, ac.contact_id, ac.type
+                FROM agent_contact ac
+                JOIN ai_agent agent ON agent.id = ac.agent_id
+                WHERE agent.agent_id NOT LIKE '%PULT%'
+                  AND agent.import_status IS DISTINCT FROM 'blocked'
+                ORDER BY ac.id
+                LIMIT 1
+            """.trimIndent()
+        ).firstOrNull() ?: error("Для теста нужен non-PULT контакт из XLSX")
+
+        val linkId = (contactLink.getValue("id") as Number).toLong()
+        val expectedAgentId = (contactLink.getValue("agent_id") as Number).toLong()
+        val expectedContactId = (contactLink.getValue("contact_id") as Number).toLong()
+        val expectedType = contactLink["type"]
+        jdbcTemplate.update("UPDATE agent_contact SET user_id = ? WHERE id = ?", 987654321L, linkId)
+
+        val second = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, second.status)
+
+        val after = jdbcTemplate.queryForMap(
+            "SELECT id, agent_id, contact_id, type, user_id FROM agent_contact WHERE id = ?", linkId
+        )
+        assertEquals(linkId, (after.getValue("id") as Number).toLong())
+        assertEquals(expectedAgentId, (after.getValue("agent_id") as Number).toLong())
+        assertEquals(expectedContactId, (after.getValue("contact_id") as Number).toLong())
+        assertEquals(expectedType, after["type"])
+        assertNull(after["user_id"], "У non-PULT импортной связи userId должен стать null")
+    }
+
+    @Test
+    fun `should remove obsolete non PULT contact links but retain unchanged ones`() {
+        val first = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, first.status)
+
+        val contactLink = jdbcTemplate.queryForList(
+            """
+                SELECT ac.id, ac.agent_id, ac.contact_id
+                FROM agent_contact ac
+                JOIN ai_agent agent ON agent.id = ac.agent_id
+                WHERE agent.agent_id NOT LIKE '%PULT%'
+                  AND agent.import_status IS DISTINCT FROM 'blocked'
+                ORDER BY ac.id LIMIT 1
+            """.trimIndent()
+        ).firstOrNull() ?: error("Для теста нужен non-PULT контакт из XLSX")
+        val existingLinkId = (contactLink.getValue("id") as Number).toLong()
+        val agentId = (contactLink.getValue("agent_id") as Number).toLong()
+        val contactId = (contactLink.getValue("contact_id") as Number).toLong()
+        val obsoleteId = jdbcTemplate.queryForObject(
+            """
+                INSERT INTO agent_contact (agent_id, contact_id, type, user_id)
+                VALUES (?, ?, 'obsolete-integration-contact', 987654321)
+                RETURNING id
+            """.trimIndent(), Long::class.java, agentId, contactId
+        ) ?: error("Не удалось создать устаревшую тестовую ссылку")
+
+        val second = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, second.status)
+        assertTrue(jdbcTemplate.queryForObject(
+            "SELECT EXISTS(SELECT 1 FROM agent_contact WHERE id = ?)", Boolean::class.java, existingLinkId
+        ) == true, "Неизменённая ссылка была пересоздана")
+        assertTrue(jdbcTemplate.queryForObject(
+            "SELECT EXISTS(SELECT 1 FROM agent_contact WHERE id = ?)", Boolean::class.java, obsoleteId
+        ) == false, "Устаревшая non-PULT ссылка не удалена")
+    }
+
+    @Test
+    fun `should update agent name from modified Excel and keep metrics unchanged`() {
+        val initial = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, initial.status, initial.errorDescription)
+        val metricsBefore = businessSnapshot().getValue("applied_metric")
+        val countBefore = aiAgentRepository.count()
+
+        val (modifiedFile, changedAgentId, changedName) = xlsxWithChangedAgentName()
+        val updated = waitUntilFinishedAndUnlocked(startImport(modifiedFile))
+        assertEquals(FileUploadStatus.SUCCESS, updated.status, updated.errorDescription)
+
+        assertEquals(changedName, aiAgentRepository.findFirstByAgentId(changedAgentId)?.agentName)
+        assertEquals(countBefore, aiAgentRepository.count())
+        assertEquals(metricsBefore, businessSnapshot().getValue("applied_metric"))
+    }
+
+    private fun xlsxWithChangedAgentName(): Triple<MockMultipartFile, String, String> {
+        XSSFWorkbook(ByteArrayInputStream(Files.readAllBytes(Paths.get(FIXTURE_PATH)))).use { workbook ->
+            val sheet = workbook.getSheet(AGENTS_SHEET_NAME)
+            val header = sheet.getRow(1) // В AgentSheetService заголовки — вторая строка.
+            val formatter = DataFormatter()
+            val idColumn = (0 until header.lastCellNum.toInt()).first { index ->
+                formatter.formatCellValue(header.getCell(index)) == AGENT_ID
+            }
+            val nameColumn = (0 until header.lastCellNum.toInt()).first { index ->
+                formatter.formatCellValue(header.getCell(index)) == AGENT_NAME
+            }
+            val agentRow = (2..sheet.lastRowNum)
+                .mapNotNull(sheet::getRow)
+                .first { row -> formatter.formatCellValue(row.getCell(idColumn)).isNotBlank() }
+
+            val agentId = formatter.formatCellValue(agentRow.getCell(idColumn)).trim()
+            val originalName = aiAgentRepository.findFirstByAgentId(agentId)?.agentName
+            assertNotNull(originalName, "Не найден агент из первой загрузки: $agentId")
+            val changedName = "$originalName - integration updated"
+            assertNotEquals(originalName, changedName)
+
+            agentRow.getCell(nameColumn, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK)
+                .setCellValue(changedName)
+            val bytes = ByteArrayOutputStream().use { output ->
+                workbook.write(output)
+                output.toByteArray()
+            }
+            return Triple(multipart(bytes), agentId, changedName)
+        }
+    }
+
+    /**
+     * Ошибка на завершающем UPDATE file_upload.status=SUCCESS, когда все
+     * бизнес-изменения уже выполнены в этой же транзакции.
+     * PostgreSQL trigger создаётся только в embedded БД теста.
+     * Никаких production-миграций или дополнительных таблиц.
+     */
+    private fun installLateFailureTrigger() {
+        jdbcTemplate.execute(
+            """
+                CREATE OR REPLACE FUNCTION integration_fail_excel_import_success()
+                RETURNS trigger AS ${'$'}${'$'}
+                BEGIN
+                    RAISE EXCEPTION '$FORCED_ROLLBACK_MESSAGE';
+                END;
+                ${'$'}${'$'} LANGUAGE plpgsql
+            """.trimIndent()
+        )
+        jdbcTemplate.execute(
+            """
+                CREATE TRIGGER integration_fail_excel_import_success
+                BEFORE UPDATE OF status ON file_upload
+                FOR EACH ROW WHEN (lower(NEW.status::text) = 'success')
+                EXECUTE FUNCTION integration_fail_excel_import_success()
+            """.trimIndent()
+        )
+    }
+
+    private fun removeLateFailureTrigger() {
+        jdbcTemplate.execute("DROP TRIGGER IF EXISTS integration_fail_excel_import_success ON file_upload")
+        jdbcTemplate.execute("DROP FUNCTION IF EXISTS integration_fail_excel_import_success()")
+    }
+
+    @Test
+    fun `should roll back all business tables when final success update fails`() {
+        val before = businessSnapshot()
+        val agentCountBefore = aiAgentRepository.count()
+        installLateFailureTrigger()
+
+        val failed = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.ERROR, failed.status)
+        assertTrue(
+            failed.errorDescription?.contains(FORCED_ROLLBACK_MESSAGE) == true,
+            "Ошибка должна быть от тестового PostgreSQL trigger: ${failed.errorDescription}"
+        )
+        assertEquals(before, businessSnapshot(), "После ERROR остались частично применённые данные")
+        assertEquals(agentCountBefore, aiAgentRepository.count())
+        assertTrue(isUploadAllowed(), "После rollback не освободилась блокировка")
+    }
+
+    @Test
+    fun `should roll back updates to existing agents when final success update fails`() {
+        val initial = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, initial.status, initial.errorDescription)
+        val before = businessSnapshot()
+        val (modifiedFile, changedAgentId, changedName) = xlsxWithChangedAgentName()
+        installLateFailureTrigger()
+
+        val failed = waitUntilFinishedAndUnlocked(startImport(modifiedFile))
+        assertEquals(FileUploadStatus.ERROR, failed.status)
+        assertTrue(
+            failed.errorDescription?.contains(FORCED_ROLLBACK_MESSAGE) == true,
+            "Ошибка должна быть от тестового PostgreSQL trigger: ${failed.errorDescription}"
+        )
+        assertEquals(before, businessSnapshot(), "Изменения существующих данных не откатились")
+        assertNotEquals(changedName, aiAgentRepository.findFirstByAgentId(changedAgentId)?.agentName)
+    }
+
+    @Test
+    fun `should leave business tables unchanged when preparation fails`() {
+        val before = businessSnapshot()
+        every { internalTerBanksApiClient.findAll() } throws
+                IllegalStateException("integration-terbanks-unavailable")
+
+        val failed = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.ERROR, failed.status)
+        assertEquals(before, businessSnapshot())
+        assertTrue(isUploadAllowed())
+    }
+
+    @Test
+    fun `should not let stale registration release lock owned by another import`() {
+        val first = registrationService.register("first.xlsx", TEST_USER_ID)
+        createdUploadIds.add(first.fileUploadId)
+        var second: RegisteredExcelImport? = null
+        try {
+            // Имитируем административную разблокировку ПОСЛЕ гибели старого worker.
+            // Реальный worker в этом тесте не запускался.
+            jdbcTemplate.update(
+                "UPDATE upload_permission SET upload_allowed = true, last_updated = clock_timestamp() WHERE id = 'GLOBAL'"
+            )
+            second = registrationService.register("second.xlsx", TEST_USER_ID)
+            createdUploadIds.add(second.fileUploadId)
+
+            permissionService.release(first.acquiredAt, first.userId)
+            assertTrue(!isUploadAllowed(), "Старый владелец снял чужую блокировку")
+        } finally {
+            second?.let { permissionService.release(it.acquiredAt, it.userId) }
+        }
+        assertTrue(isUploadAllowed())
+    }
+
+    @Test
+    fun `should allow only one of two concurrent registrations`() {
+        val executor = Executors.newFixedThreadPool(2)
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val register = Callable<RegisteredExcelImport?> {
+            ready.countDown()
+            check(start.await(10, TimeUnit.SECONDS)) { "Registration start timeout" }
+            try {
+                registrationService.register("parallel.xlsx", TEST_USER_ID)
+            } catch (_: AiResponseException) {
+                null
+            }
+        }
+
+        val firstFuture = executor.submit(register)
+        val secondFuture = executor.submit(register)
+        val acquired = mutableListOf<RegisteredExcelImport>()
+        try {
+            assertTrue(ready.await(10, TimeUnit.SECONDS), "Не стартовали оба потока")
+            start.countDown()
+            val results = listOf(
+                firstFuture.get(20, TimeUnit.SECONDS),
+                secondFuture.get(20, TimeUnit.SECONDS)
+            )
+            acquired.addAll(results.filterNotNull())
+            createdUploadIds.addAll(acquired.map { it.fileUploadId })
+            assertEquals(1, acquired.size, "Два потока одновременно получили GLOBAL")
+            assertTrue(!isUploadAllowed(), "При захваченном GLOBAL должен быть false")
+        } finally {
+            start.countDown()
+            acquired.forEach { registration ->
+                permissionService.release(registration.acquiredAt, registration.userId)
+            }
+            executor.shutdownNow()
+        }
+        assertTrue(isUploadAllowed(), "GLOBAL не освободился после release")
+    }
+}
 ```
