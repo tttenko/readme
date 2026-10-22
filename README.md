@@ -1,589 +1,344 @@
 ```java
 
-@DisplayName("InitiativeRegistryExportService tests")
-class InitiativeRegistryExportServiceTest {
+/**
+ * Проверяет реальный Excel-импорт в Embedded PostgreSQL (Zonky).
+ * Мокается только внешний Feign-клиент тербанков; бизнес-сервисы реальные.
+ *
+ * ВАЖНО: @SpykBean для ProcessRepository используется для контролируемого
+ * сбоя в самом конце бизнес-обработки. Метод до этого момента не подменяется.
+ */
+internal class ExcelImportIntegrationTest : AbstractIntegrationTest() {
 
-    private lateinit var terBankService: TerBankService
-    private lateinit var aiAgentRepository: AIAgentRepository
-    private lateinit var statusRepository: StatusRepository
-    private lateinit var agentStatusSlaRepository: AgentStatusSlaRepository
-    private lateinit var authFeignClient: PrmAuthFeignClient
-    private lateinit var financialEffectRepository: InitiativeFinancialEffectRepository
-    private lateinit var service: InitiativeRegistryExportService
+    @Autowired private lateinit var excelUploadService: ExcelUploadService
+    @Autowired private lateinit var registrationService: ExcelImportRegistrationService
+    @Autowired private lateinit var permissionService: UploadPermissionService
+    @Autowired private lateinit var fileUploadRepository: FileUploadRepository
+    @Autowired private lateinit var aiAgentRepository: AIAgentRepository
+    @Autowired private lateinit var appliedMetricRepository: AppliedMetricRepository
+    @Autowired private lateinit var jdbcTemplate: JdbcTemplate
 
-    private val objectMapper = ObjectMapper()
+    @MockkBean(relaxed = true)
+    private lateinit var internalTerBanksApiClient: InternalTerBanksApiClient
+
+    @SpykBean
+    private lateinit var processRepository: ProcessRepository
+
+    private val createdUploadIds = mutableSetOf<Long>()
+    private val asyncUploadIds = mutableSetOf<Long>()
+
+    private companion object {
+        const val TEST_USER_ID = 1L
+        const val TEST_BLOCK_CODE = "integration-block"
+        const val TEST_BLOCK_NAME = "КИБ"
+        const val FIXTURE_PATH = "src/test/resources/integration/xlsx/agents.xlsx"
+        const val FORCED_ROLLBACK_MESSAGE = "integration-forced-rollback-after-agents"
+
+        // Исключаем только технические поля: даты создания и обновления
+        // могут намеренно меняться при повторном импорте.
+        val BUSINESS_TABLES = listOf(
+            "ai_agent", "applied_metric", "agent_contact", "contact",
+            "implemented_platform", "involved_resource", "agent_status_sla",
+            "agent_quality_gate", "agent_process", "agent_enabler",
+            "platform", "program", "process", "block", "division"
+        )
+    }
 
     @BeforeEach
-    fun setUp() {
-        terBankService = mockk()
-        aiAgentRepository = mockk()
-        statusRepository = mockk()
-        agentStatusSlaRepository = mockk()
-        authFeignClient = mockk()
-        financialEffectRepository = mockk()
+    fun prepareTest() {
+        createdUploadIds.clear()
+        asyncUploadIds.clear()
+        mockCurrentDate(LocalDate.of(2025, 1, 1))
 
-        service = InitiativeRegistryExportService(
-            mapper = InitiativeRegistryMapper(),
-            terBankService = terBankService,
-            aiAgentRepository = aiAgentRepository,
-            statusRepository = statusRepository,
-            agentStatusSlaRepository = agentStatusSlaRepository,
-            authFeignClient = authFeignClient,
-            financialEffectRepository = financialEffectRepository
+        every { internalTerBanksApiClient.findAll() } returns ResponseEntity.ok(
+            listOf(TerBank().apply {
+                id = 12
+                code = 0
+                name = "Центральный аппарат"
+                shortName = "ЦА"
+            })
         )
 
-        ReflectionUtils.setField(service, "portalUrl", "https://pult.sber.ru/")
-    }
-
-    private fun status(code: String, ordering: Long) = StatusEntity().also {
-        it.id = ordering
-        it.code = code
-        it.name = code
-        it.ordering = ordering
-    }
-
-    private fun sla(statusCode: String, plannedDate: LocalDateTime? = null, initiativeId: Long? = 1L) =
-        AgentStatusSlaEntity().also {
-            it.primaryKey.aiAgentId = initiativeId
-            it.agentStatus = status(statusCode, 1L)
-            it.plannedDate = plannedDate
-        }
-
-    private fun agent(id: Long) = AIAgentEntity().also {
-        it.id = id
-        it.agentId = "AI-$id"
-        it.agentName = "Инициатива $id"
-    }
-
-    private fun financialEffect(
-        id: Long,
-        initiativeId: Long,
-        effectYear: Int = 2026,
-        plan: String = "1000",
-        fact: String? = "1200",
-        targetMonth: LocalDate = YearMonth.of(2026, 3).atDay(1),
-        code: String = "revenue",
-        typeName: String = "Выручка",
-        unit: String = "руб.",
-        approvalLinks: List<String> = listOf("https://jira.example.com/PRM-1"),
-    ): InitiativeFinancialEffectEntity {
-        val type = FinancialEffectTypeEntity(
-            code = code,
-            name = typeName,
-            unit = unit,
-            moreIsBetter = true,
+        // Используем integration-block: этот код уже есть в предоставленном
+        // integration/clearTables.sql. В отличие от aib-integration-block,
+        // он будет удалён существующей очисткой.
+        seedBlockIfMissing(TEST_BLOCK_CODE, TEST_BLOCK_NAME, "Корпоративно-инвестиционный бизнес")
+        jdbcTemplate.update(
+            "UPDATE upload_permission SET upload_allowed = true, last_updated = clock_timestamp() WHERE id = 'GLOBAL'"
         )
-        return InitiativeFinancialEffectEntity(
-            initiative = AIAgentEntity().apply { this.id = initiativeId },
-            effectYear = effectYear,
-            type = type,
-            planValue = BigDecimal(plan),
-            factValue = fact?.let { BigDecimal(it) },
-            targetMonth = targetMonth,
-            approvalLinks = objectMapper.valueToTree(approvalLinks),
-            disabled = false,
-            createdBy = 1L,
-        ).apply {
-            this.id = id
-            this.created = LocalDateTime.of(effectYear, 1, 1, 0, 0)
-        }
     }
 
-    private fun mockExportDependencies(agents: List<AIAgentEntity> = listOf(agent(1L))) {
-        every { terBankService.list() } returns emptyList()
-        every { aiAgentRepository.findAll() } returns agents
-        every { statusRepository.findAllActive() } returns emptyList()
-        every { agentStatusSlaRepository.findAllByAiAgentIdIn(any()) } returns emptyList()
-        every { financialEffectRepository.findActiveByInitiativeIds(any()) } returns emptyList()
-    }
+    @AfterEach
+    fun cleanup() {
+        // Нельзя TRUNCATE бизнес-таблицы, пока продолжается async worker.
+        asyncUploadIds.forEach { waitUntilFinishedAndUnlocked(it) }
 
-    @Test
-    fun `should use findAll including disabled and load sla in bulk`() {
-        // given
-        val activeAgent = AIAgentEntity().also {
-            it.id = 1L
-            it.agentId = "AI-1"
-            it.agentStatus = status("pilot", 3L)
-            it.disabled = false
+        executeSqlScript("integration/sql/clearTables.sql")
+
+        // Существующий скрипт не очищает file_upload. Удаляем только записи
+        // конкретно этого теста, не затрагивая соседние тесты.
+        createdUploadIds.forEach { uploadId ->
+            if (fileUploadRepository.existsById(uploadId)) {
+                fileUploadRepository.deleteById(uploadId)
+            }
         }
-
-        val disabledAgent = AIAgentEntity().also {
-            it.id = 2L
-            it.agentId = "AI-2"
-            it.agentStatus = status("development", 2L)
-            it.disabled = true
-        }
-
-        every { terBankService.list() } returns emptyList()
-        every { aiAgentRepository.findAll() } returns listOf(activeAgent, disabledAgent)
-        every { statusRepository.findAllActive() } returns listOf(
-            status("analysis", 1L),
-            status("development", 2L),
-            status("pilot", 3L),
-            status("targetSolution", 4L),
+        jdbcTemplate.update(
+            "UPDATE upload_permission SET upload_allowed = true, last_updated = clock_timestamp() WHERE id = 'GLOBAL'"
         )
-        every { agentStatusSlaRepository.findAllByAiAgentIdIn(any()) } returns
-                listOf(sla("development", LocalDateTime.of(2026, 9, 1, 10, 0)))
-        every { financialEffectRepository.findActiveByInitiativeIds(any()) } returns emptyList()
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        verify(exactly = 1) { aiAgentRepository.findAll() }
-        verify(exactly = 1) { agentStatusSlaRepository.findAllByAiAgentIdIn(listOf(1L, 2L)) }
-        verify(exactly = 0) { agentStatusSlaRepository.findAllByAiAgentId(any()) }
-        verify(exactly = 1) { financialEffectRepository.findActiveByInitiativeIds(setOf(1L, 2L)) }
-
-        assertEquals(HttpStatus.OK, response.statusCode)
-        assertEquals(InitiativeRegistryExportService.XLSX_MEDIA_TYPE, response.headers.contentType)
     }
 
-    @Test
-    fun `should set exact content disposition filename`() {
-        // given
-        val agent = AIAgentEntity().also {
-            it.id = 1L
-            it.agentId = "AI-1"
-        }
-
-        mockExportDependencies(listOf(agent))
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        val disposition = ContentDisposition.parse(response.headers.getFirst(HttpHeaders.CONTENT_DISPOSITION)!!)
-
-        assertEquals(InitiativeRegistryExportService.FILE_NAME, disposition.filename)
-    }
-
-    @Test
-    fun `should produce 27 columns in the required order`() {
-        // given
-        val agent = AIAgentEntity().also {
-            it.id = 1L
-            it.agentId = "AI-1"
-        }
-
-        mockExportDependencies(listOf(agent))
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            val headerRow = workbook.getSheetAt(0).getRow(0)
-
-            assertEquals(27, headerRow.physicalNumberOfCells)
-
-            val expectedHeaders = listOf(
-                "ID AI-агента",
-                "Блок",
-                "Трайб",
-                "ТБ",
-                "Наименование",
-                "Описание",
-                "Проблема, которую решает",
-                "Текущий статус",
-                "Ссылка JIRA",
-                "CROSSGOAL",
-                "GIGAUSAGE",
-                "Тип инициативы",
-                "Аудитория",
-                "Программа AI-трансформации",
-                "Поверхности",
-                "Архив",
-                "Ссылка на инициативу в Пульт",
-                "Email контакта",
-                "Статус этапа — Концепция",
-                "Дедлайн этапа — Концепция",
-                "Статус этапа — PoC",
-                "Дедлайн этапа — PoC",
-                "Статус этапа — MVP",
-                "Дедлайн этапа — MVP",
-                "Статус этапа — Целевое решение",
-                "Дедлайн этапа — Целевое решение",
-                "КЭ модуля"
+    private fun seedBlockIfMissing(code: String, shortName: String, name: String) {
+        val count = jdbcTemplate.queryForObject(
+            "SELECT count(*) FROM block WHERE code = ?", Int::class.java, code
+        ) ?: 0
+        if (count == 0) {
+            jdbcTemplate.update(
+                "INSERT INTO block (code, short_name, name, disabled) VALUES (?, ?, ?, false)",
+                code, shortName, name
             )
-
-            val headers = (0 until 27).map { headerRow.getCell(it).stringCellValue }
-
-            assertEquals(expectedHeaders, headers)
         }
     }
 
-    @Test
-    fun `should set active excel hyperlink for initiative url column`() {
-        // given
-        val agent = AIAgentEntity().also {
-            it.id = 100L
-            it.agentId = "AI-100"
-            it.disabled = false
-        }
+    private fun xlsx(): MockMultipartFile = multipart(Files.readAllBytes(Paths.get(FIXTURE_PATH)))
 
-        mockExportDependencies(listOf(agent))
+    private fun multipart(bytes: ByteArray): MockMultipartFile = MockMultipartFile(
+        "file", "agents.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes
+    )
 
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            val cell = workbook.getSheetAt(0).getRow(1).getCell(16)
-
-            assertNotNull(cell.hyperlink)
-            assertEquals("https://pult.sber.ru/ai/initiatives/100", cell.hyperlink.address)
-            assertEquals(cell.hyperlink.address, cell.stringCellValue)
-        }
+    private fun startImport(file: MockMultipartFile = xlsx()): Long {
+        val fileUploadId = excelUploadService.upload(file, TEST_USER_ID)
+        createdUploadIds.add(fileUploadId)
+        asyncUploadIds.add(fileUploadId)
+        return fileUploadId
     }
 
-    @Test
-    fun `should produce xlsx media type`() {
-        // given
-        val agent = AIAgentEntity().also {
-            it.id = 1L
-            it.agentId = "AI-1"
-        }
-
-        mockExportDependencies(listOf(agent))
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        assertEquals(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            response.headers.contentType.toString(),
-        )
-    }
-
-    @Test
-    fun `portal base url without trailing slash should produce correct initiative url`() {
-        // given
-        val agent = AIAgentEntity().also {
-            it.id = 100L
-            it.agentId = "AI-100"
-        }
-
-        mockExportDependencies(listOf(agent))
-        ReflectionUtils.setField(service, "portalUrl", "https://pult.sber.ru")
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            val cell = workbook.getSheetAt(0).getRow(1).getCell(16)
-
-            assertEquals("https://pult.sber.ru/ai/initiatives/100", cell.stringCellValue)
-            assertEquals("https://pult.sber.ru/ai/initiatives/100", cell.hyperlink.address)
-        }
-    }
-
-    @Test
-    fun `valid portal base url produces export`() {
-        // given
-        val agent = AIAgentEntity().also {
-            it.id = 1L
-            it.agentId = "AI-1"
-        }
-
-        mockExportDependencies(listOf(agent))
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        assertEquals(HttpStatus.OK, response.statusCode)
-    }
-
-    @Test
-    fun `should produce financial effect sheet with exact headers`() {
-        // given
-        mockExportDependencies()
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            val sheet = workbook.getSheetAt(1)
-            val headerRow = sheet.getRow(0)
-
-            assertEquals("Финансовый эффект", sheet.sheetName)
-            assertEquals(8, headerRow.physicalNumberOfCells)
-
-            val expectedHeaders = listOf(
-                "ID AI-агента",
-                "Наименование",
-                "Тип эффекта",
-                "Год планирования",
-                "Срок",
-                "План",
-                "Факт",
-                "Ссылки на jira"
+    /**
+     * SUCCESS/ERROR в БД может появиться раньше, чем сработает finally worker.
+     * Поэтому возвращаемся только когда status терминальный И GLOBAL освобождён.
+     */
+    private fun waitUntilFinishedAndUnlocked(fileUploadId: Long): FileUploadEntity {
+        await().atMost(120, TimeUnit.SECONDS).untilAsserted {
+            val status = fileUploadRepository.findById(fileUploadId).orElseThrow().status
+            assertTrue(
+                status == FileUploadStatus.SUCCESS || status == FileUploadStatus.ERROR,
+                "Импорт $fileUploadId ещё выполняется: status=$status"
             )
+            assertTrue(isUploadAllowed(), "Импорт $fileUploadId завершился, но GLOBAL ещё заблокирован")
+        }
+        return fileUploadRepository.findById(fileUploadId).orElseThrow()
+    }
 
-            val headers = (0 until 8).map { headerRow.getCell(it).stringCellValue }
+    private fun isUploadAllowed(): Boolean = jdbcTemplate.queryForObject(
+        "SELECT upload_allowed FROM upload_permission WHERE id = 'GLOBAL'", Boolean::class.java
+    ) == true
 
-            assertEquals(expectedHeaders, headers)
+    /**
+     * Снимок бизнес-данных включает идентификаторы и значения связей.
+     * Исключаем только технические временные поля; file_upload намеренно не берём.
+     * Сравнение отсортированных JSON устраняет зависимость от порядка SQL-строк.
+     */
+    private fun businessSnapshot(): Map<String, List<String>> = BUSINESS_TABLES.associateWith { table ->
+        jdbcTemplate.queryForList(
+            """
+                SELECT (to_jsonb(t) - 'created' - 'updated' - 'created_by' - 'updated_by')::text
+                FROM "$table" t
+                ORDER BY 1
+            """.trimIndent(),
+            String::class.java
+        )
+    }
+
+    @Test
+    fun `should import same Excel twice without changing business data or increasing counts`() {
+        val first = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, first.status, "Первая загрузка: ${first.errorDescription}")
+
+        val firstSnapshot = businessSnapshot()
+        val agentCount = aiAgentRepository.count()
+        val metricCount = appliedMetricRepository.count()
+        assertTrue(agentCount > 0, "Фикстура не создала агентов: проверка была бы бесполезна")
+
+        val second = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, second.status, "Повторная загрузка: ${second.errorDescription}")
+        assertTrue(isUploadAllowed())
+        assertEquals(agentCount, aiAgentRepository.count())
+        assertEquals(metricCount, appliedMetricRepository.count())
+        assertEquals(firstSnapshot, businessSnapshot(), "Повторный импорт изменил бизнес-данные")
+    }
+
+    @Test
+    fun `should update agent name from modified Excel and keep metrics unchanged`() {
+        val initial = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, initial.status, initial.errorDescription)
+        val metricsBefore = businessSnapshot().getValue("applied_metric")
+        val countBefore = aiAgentRepository.count()
+
+        val (modifiedFile, changedAgentId, changedName) = xlsxWithChangedAgentName()
+        val updated = waitUntilFinishedAndUnlocked(startImport(modifiedFile))
+        assertEquals(FileUploadStatus.SUCCESS, updated.status, updated.errorDescription)
+
+        assertEquals(changedName, aiAgentRepository.findFirstByAgentId(changedAgentId)?.agentName)
+        assertEquals(countBefore, aiAgentRepository.count())
+        assertEquals(metricsBefore, businessSnapshot().getValue("applied_metric"))
+    }
+
+    private fun xlsxWithChangedAgentName(): Triple<MockMultipartFile, String, String> {
+        XSSFWorkbook(ByteArrayInputStream(Files.readAllBytes(Paths.get(FIXTURE_PATH)))).use { workbook ->
+            val sheet = workbook.getSheet(AGENTS_SHEET_NAME)
+            val header = sheet.getRow(1) // В AgentSheetService заголовки — вторая строка.
+            val formatter = DataFormatter()
+            val idColumn = (0 until header.lastCellNum.toInt()).first { index ->
+                formatter.formatCellValue(header.getCell(index)) == AGENT_ID
+            }
+            val nameColumn = (0 until header.lastCellNum.toInt()).first { index ->
+                formatter.formatCellValue(header.getCell(index)) == AGENT_NAME
+            }
+            val agentRow = (2..sheet.lastRowNum)
+                .mapNotNull(sheet::getRow)
+                .first { row -> formatter.formatCellValue(row.getCell(idColumn)).isNotBlank() }
+
+            val agentId = formatter.formatCellValue(agentRow.getCell(idColumn)).trim()
+            val originalName = aiAgentRepository.findFirstByAgentId(agentId)?.agentName
+            assertNotNull(originalName, "Не найден агент из первой загрузки: $agentId")
+            val changedName = "$originalName - integration updated"
+            assertNotEquals(originalName, changedName)
+
+            agentRow.getCell(nameColumn, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK)
+                .setCellValue(changedName)
+            val bytes = ByteArrayOutputStream().use { output ->
+                workbook.write(output)
+                output.toByteArray()
+            }
+            return Triple(multipart(bytes), agentId, changedName)
         }
     }
 
     @Test
-    fun `should write financial effect data in one bulk request`() {
-        // given
-        val agent = agent(7L)
-        val effect = financialEffect(
-            id = 10L,
-            initiativeId = 7L,
-            effectYear = 2026,
-            plan = "1000.50",
-            fact = "1200",
-            targetMonth = YearMonth.of(2026, 3).atDay(1),
-            approvalLinks = listOf("https://jira.example.com/PRM-1", "https://jira.example.com/PRM-2"),
-        )
+    fun `should roll back all business tables when a late import stage fails`() {
+        val before = businessSnapshot()
+        val agentCountBefore = aiAgentRepository.count()
+        val lateStageReached = AtomicBoolean(false)
 
-        mockExportDependencies(listOf(agent))
-        every { financialEffectRepository.findActiveByInitiativeIds(setOf(7L)) } returns listOf(effect)
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        verify(exactly = 1) { financialEffectRepository.findActiveByInitiativeIds(setOf(7L)) }
-
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            val row = workbook.getSheetAt(1).getRow(1)
-
-            assertEquals("AI-7", row.getCell(0).stringCellValue)
-            assertEquals("Инициатива 7", row.getCell(1).stringCellValue)
-            assertEquals("Выручка", row.getCell(2).stringCellValue)
-            assertEquals(2026.0, row.getCell(3).numericCellValue)
-            assertEquals("31.03.2026", row.getCell(4).stringCellValue)
-            assertEquals(1000.5, row.getCell(5).numericCellValue)
-            assertEquals(1200.0, row.getCell(6).numericCellValue)
-            assertEquals(
-                "https://jira.example.com/PRM-1; https://jira.example.com/PRM-2",
-                row.getCell(7).stringCellValue
+        // Метод вызывается ПОСЛЕ сохранения агентов, SLA, метрик и QualityGate.
+        // Ошибка в нём должна откатить также справочники и предшествующие пачки.
+        every { processRepository.refreshStatusesFromAgents() } answers {
+            lateStageReached.set(true)
+            val agentsVisibleInsideTransaction = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM ai_agent", Long::class.java
+            ) ?: 0L
+            assertTrue(
+                agentsVisibleInsideTransaction > agentCountBefore,
+                "Ошибка должна возникнуть ПОСЛЕ реальной записи агентов внутри транзакции"
             )
-            assertEquals(8, row.physicalNumberOfCells)
+            throw IllegalStateException(FORCED_ROLLBACK_MESSAGE)
         }
-    }
 
-    @Test
-    fun `should write financial effect row with absent fact and empty approval links`() {
-        // given
-        val agent = agent(7L)
-        val effect = financialEffect(
-            id = 11L,
-            initiativeId = 7L,
-            effectYear = 2026,
-            plan = "500",
-            fact = null,
-            targetMonth = YearMonth.of(2026, 5).atDay(1),
-            approvalLinks = emptyList(),
+        val failed = waitUntilFinishedAndUnlocked(startImport())
+        assertTrue(lateStageReached.get(), "Тест не дошёл до позднего этапа импорта")
+        assertEquals(FileUploadStatus.ERROR, failed.status)
+        assertTrue(
+            failed.errorDescription?.contains(FORCED_ROLLBACK_MESSAGE) == true,
+            "Ожидалась искусственная ошибка, получено: ${failed.errorDescription}"
         )
-
-        mockExportDependencies(listOf(agent))
-        every { financialEffectRepository.findActiveByInitiativeIds(any()) } returns listOf(effect)
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            val row = workbook.getSheetAt(1).getRow(1)
-
-            assertEquals("AI-7", row.getCell(0).stringCellValue)
-            assertEquals("Инициатива 7", row.getCell(1).stringCellValue)
-            assertEquals("31.05.2026", row.getCell(4).stringCellValue)
-            assertEquals(500.0, row.getCell(5).numericCellValue)
-            assertEquals(CellType.BLANK, row.getCell(6).cellType)
-            assertEquals("", row.getCell(7).stringCellValue)
-        }
+        assertEquals(before, businessSnapshot(), "После ERROR остались частично применённые данные")
+        assertTrue(isUploadAllowed(), "После rollback не освободилась блокировка")
     }
 
     @Test
-    fun `should export last day of February including leap year`() {
-        // given
-        val agent = agent(7L)
-        val effects = listOf(
-            financialEffect(
-                id = 20L,
-                initiativeId = 7L,
-                effectYear = 2027,
-                targetMonth = LocalDate.of(2027, 2, 1)
-            ),
-            financialEffect(
-                id = 21L,
-                initiativeId = 7L,
-                effectYear = 2028,
-                targetMonth = LocalDate.of(2028, 2, 1)
+    fun `should roll back updates to existing agents when late stage fails`() {
+        val initial = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.SUCCESS, initial.status, initial.errorDescription)
+        val before = businessSnapshot()
+        val (modifiedFile, changedAgentId, changedName) = xlsxWithChangedAgentName()
+        val changeWasVisibleBeforeRollback = AtomicBoolean(false)
+
+        every { processRepository.refreshStatusesFromAgents() } answers {
+            val nameInsideTransaction = jdbcTemplate.queryForObject(
+                "SELECT agent_name FROM ai_agent WHERE agent_id = ? ORDER BY disabled ASC, id DESC LIMIT 1",
+                String::class.java, changedAgentId
             )
-        )
-
-        mockExportDependencies(listOf(agent))
-        every { financialEffectRepository.findActiveByInitiativeIds(setOf(7L)) } returns effects
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            val sheet = workbook.getSheetAt(1)
-            assertEquals("28.02.2027", sheet.getRow(1).getCell(4).stringCellValue)
-            assertEquals("29.02.2028", sheet.getRow(2).getCell(4).stringCellValue)
-            assertEquals(2027.0, sheet.getRow(1).getCell(3).numericCellValue)
-            assertEquals(2028.0, sheet.getRow(2).getCell(3).numericCellValue)
+            changeWasVisibleBeforeRollback.set(nameInsideTransaction == changedName)
+            throw IllegalStateException(FORCED_ROLLBACK_MESSAGE)
         }
+
+        val failed = waitUntilFinishedAndUnlocked(startImport(modifiedFile))
+        assertEquals(FileUploadStatus.ERROR, failed.status)
+        assertTrue(changeWasVisibleBeforeRollback.get(), "Обновление агента не дошло до БД")
+        assertEquals(before, businessSnapshot(), "Изменения существующих данных не откатились")
     }
 
     @Test
-    fun `should export separate rows for multiple effects of same type and initiative`() {
-        // given
-        val firstAgent = agent(7L)
-        val secondAgent = agent(8L)
-        val effects = listOf(
-            financialEffect(id = 10L, initiativeId = 7L, plan = "100"),
-            financialEffect(id = 11L, initiativeId = 7L, plan = "200"),
-            financialEffect(id = 12L, initiativeId = 8L, plan = "300")
-        )
+    fun `should leave business tables unchanged when preparation fails`() {
+        val before = businessSnapshot()
+        every { internalTerBanksApiClient.findAll() } throws
+            IllegalStateException("integration-terbanks-unavailable")
 
-        mockExportDependencies(listOf(firstAgent, secondAgent))
-        every { financialEffectRepository.findActiveByInitiativeIds(setOf(7L, 8L)) } returns effects
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        verify(exactly = 1) { financialEffectRepository.findActiveByInitiativeIds(setOf(7L, 8L)) }
-
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            val sheet = workbook.getSheetAt(1)
-
-            assertEquals(4, sheet.physicalNumberOfRows)
-            assertEquals("AI-7", sheet.getRow(1).getCell(0).stringCellValue)
-            assertEquals("AI-7", sheet.getRow(2).getCell(0).stringCellValue)
-            assertEquals("AI-8", sheet.getRow(3).getCell(0).stringCellValue)
-            assertEquals("Выручка", sheet.getRow(1).getCell(2).stringCellValue)
-            assertEquals("Выручка", sheet.getRow(2).getCell(2).stringCellValue)
-            assertEquals(100.0, sheet.getRow(1).getCell(5).numericCellValue)
-            assertEquals(200.0, sheet.getRow(2).getCell(5).numericCellValue)
-            assertEquals(300.0, sheet.getRow(3).getCell(5).numericCellValue)
-        }
+        val failed = waitUntilFinishedAndUnlocked(startImport())
+        assertEquals(FileUploadStatus.ERROR, failed.status)
+        assertEquals(before, businessSnapshot())
+        assertTrue(isUploadAllowed())
     }
 
     @Test
-    fun `should not load financial effects when no initiatives are exported`() {
-        // given
-        mockExportDependencies(emptyList())
+    fun `should not let stale registration release lock owned by another import`() {
+        val first = registrationService.register("first.xlsx", TEST_USER_ID)
+        createdUploadIds.add(first.fileUploadId)
+        var second: RegisteredExcelImport? = null
+        try {
+            // Имитируем административную разблокировку ПОСЛЕ гибели старого worker.
+            // Реальный worker в этом тесте не запускался.
+            jdbcTemplate.update(
+                "UPDATE upload_permission SET upload_allowed = true, last_updated = clock_timestamp() WHERE id = 'GLOBAL'"
+            )
+            second = registrationService.register("second.xlsx", TEST_USER_ID)
+            createdUploadIds.add(second.fileUploadId)
 
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        verify(exactly = 0) { financialEffectRepository.findActiveByInitiativeIds(any()) }
-
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            assertEquals(2, workbook.numberOfSheets)
-            assertNotNull(workbook.getSheetAt(1).getRow(0))
-            assertNull(workbook.getSheetAt(1).getRow(1))
+            permissionService.release(first.acquiredAt, first.userId)
+            assertTrue(!isUploadAllowed(), "Старый владелец снял чужую блокировку")
+        } finally {
+            second?.let { permissionService.release(it.acquiredAt, it.userId) }
         }
+        assertTrue(isUploadAllowed())
     }
 
     @Test
-    fun `should produce headers only when no financial effects`() {
-        // given
-        mockExportDependencies()
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            val sheet = workbook.getSheetAt(1)
-
-            assertNotNull(sheet.getRow(0))
-            assertNull(sheet.getRow(1))
-        }
-    }
-
-    @Test
-    fun `should resolve contact emails via one bulk auth request`() {
-        // given
-        val contact = AgentContactEntity(
-            agent = AIAgentEntity(),
-            userId = 42L,
-        )
-        val agent = AIAgentEntity().also {
-            it.id = 1L
-            it.agentId = "AI-1"
-            it.agentContact = mutableListOf(contact)
+    fun `should allow only one of two concurrent registrations`() {
+        val executor = Executors.newFixedThreadPool(2)
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val register = Callable<RegisteredExcelImport?> {
+            ready.countDown()
+            check(start.await(10, TimeUnit.SECONDS)) { "Registration start timeout" }
+            try {
+                registrationService.register("parallel.xlsx", TEST_USER_ID)
+            } catch (_: AiResponseException) {
+                null
+            }
         }
 
-        mockExportDependencies(listOf(agent))
-        every { authFeignClient.getUsers(ids = setOf(42L), companyId = null) } returns
-                ResponseEntity.ok(listOf(UserAccountDto(id = 42L, email = "ivan@example.com", secondFactorAuth = "")))
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        verify(exactly = 1) { authFeignClient.getUsers(ids = setOf(42L), companyId = null) }
-
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            val cell = workbook.getSheetAt(0).getRow(1).getCell(17)
-
-            assertEquals("ivan@example.com", cell.stringCellValue)
+        val firstFuture = executor.submit(register)
+        val secondFuture = executor.submit(register)
+        val acquired = mutableListOf<RegisteredExcelImport>()
+        try {
+            assertTrue(ready.await(10, TimeUnit.SECONDS), "Не стартовали оба потока")
+            start.countDown()
+            val results = listOf(
+                firstFuture.get(20, TimeUnit.SECONDS),
+                secondFuture.get(20, TimeUnit.SECONDS)
+            )
+            acquired.addAll(results.filterNotNull())
+            createdUploadIds.addAll(acquired.map { it.fileUploadId })
+            assertEquals(1, acquired.size, "Два потока одновременно получили GLOBAL")
+            assertTrue(!isUploadAllowed(), "При захваченном GLOBAL должен быть false")
+        } finally {
+            start.countDown()
+            acquired.forEach { registration ->
+                permissionService.release(registration.acquiredAt, registration.userId)
+            }
+            executor.shutdownNow()
         }
-    }
-
-    @Test
-    fun `should skip blank user emails and leave contact email empty`() {
-        // given
-        val contact = AgentContactEntity(
-            agent = AIAgentEntity(),
-            userId = 42L,
-        )
-        val agent = AIAgentEntity().also {
-            it.id = 1L
-            it.agentId = "AI-1"
-            it.agentContact = mutableListOf(contact)
-        }
-
-        mockExportDependencies(listOf(agent))
-        every { authFeignClient.getUsers(ids = any(), companyId = null) } returns
-                ResponseEntity.ok(
-                    listOf(
-                        UserAccountDto(id = 42L, email = null, secondFactorAuth = ""),
-                        UserAccountDto(id = 43L, email = "   ", secondFactorAuth = ""),
-                    ),
-                )
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        XSSFWorkbook(response.body!!.inputStream).use { workbook ->
-            val cell = workbook.getSheetAt(0).getRow(1).getCell(17)
-
-            assertEquals("", cell.stringCellValue)
-        }
-    }
-
-    @Test
-    fun `should not call auth service when there are no user contacts`() {
-        // given
-        mockExportDependencies()
-
-        // when
-        val response = service.downloadRegistryExcel()
-
-        // then
-        verify(exactly = 0) { authFeignClient.getUsers(any(), any()) }
-        assertEquals(HttpStatus.OK, response.statusCode)
+        assertTrue(isUploadAllowed(), "GLOBAL не освободился после release")
     }
 }
+
 ```
