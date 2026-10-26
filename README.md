@@ -1,119 +1,122 @@
 ```java
 
-private fun processAgent(
-    agent: AIAgentEntity,
-    jiraResponse: IssueDto,
-    monitoringTasks: List<SearchIssueDto>?,
+/**
+ * Обновляет разрешённые основные поля инициативы и финансовые эффекты.
+ *
+ * На переходный период финансовые эффекты сохраняются одновременно
+ * в legacy-поля ai_agent и в initiative_financial_effect.
+ *
+ * Описание, контакты и текущий бизнес-статус на этом этапе не изменяются.
+ */
+@Service
+class JiraUpdatedInitiativePersistenceService(
+    private val agentRepository: AIAgentRepository,
+    private val organizationResolver: JiraInitiativeOrganizationResolver,
+    private val initiativeTypeResolver: JiraInitiativeTypeResolver,
+    private val numericValueParser: JiraNumericValueParser,
+    private val financialEffectSynchronizer: JiraInitiativeFinancialEffectSynchronizer,
 ) {
-    val strategies = strategyService.findAll()
-    val qualityGates = qualityGateRepository.findAllByDisabledIsFalse()
-    val enabledDivisions = divisionRepository.findAll()
-    val enabledBlocks = blockRepository.findAllByDisabledIsFalse()
-    val initiativeTypes = initiativeTypeRepository.findAll()
 
-    val enablersByNormalizedName = enablerRepository.findAll()
-        .asSequence()
-        .filter { it.disabled != true }
-        .mapNotNull { enabler ->
-            enablerNameNormalizer.normalize(enabler.name)?.let { normalizedName ->
-                normalizedName to enabler
-            }
+    companion object {
+        private const val MAX_AGENT_NAME_LENGTH = 255
+        private val log by logger()
+    }
+
+    /**
+     * Под блокировкой строки проверяет дату изменения и сохраняет поля инициативы.
+     * Финансовые эффекты синхронизируются в той же транзакции.
+     *
+     * Для инициатив, затронутых Task в текущем запуске, сравнивает дату Jira
+     * со значением updated, которое было до обработки Task.
+     * Незавершённую синхронизацию разрешает повторить после сбоя.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = [Exception::class])
+    fun updateInitiative(
+        agentId: Long,
+        issue: SearchIssueDto,
+        jiraUpdated: LocalDateTime,
+        referenceData: JiraImportReferenceData,
+        pultUpdatedBeforeTaskSync: Map<Long, LocalDateTime?>,
+    ): JiraUpdatedInitiativeResult {
+        val agent = agentRepository.findByIdForUpdate(agentId) ?: return JiraUpdatedInitiativeResult.SKIPPED
+        if (agent.disabled == true) return JiraUpdatedInitiativeResult.SKIPPED
+
+        val pultUpdated = if (pultUpdatedBeforeTaskSync.containsKey(agentId)) {
+            pultUpdatedBeforeTaskSync[agentId]
+        } else {
+            agent.updated
         }
-        .toMap()
 
-    createInitiativeJiraIssue(
-        agent = agent,
-        jiraResponse = jiraResponse,
-    )
+        val synchronizationIsIncomplete = agent.jiraFromStatus == "inProgress" || agent.jiraFromStatus == "error"
 
-    agent.apply {
-        jiraResponse.fields?.summary?.let { summary ->
-            agentName = summary.substring(
-                startIndex = 0,
-                endIndex = minOf(255, summary.length),
+        if (!synchronizationIsIncomplete && pultUpdated != null && pultUpdated.isAfter(jiraUpdated)) {
+            log.debug("Skipping initiative updated later in Pult: agentId={}, jiraKey={}", agentId, issue.key)
+            return JiraUpdatedInitiativeResult.SKIPPED
+        }
+
+        val fields = issue.fields ?: throw AiBadRequestException(
+            errorCode = JIRA_SYNC_ERROR,
+            message = "Jira initiative fields are missing: ${issue.key}"
+        )
+
+        val summary = fields.summary?.takeIf(String::isNotBlank) ?: throw AiBadRequestException(
+            errorCode = JIRA_SYNC_ERROR,
+            message = "Jira initiative summary is missing: ${issue.key}"
+        )
+
+        val organization = organizationResolver.resolveOrganization(
+            initiatorUnits = fields.customfield_30000,
+            executorUnits = fields.customfield_30001,
+            referenceData = referenceData
+        )
+
+        if (organization.block != null || organization.division != null) {
+            agent.block = organization.block
+            agent.division = organization.division
+        } else {
+            log.warn(
+                "Organization is not resolved from Jira; existing Pult values retained: jiraKey={}, agentId={}, block={}, division={}",
+                issue.key, agentId, agent.block?.code, agent.division?.code
             )
         }
 
-        val (resolvedDivision, resolvedBlock) =
-            determineDivisionAndBlock(
-                customfield_30000 = jiraResponse.fields?.customfield_30000,
-                customfield_30001 = jiraResponse.fields?.customfield_30001,
-                customfield_30002 = jiraResponse.fields?.customfield_30002,
-                enabledDivisions = enabledDivisions,
-                enabledBlocks = enabledBlocks,
-            )
-
-        division = resolvedDivision
-        block = resolvedBlock
-
-        initiativeType = determineInitiativeType(
-            labels = jiraResponse.fields?.labels,
-            initiativeTypes = initiativeTypes,
+        agent.agentName = summary.take(MAX_AGENT_NAME_LENGTH)
+        agent.initiativeType = initiativeTypeResolver.resolveInitiativeType(
+            labels = fields.labels,
+            initiativeTypesByCode = referenceData.initiativeTypesByCode
         )
 
         // TODO: временный legacy-маппинг.
         // Удалить agentEffectOptimization и agentEffectRevenue
         // после полного перехода на initiative_financial_effect.
-        agentEffectOptimization = jiraNumericValueParser.parseFirst(
-            jiraResponse.fields?.customfield_34300
+        agent.agentEffectOptimization = parseEffect(issue.key, "customfield_34300", fields.customfield_34300)
+        agent.agentEffectRevenue = parseEffect(issue.key, "customfield_30401", fields.customfield_30401)
+
+        agent.jiraFromStatus = "inProgress"
+        agent.updated = LocalDateTime.now()
+
+        agentRepository.save(agent)
+
+        financialEffectSynchronizer.synchronizeFinancialEffects(
+            initiative = agent,
+            jiraKey = issue.key,
+            revenueValue = fields.customfield_30401,
+            optimizationValue = fields.customfield_34300
         )
 
-        agentEffectRevenue = jiraNumericValueParser.parseFirst(
-            jiraResponse.fields?.customfield_30401
-        )
-
-        jiraFromStatus = "inProgress"
-        updated = LocalDateTime.now()
+        log.debug("Updated initiative fields from Jira: agentId={}, jiraKey={}", agentId, issue.key)
+        return JiraUpdatedInitiativeResult.UPDATED
     }
 
-    agentRepository.save(agent)
+    /** Извлекает числовой эффект для временного legacy-маппинга общим парсером FR1/FR2. */
+    private fun parseEffect(jiraKey: String?, fieldName: String, value: String?): BigDecimal? {
+        if (value.isNullOrBlank()) return null
 
-    /*
-     * Новое хранение финансовых эффектов.
-     *
-     * Пока выполняется параллельно с legacy-полями:
-     * ai_agent.agent_effect_optimization
-     * ai_agent.agent_effect_revenue
-     */
-    financialEffectSynchronizer.synchronizeFinancialEffects(
-        initiative = agent,
-        jiraKey = jiraResponse.key,
-        revenueValue = jiraResponse.fields?.customfield_30401,
-        optimizationValue = jiraResponse.fields?.customfield_34300,
-    )
-
-    updateAgentStrategies(
-        agent = agent,
-        strategies = strategies,
-        jiraResponse = jiraResponse,
-    )
-
-    updateInvolvedResources(
-        agent = agent,
-        jiraResponse = jiraResponse,
-    )
-
-    updateEnablers(
-        agent = agent,
-        jiraResponse = jiraResponse,
-        enablersByNormalizedName = enablersByNormalizedName,
-    )
-
-    updateGigausage(
-        agent = agent,
-        jiraResponse = jiraResponse,
-    )
-
-    syncWithMonitoringEpic(
-        agent = agent,
-        jiraResponse = jiraResponse,
-        qualityGates = qualityGates,
-        monitoringTasks = monitoringTasks,
-    )
-
-    log.debug(
-        "В Пульт синхронизирована с Jira инициатива с ключом ${jiraResponse.key}"
-    )
+        val effect = numericValueParser.parseFirst(value)
+        if (effect == null) {
+            log.warn("Cannot parse Jira initiative effect: jiraKey={}, field={}, value={}", jiraKey, fieldName, value)
+        }
+        return effect
+    }
 }
-
 ```
