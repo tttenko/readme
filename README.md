@@ -1,255 +1,5 @@
 ```java
-==============================================================================
-Дополнения в репозитории
-RepositoryAdditions.kt.txt
-==============================================================================
-// Добавить внутрь существующего AIAgentRepository:
 
-@Query("""
-    SELECT initiative.id AS initiativeId,
-           process.shortName AS processCode
-    FROM AIAgentEntity initiative
-    JOIN initiative.processes process
-    WHERE initiative.id IN :initiativeIds
-""")
-fun findBusinessProcessCodesForRegistryExport(
-    @Param("initiativeIds") initiativeIds: Collection<Long>
-): List<InitiativeProcessCodeExportProjection>
-
-// Добавить внутрь существующего AgentContactRepository:
-
-@Query("""
-    SELECT agentContact.agent.id AS initiativeId,
-           agentContact.type AS contactType,
-           contact.email AS email,
-           agentContact.userId AS userId
-    FROM AgentContactEntity agentContact
-    LEFT JOIN agentContact.contact contact
-    WHERE agentContact.agent.id IN :initiativeIds
-""")
-fun findContactsForRegistryExport(
-    @Param("initiativeIds") initiativeIds: Collection<Long>
-): List<InitiativeContactExportProjection>
-
-// Отдельные интерфейсы проекций в repository-пакете:
-
-interface InitiativeProcessCodeExportProjection {
-    val initiativeId: Long
-    val processCode: String?
-}
-
-interface InitiativeContactExportProjection {
-    val initiativeId: Long
-    val contactType: String?
-    val email: String?
-    val userId: Long?
-}
-
-
-
-==============================================================================
-Модель экспорта
-InitiativeRegistryExcelExportModel.kt
-==============================================================================
-/** Строка первого листа выгрузки Пульт AI-инициатив. */
-data class InitiativeRegistryExcelExportModel(
-    val id: String?,
-    val block: String?,
-    val division: String?,
-    val terBank: String?,
-    val name: String?,
-    val description: String?,
-    val problem: String?,
-    val status: String?,
-    val jiraUrl: String?,
-    val crossgoal: String?,
-    val gigausage: String?,
-    val initiativeType: String?,
-    val audience: String?,
-    val program: String?,
-    val effectRevenue: BigDecimal?,
-    val effectOptimization: BigDecimal?,
-    val implementedPlatforms: String?,
-    val isDisable: Boolean?,
-    val initiativeUrl: String?,
-    val businessProcesses: String?,
-    val businessOwner: String?,
-    val itOwner: String?,
-    val stageStatusConcept: String?,
-    val stageDeadlineConcept: String?,
-    val stageStatusPoc: String?,
-    val stageDeadlinePoc: String?,
-    val stageStatusMvp: String?,
-    val stageDeadlineMvp: String?,
-    val stageStatusTargetSolution: String?,
-    val stageDeadlineTargetSolution: String?,
-    val ciSolution: String?
-) {
-    companion object {
-        const val STAGE_COMPLETED = "Завершён"
-        const val STAGE_IN_PROGRESS = "В работе"
-        const val STAGE_PLANNED = "План"
-
-        const val STAGE_ANALYSIS = "analysis"
-        const val STAGE_DEVELOPMENT = "development"
-        const val STAGE_PILOT = "pilot"
-        const val STAGE_TARGET_SOLUTION = "targetSolution"
-    }
-}
-
-
-
-==============================================================================
-Полный Mapper
-InitiativeRegistryMapper.kt
-==============================================================================
-@Component
-class InitiativeRegistryMapper {
-
-    companion object {
-        private val EXCEL_DATE_FORMATTER = DateTimeFormatter.ofPattern("dd.MM.yyyy")
-    }
-
-    /**
-     * Приводит сырой код текущего статуса инициативы к «витринному».
-     * Служебные статусы нормализуются, как на фронтенде:
-     * `research` -> `analysis`, `release` -> `targetSolution` (BR-005, technical.md).
-     */
-    fun normalizeShowcaseStatusCode(code: String?): String? = when (code) {
-        "research" -> InitiativeRegistryExcelExportModel.STAGE_ANALYSIS
-        "release" -> InitiativeRegistryExcelExportModel.STAGE_TARGET_SOLUTION
-        else -> code
-    }
-
-    /**
-     * Жизненный статус этапа (FR-029):
-     * completedDate != null -> `Завершён`;
-     * иначе этап раньше витринного статуса -> `Завершён`;
-     * этап равен витринному статусу -> `В работе`;
-     * этап после витринного статуса -> `План`.
-     */
-    fun computeStageStatus(
-        sla: AgentStatusSlaEntity?,
-        stageOrdering: Long?,
-        currentShowcaseOrdering: Long?,
-    ): String? {
-        if (sla?.completedDate != null) return InitiativeRegistryExcelExportModel.STAGE_COMPLETED
-        if (stageOrdering == null) return InitiativeRegistryExcelExportModel.STAGE_PLANNED
-        if (currentShowcaseOrdering == null) return InitiativeRegistryExcelExportModel.STAGE_PLANNED
-        return when {
-            stageOrdering < currentShowcaseOrdering -> InitiativeRegistryExcelExportModel.STAGE_COMPLETED
-            stageOrdering == currentShowcaseOrdering -> InitiativeRegistryExcelExportModel.STAGE_IN_PROGRESS
-            else -> InitiativeRegistryExcelExportModel.STAGE_PLANNED
-        }
-    }
-
-    /**
-     * Дедлайн этапа (FR-030): plannedDate; при отсутствии — пустая ячейка.
-     */
-    fun computeStageDeadline(sla: AgentStatusSlaEntity?): String? =
-        sla?.plannedDate?.toLocalDate()?.format(EXCEL_DATE_FORMATTER)
-
-    fun toInitiativeRegistryExcelExportModel(
-        entity: AIAgentEntity,
-        terBanks: List<TerBank> = emptyList(),
-        deltaPrefix: String = "",
-        sigmaPrefix: String = "",
-        statusOrderingByCode: Map<String, Long> = emptyMap(),
-        slaByStatusCode: Map<String, AgentStatusSlaEntity> = emptyMap(),
-        urlTemplate: String = "",
-        userEmailsById: Map<Long, String> = emptyMap(),
-        contacts: List<InitiativeContactExportProjection> = emptyList(),
-        businessProcessCodes: List<String> = emptyList()
-    ): InitiativeRegistryExcelExportModel {
-        val base = entity.toAIAgentExcelExportModel(terBanks, deltaPrefix, sigmaPrefix)
-
-        val currentShowcaseOrdering = normalizeShowcaseStatusCode(entity.agentStatus?.code)
-            ?.let { statusOrderingByCode[it] }
-
-        return InitiativeRegistryExcelExportModel(
-            id = base.id,
-            block = base.block,
-            division = base.division,
-            terBank = base.terBank,
-            name = base.name,
-            description = base.description,
-            problem = base.problem,
-            status = base.status,
-            jiraUrl = base.jiraUrl,
-            crossgoal = base.crossgoal,
-            gigausage = base.gigausage,
-            initiativeType = base.initiativeType,
-            audience = base.audience,
-            program = base.program,
-            effectRevenue = base.effectRevenue,
-            effectOptimization = base.effectOptimization,
-            implementedPlatforms = base.implementedPlatforms,
-            isDisable = entity.disabled,
-            initiativeUrl = if (urlTemplate.isBlank()) null else urlTemplate.replace("{id}", entity.id.toString()),
-            businessProcesses = businessProcessCodes.joinToString(";"),
-            businessOwner = collectEmailsByRole(contacts, "customer", userEmailsById),
-            itOwner = collectEmailsByRole(contacts, "developer", userEmailsById),
-            stageStatusConcept = computeStageStatus(
-                slaByStatusCode[InitiativeRegistryExcelExportModel.STAGE_ANALYSIS],
-                statusOrderingByCode[InitiativeRegistryExcelExportModel.STAGE_ANALYSIS],
-                currentShowcaseOrdering,
-            ),
-            stageDeadlineConcept = computeStageDeadline(
-                slaByStatusCode[InitiativeRegistryExcelExportModel.STAGE_ANALYSIS],
-            ),
-            stageStatusPoc = computeStageStatus(
-                slaByStatusCode[InitiativeRegistryExcelExportModel.STAGE_DEVELOPMENT],
-                statusOrderingByCode[InitiativeRegistryExcelExportModel.STAGE_DEVELOPMENT],
-                currentShowcaseOrdering,
-            ),
-            stageDeadlinePoc = computeStageDeadline(
-                slaByStatusCode[InitiativeRegistryExcelExportModel.STAGE_DEVELOPMENT],
-            ),
-            stageStatusMvp = computeStageStatus(
-                slaByStatusCode[InitiativeRegistryExcelExportModel.STAGE_PILOT],
-                statusOrderingByCode[InitiativeRegistryExcelExportModel.STAGE_PILOT],
-                currentShowcaseOrdering,
-            ),
-            stageDeadlineMvp = computeStageDeadline(
-                slaByStatusCode[InitiativeRegistryExcelExportModel.STAGE_PILOT],
-            ),
-            stageStatusTargetSolution = computeStageStatus(
-                slaByStatusCode[InitiativeRegistryExcelExportModel.STAGE_TARGET_SOLUTION],
-                statusOrderingByCode[InitiativeRegistryExcelExportModel.STAGE_TARGET_SOLUTION],
-                currentShowcaseOrdering,
-            ),
-            stageDeadlineTargetSolution = computeStageDeadline(
-                slaByStatusCode[InitiativeRegistryExcelExportModel.STAGE_TARGET_SOLUTION],
-            ),
-            ciSolution = entity.ciSolutions.filter { it.isActive }.mapNotNull { it.ciSolution }.joinToString(";")
-        )
-    }
-    /**
-     * Дедупликация выполняется только в рамках указанного типа контакта.
-     * Один email может присутствовать в customer и developer одновременно.
-     */
-    private fun collectEmailsByRole(
-        contacts: List<InitiativeContactExportProjection>,
-        role: String,
-        userEmailsById: Map<Long, String>
-    ): String = contacts.asSequence()
-        .filter { it.contactType == role }
-        .mapNotNull { contact ->
-            val emailFromContact = contact.email?.trim()?.takeIf { it.isNotBlank() }
-            val emailFromUser = contact.userId?.let { userEmailsById[it] }
-            emailFromContact ?: emailFromUser
-        }
-        .distinct()
-        .joinToString(";")
-
-}
-
-
-
-==============================================================================
-Полный Service
-InitiativeRegistryExportService.kt
-==============================================================================
 @Service
 class InitiativeRegistryExportService(
     private val mapper: InitiativeRegistryMapper,
@@ -275,33 +25,38 @@ class InitiativeRegistryExportService(
         const val XLSX_MEDIA_TYPE_VALUE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         val XLSX_MEDIA_TYPE: MediaType = MediaType.parseMediaType(XLSX_MEDIA_TYPE_VALUE)
 
-        const val FILE_NAME = "Портфель AI-инициатив.xlsx"
+        const val FILE_NAME_TEMPLATE = "PULT_AI-инициативы_%s.xlsx"
 
         private const val SHEET_NAME = "Портфель AI-инициатив"
         private const val FINANCIAL_EFFECT_SHEET_NAME = "Финансовый эффект"
 
+        private val FILE_NAME_TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("ddMMyyyy_HHmmssSSS")
         private val FINANCIAL_EFFECT_DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss")
+        private val FINANCIAL_EFFECT_TARGET_MONTH_FORMATTER = DateTimeFormatter.ofPattern("dd.MM.yyyy")
+
+        fun buildFileName(now: LocalDateTime = LocalDateTime.now()): String =
+            FILE_NAME_TEMPLATE.format(now.format(FILE_NAME_TIMESTAMP_FORMATTER))
     }
 
     /**
      * Формирует XLSX-реестр AI-инициатив с двумя листами.
      *
-     * Первый лист содержит существующие данные инициатив без старых
-     * столбцов финансового эффекта.
-     *
-     * Второй лист содержит все активные финансовые эффекты
-     * выгружаемых инициатив за все годы.
+     * В выгрузку попадают только активные инициативы (disabled = false).
+     * Первый лист содержит данные инициатив, включая бизнес-процессы,
+     * бизнес-владельцев, IT-владельцев и статусы этапов.
+     * Второй лист содержит активные финансовые эффекты выгружаемых инициатив.
      */
     @Transactional(readOnly = true)
     fun downloadRegistryExcel(): ResponseEntity<InputStreamResource> {
         val urlTemplate = buildInitiativeUrlTemplate(portalUrl)
 
-        val agents = aiAgentRepository.findAll()
+        val agents = aiAgentRepository.findAllByDisabledIsFalse()
         val initiativeIds = agents.map { it.id }
 
         val contactsByInitiativeId = loadContactsByInitiativeId(initiativeIds)
         val businessProcessCodesByInitiativeId = loadBusinessProcessCodesByInitiativeId(initiativeIds)
         val userEmailsById = loadUserEmailsById(contactsByInitiativeId.values.flatten())
+
         val terBanks = terBankService.list()
         val statusOrderingByCode = loadStatusOrderingByCode()
         val slaByInitiativeAndStatusCode = loadSlaByInitiativeAndStatusCode(initiativeIds)
@@ -323,34 +78,24 @@ class InitiativeRegistryExportService(
 
         val financialEffectRows = loadFinancialEffectRows(initiativeIds)
 
-        val workbook = ExcelExportHelper.createWorkBook(
-            listOf(SHEET_NAME, FINANCIAL_EFFECT_SHEET_NAME)
+        val workbook = ExcelExportHelper.createWorkBook(listOf(SHEET_NAME, FINANCIAL_EFFECT_SHEET_NAME))
+
+        ExcelExportHelper.writeSheetData(
+            workbook, workbook.getSheetAt(0), initiativeRows, headerColumns()
         )
 
         ExcelExportHelper.writeSheetData(
-            workbook,
-            workbook.getSheetAt(0),
-            initiativeRows,
-            headerColumns()
-        )
-
-        ExcelExportHelper.writeSheetData(
-            workbook,
-            workbook.getSheetAt(1),
-            financialEffectRows,
-            getFinancialEffectHeaderColumns()
+            workbook, workbook.getSheetAt(1), financialEffectRows, getFinancialEffectHeaderColumns()
         )
 
         return with(ExcelExportHelper) {
-            workbook.convertToFile(FILE_NAME, XLSX_MEDIA_TYPE)
+            workbook.convertToFile(buildFileName(), XLSX_MEDIA_TYPE)
         }
     }
 
     /**
      * Загружает активные финансовые эффекты всех выгружаемых инициатив.
-     *
-     * Используется один запрос к БД независимо от количества инициатив.
-     * Для каждой карточки формируется отдельная строка второго листа.
+     * Используется один запрос независимо от количества инициатив.
      */
     private fun loadFinancialEffectRows(
         initiativeIds: Collection<Long>
@@ -362,7 +107,8 @@ class InitiativeRegistryExportService(
     }
 
     /**
-     * Преобразует карточку финансового эффекта в строку Excel.
+     * Преобразует финансовый эффект в строку Excel.
+     * Срок достижения выводится последним днём указанного месяца.
      */
     private fun buildFinancialEffectExcelExportModel(
         financialEffect: InitiativeFinancialEffectEntity
@@ -378,17 +124,17 @@ class InitiativeRegistryExportService(
             unit = financialEffectType.unit,
             planValue = financialEffect.planValue,
             factValue = financialEffect.factValue,
-            targetMonth = financialEffect.targetMonth?.let { YearMonth.from(it).toString() },
+            targetMonth = financialEffect.targetMonth?.let {
+                YearMonth.from(it).atEndOfMonth().format(FINANCIAL_EFFECT_TARGET_MONTH_FORMATTER)
+            },
             approvalLinks = financialEffect.approvalLinks?.joinToString("; ") { it.asText() }.orEmpty(),
             createdAt = financialEffect.created?.format(FINANCIAL_EFFECT_DATE_TIME_FORMATTER)
         )
     }
 
     /**
-     * Описывает столбцы листа «Финансовый эффект».
-     *
-     * План и факт записываются как числа.
-     * Отсутствующий факт оставляет ячейку пустой.
+     * Описание столбцов листа «Финансовый эффект».
+     * План и факт записываются как числа, отсутствующий факт оставляет пустую ячейку.
      */
     private fun getFinancialEffectHeaderColumns(): List<ExcelColumnDescription<InitiativeFinancialEffectExcelExportModel>> =
         listOf(
@@ -406,7 +152,7 @@ class InitiativeRegistryExportService(
         )
 
     /**
-     * Получает контактные связи инициатив за один запрос.
+     * Загружает контактные связи инициатив одним запросом.
      */
     private fun loadContactsByInitiativeId(
         initiativeIds: Collection<Long>
@@ -418,7 +164,8 @@ class InitiativeRegistryExportService(
     }
 
     /**
-     * Получает коды бизнес-процессов (ProcessEntity.shortName) за один запрос.
+     * Загружает коды бизнес-процессов (ProcessEntity.shortName) одним запросом.
+     * Удаляет дубликаты и сортирует коды.
      */
     private fun loadBusinessProcessCodesByInitiativeId(
         initiativeIds: Collection<Long>
@@ -428,15 +175,15 @@ class InitiativeRegistryExportService(
         return aiAgentRepository.findBusinessProcessCodesForRegistryExport(initiativeIds)
             .groupBy { it.initiativeId }
             .mapValues { (_, processRows) ->
-                processRows.mapNotNull { process ->
-                    process.processCode?.trim()?.takeIf { it.isNotBlank() }
-                }.distinct().sorted()
+                processRows.mapNotNull { it.processCode?.trim()?.takeIf(String::isNotBlank) }
+                    .distinct()
+                    .sorted()
             }
     }
 
     /**
-     * Сохраняет поддержку внутренних контактов с userId без contact.email.
-     * Email всех пользователей запрашиваются одним bulk-вызовом.
+     * Загружает email пользователей АУЕ для контактов без contact.email.
+     * Все уникальные userId запрашиваются одним bulk-вызовом.
      */
     private fun loadUserEmailsById(
         contacts: Collection<InitiativeContactExportProjection>
@@ -452,8 +199,7 @@ class InitiativeRegistryExportService(
             .body
             .orEmpty()
             .mapNotNull { user ->
-                val email = user.email?.trim()?.takeIf { it.isNotBlank() }
-                    ?: return@mapNotNull null
+                val email = user.email?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 user.id to email
             }
             .toMap()
@@ -486,7 +232,6 @@ class InitiativeRegistryExportService(
 
     /**
      * Загружает SLA всех выгружаемых инициатив одним запросом.
-     *
      * Результат группируется по ID инициативы и коду этапа.
      */
     private fun loadSlaByInitiativeAndStatusCode(
@@ -507,8 +252,9 @@ class InitiativeRegistryExportService(
     /**
      * Описание 29 колонок первого листа XLSX.
      *
-     * Старые колонки «Фин. эффект, руб.» и «Фин. эффект, ПШЕ»
-     * полностью исключены из структуры листа.
+     * Старые колонки финансового эффекта исключены.
+     * Бизнес-процесс, бизнес-владелец и IT-владелец расположены
+     * непосредственно после колонки «Поверхности».
      */
     fun headerColumns(): List<ExcelColumnDescription<InitiativeRegistryExcelExportModel>> =
         listOf(
@@ -527,6 +273,9 @@ class InitiativeRegistryExportService(
             ExcelExportHelper.textColumn("Аудитория") { it.audience },
             ExcelExportHelper.textColumn("Программа AI-трансформации") { it.program },
             ExcelExportHelper.textColumn("Поверхности") { it.implementedPlatforms },
+            ExcelExportHelper.textColumn("Бизнес-процесс") { it.businessProcesses },
+            ExcelExportHelper.textColumn("Бизнес-владелец") { it.businessOwner },
+            ExcelExportHelper.textColumn("IT-владелец") { it.itOwner },
             ExcelExportHelper.textColumn("Архив") {
                 when (it.isDisable) {
                     true -> "Да"
@@ -535,9 +284,6 @@ class InitiativeRegistryExportService(
                 }
             },
             ExcelExportHelper.hyperlinkColumn("Ссылка на инициативу в Пульт") { it.initiativeUrl },
-            ExcelExportHelper.textColumn("Бизнес-процесс") { it.businessProcesses },
-            ExcelExportHelper.textColumn("Бизнес-владелец") { it.businessOwner },
-            ExcelExportHelper.textColumn("IT-владелец") { it.itOwner },
             ExcelExportHelper.textColumn("Статус этапа — Концепция") { it.stageStatusConcept },
             ExcelExportHelper.textColumn("Дедлайн этапа — Концепция") { it.stageDeadlineConcept },
             ExcelExportHelper.textColumn("Статус этапа — PoC") { it.stageStatusPoc },
