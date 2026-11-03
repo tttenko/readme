@@ -31,7 +31,6 @@ class InitiativeRegistryExportService(
         private const val FINANCIAL_EFFECT_SHEET_NAME = "Финансовый эффект"
 
         private val FILE_NAME_TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("ddMMyyyy_HHmmssSSS")
-        private val FINANCIAL_EFFECT_DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss")
         private val FINANCIAL_EFFECT_TARGET_MONTH_FORMATTER = DateTimeFormatter.ofPattern("dd.MM.yyyy")
 
         fun buildFileName(now: LocalDateTime = LocalDateTime.now()): String =
@@ -76,7 +75,10 @@ class InitiativeRegistryExportService(
             )
         }
 
-        val financialEffectRows = loadFinancialEffectRows(initiativeIds)
+        val initiativeRowsById = agents.zip(initiativeRows)
+            .associate { (agent, initiativeRow) -> agent.id to initiativeRow }
+
+        val financialEffectRows = loadFinancialEffectRows(initiativeRowsById)
 
         val workbook = ExcelExportHelper.createWorkBook(listOf(SHEET_NAME, FINANCIAL_EFFECT_SHEET_NAME))
 
@@ -94,61 +96,60 @@ class InitiativeRegistryExportService(
     }
 
     /**
-     * Загружает активные финансовые эффекты всех выгружаемых инициатив.
-     * Используется один запрос независимо от количества инициатив.
+     * Загружает активные финансовые эффекты выгружаемых инициатив одним запросом.
+     * Для каждой карточки формируется отдельная строка второго листа.
      */
     private fun loadFinancialEffectRows(
-        initiativeIds: Collection<Long>
+        initiativeRowsById: Map<Long, InitiativeRegistryExcelExportModel>
     ): List<InitiativeFinancialEffectExcelExportModel> {
-        if (initiativeIds.isEmpty()) return emptyList()
+        if (initiativeRowsById.isEmpty()) return emptyList()
 
-        return financialEffectRepository.findActiveByInitiativeIds(initiativeIds)
-            .map { financialEffect -> buildFinancialEffectExcelExportModel(financialEffect) }
+        return financialEffectRepository.findActiveByInitiativeIds(initiativeRowsById.keys)
+            .mapNotNull { financialEffect ->
+                val initiativeId = financialEffect.initiative?.id ?: return@mapNotNull null
+                val initiativeRow = initiativeRowsById[initiativeId] ?: return@mapNotNull null
+                buildFinancialEffectExcelExportModel(financialEffect, initiativeRow)
+            }
     }
 
     /**
-     * Преобразует финансовый эффект в строку Excel.
+     * Формирует строку второго листа в соответствии с шаблоном Excel.
      * Срок достижения выводится последним днём указанного месяца.
      */
     private fun buildFinancialEffectExcelExportModel(
-        financialEffect: InitiativeFinancialEffectEntity
+        financialEffect: InitiativeFinancialEffectEntity,
+        initiativeRow: InitiativeRegistryExcelExportModel
     ): InitiativeFinancialEffectExcelExportModel {
-        val financialEffectType = financialEffect.type!!
-
         return InitiativeFinancialEffectExcelExportModel(
-            initiativeId = financialEffect.initiative!!.id.toString(),
-            financialEffectId = financialEffect.id.toString(),
+            agentId = initiativeRow.id,
+            agentName = initiativeRow.name,
+            typeName = financialEffect.type?.name,
             effectYear = financialEffect.effectYear,
-            typeCode = financialEffectType.code,
-            typeName = financialEffectType.name,
-            unit = financialEffectType.unit,
+            targetMonth = financialEffect.targetMonth?.let { targetMonth ->
+                YearMonth.from(targetMonth).atEndOfMonth().format(FINANCIAL_EFFECT_TARGET_MONTH_FORMATTER)
+            },
             planValue = financialEffect.planValue,
             factValue = financialEffect.factValue,
-            targetMonth = financialEffect.targetMonth?.let {
-                YearMonth.from(it).atEndOfMonth().format(FINANCIAL_EFFECT_TARGET_MONTH_FORMATTER)
-            },
-            approvalLinks = financialEffect.approvalLinks?.joinToString("; ") { it.asText() }.orEmpty(),
-            createdAt = financialEffect.created?.format(FINANCIAL_EFFECT_DATE_TIME_FORMATTER)
+            approvalLinks = financialEffect.approvalLinks?.joinToString("; ") { approvalLink ->
+                approvalLink.asText()
+            }.orEmpty()
         )
     }
 
     /**
-     * Описание столбцов листа «Финансовый эффект».
-     * План и факт записываются как числа, отсутствующий факт оставляет пустую ячейку.
+     * Восемь колонок листа «Финансовый эффект» в порядке утверждённого шаблона.
+     * План и факт — числа, отсутствующий факт оставляет ячейку пустой.
      */
     private fun getFinancialEffectHeaderColumns(): List<ExcelColumnDescription<InitiativeFinancialEffectExcelExportModel>> =
         listOf(
-            ExcelExportHelper.textColumn("ID инициативы") { it.initiativeId },
-            ExcelExportHelper.textColumn("ID финансового эффекта") { it.financialEffectId },
-            ExcelExportHelper.numberColumn("Год финансового эффекта") { it.effectYear },
-            ExcelExportHelper.textColumn("Код типа") { it.typeCode },
-            ExcelExportHelper.textColumn("Тип финансового эффекта") { it.typeName },
-            ExcelExportHelper.textColumn("Единица измерения") { it.unit },
+            ExcelExportHelper.textColumn("ID AI-агента") { it.agentId },
+            ExcelExportHelper.textColumn("Наименование") { it.agentName },
+            ExcelExportHelper.textColumn("Тип эффекта") { it.typeName },
+            ExcelExportHelper.numberColumn("Год планирования") { it.effectYear },
+            ExcelExportHelper.textColumn("Срок") { it.targetMonth },
             ExcelExportHelper.numberColumn("План") { it.planValue },
             ExcelExportHelper.numberColumn("Факт") { it.factValue },
-            ExcelExportHelper.textColumn("Срок достижения") { it.targetMonth },
-            ExcelExportHelper.textColumn("Ссылки на согласование") { it.approvalLinks },
-            ExcelExportHelper.textColumn("Дата добавления") { it.createdAt }
+            ExcelExportHelper.textColumn("Ссылки на jira") { it.approvalLinks }
         )
 
     /**
@@ -296,4 +297,18 @@ class InitiativeRegistryExportService(
         )
 }
 
+
+data class InitiativeFinancialEffectExcelExportModel(
+    val agentId: String?,
+    val agentName: String?,
+    val typeName: String?,
+    val effectYear: Int,
+    val targetMonth: String?,
+    val planValue: BigDecimal?,
+    val factValue: BigDecimal?,
+    val approvalLinks: String
+)
+
+
+    
 ```
