@@ -1,7 +1,16 @@
 ```java
-В Jira было плановое значение эффекта, например 100.
-После sync в Пульте стало 100.
-В Пульте вручную скорректировали на 150.
-Потом в Jira изменили на 200.
-При следующей синхронизации Jira снова перезапишет значение в Пульте на 200.
+fun createUpdatedInitiativesRequest(updateDepth: Int, maxResults: Int, startAt: Int): SearchIssueRequestDto {
+    require(updateDepth > 0) { "Jira updateDepth must be positive" }
+    require(maxResults > 0) { "Jira maxResults must be positive" }
+
+    return SearchIssueRequestDto(
+        fields = INITIATIVE_FIELDS,
+        jql = "project=CROSSGOAL AND issuetype=Инициатива " +
+                "AND updated>-${updateDepth}d " +
+                "AND ((resolution=Unresolved AND labels IN (AI_Native_портфель,'AI-эффективность')) " +
+                "OR labels=ClassicML OR status='Отменена')",
+        maxResults = maxResults,
+        startAt = startAt
+    )
+}
 ```
