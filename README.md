@@ -1,14 +1,5 @@
 ```java
-fun main(args: Array<String>) {
-    val context = runApplication<Application>(*args) {
-        applicationStartup = FlightRecorderApplicationStartup()
-    }
+сначала идёт обработка изменённых Task: шедулер находит уже связанные с Пультом задачи, проверяет статус их родительской инициативы, сохраняет изменения вех и сроков, а при необходимости пересчитывает общий статус.
 
-    val beanFactory = context.beanFactory
-    val lazyBeanCount = beanFactory.beanDefinitionNames.count { beanFactory.getBeanDefinition(it).isLazyInit }
-
-    println("Lazy initialization: ${context.environment.getProperty("spring.main.lazy-initialization")}")
-    println("Lazy bean definitions: $lazyBeanCount / ${beanFactory.beanDefinitionCount}")
-    println("Initialized singletons: ${beanFactory.singletonCount}")
-}
+Затем он отдельным запросом ищет обновлённые инициативы и обрабатывает те, которые Jira вернула и которые уже есть в Пульте. Этот поиск запускается, даже если на первом этапе не нашлось ни одной изменённой Task
 ```
