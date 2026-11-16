@@ -1,7 +1,7 @@
 ```java
-SELECT agent_id, COUNT(*) AS duplicate_count
-FROM prm_ai.ai_agent
-GROUP BY agent_id
-HAVING COUNT(*) > 1
-ORDER BY duplicate_count DESC;
+В документации для таблицы `initiative_meta_ai_object` поле `crossgoal` указано как `VARCHAR(255)` с внешним ключом на `ai_agent`.
+
+Предлагаю использовать существующий подход проекта: хранить `initiative_id BIGINT` с FK на `ai_agent.id`, аналогично таблице `initiative_ci_solution`.
+
+Можем ли мы изменить структуру таким образом? Есть ли бизнес-причины хранить именно строковый `crossgoal`?
 ```
