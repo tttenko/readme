@@ -1,5 +1,29 @@
 ```java
-сначала идёт обработка изменённых Task: шедулер находит уже связанные с Пультом задачи, проверяет статус их родительской инициативы, сохраняет изменения вех и сроков, а при необходимости пересчитывает общий статус.
+-- 1. Проверяем типы и nullable
+SELECT
+    column_name,
+    data_type,
+    character_maximum_length,
+    is_nullable
+FROM information_schema.columns
+WHERE table_name = 'ai_agent'
+  AND column_name IN ('id', 'agent_id');
 
-Затем он отдельным запросом ищет обновлённые инициативы и обрабатывает те, которые Jira вернула и которые уже есть в Пульте. Этот поиск запускается, даже если на первом этапе не нашлось ни одной изменённой Task
+-- 2. Проверяем ограничения таблицы
+SELECT
+    con.conname AS constraint_name,
+    con.contype AS constraint_type,
+    pg_get_constraintdef(con.oid) AS definition
+FROM pg_constraint con
+JOIN pg_class rel ON rel.oid = con.conrelid
+WHERE rel.relname = 'ai_agent'
+  AND con.contype IN ('p', 'u', 'f')
+ORDER BY con.contype, con.conname;
+
+-- 3. Проверяем индексы
+SELECT
+    indexname,
+    indexdef
+FROM pg_indexes
+WHERE tablename = 'ai_agent';
 ```
