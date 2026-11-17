@@ -1,32 +1,26 @@
 ```java
-SELECT
-    imt.ai_agent_id AS initiative_id,
-    imt.agent_type,
-    ima.id AS assignment_id,
-    ima.metric_id,
-    md.name AS metric_name,
-    ima.applicability_status,
+Коллеги, по текущему расследованию пока нет подтверждения, что проблема именно в актуальном коде.
 
-    mar.id AS request_id,
-    mar.status AS request_status,
-    mar.effective_from_period,
-    mar.effective_to_period,
-    mar.resume_period,
-    mar.is_visible_in_office,
-    mar.created_at,
-    mar.updated_at
+На DEV дефект воспроизводится, но там обнаружились неконсистентные данные по применимости метрик. Кроме того, часть данных могла раньше создаваться/изменяться вручную SQL-скриптами для проверки пограничных сценариев, поэтому DEV сейчас нельзя считать чистым подтверждением дефекта.
 
-FROM metric_applicability_request mar
-JOIN initiative_metric_assignment ima
-    ON ima.id = mar.initiative_metric_assignment_id
-JOIN initiative_metric_type imt
-    ON imt.id = ima.initiative_agent_type_id
-JOIN metrics_directory md
-    ON md.id = ima.metric_id
+На ИФТ при общей проверке БД тоже нашлась одна старая подозрительная запись, но она относится к конкретной инициативе 2279 и сама по себе не означает, что проверяемый сценарий сломан.
 
-WHERE mar.status = 'PENDING'
-  AND mar.is_visible_in_office = true
-  AND ima.applicability_status <> 'PENDING'
+Нужно, пожалуйста, ещё раз воспроизвести дефект на ИФТ на чистом сценарии:
 
-ORDER BY imt.ai_agent_id, ima.id, mar.created_at DESC, mar.id DESC;
+1. Желательно взять новую инициативу/метрику либо данные, которые точно не изменялись вручную в БД.
+2. Все действия выполнить только через UI/API, без SQL-правок.
+3. Создать заявку на неприменимость метрики.
+4. Провести её через те же действия, которые указаны в сценарии дефекта.
+5. После этого попробовать сохранить значения остальных доступных метрик.
+
+Если снова получим `400 / Metric unlink`, нужно сохранить:
+— ID инициативы;
+— metricId метрики, по которой создавалась заявка;
+— agentType;
+— payload упавшего `POST /metrics/value`;
+— последовательность действий, выполненных с заявкой: создание → approve/reject/cancel/restore и т. д.
+
+Это важно, потому что если проблема воспроизведётся на данных, созданных с нуля текущим кодом, тогда будем уже точно искать дефект в backend-логике переходов состояний или проверке периода.
+
+Если на чистом сценарии ИФТ проблема не воспроизводится, а на PROD воспроизводится, тогда основной кандидат — ранее сформированные неконсистентные данные на PROD, а не актуальная реализация.
 ```
