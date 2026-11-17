@@ -1,19 +1,15 @@
 ```java
-SELECT
-    ima.id AS assignment_id,
-    ima.applicability_status,
-    mar.id AS request_id,
-    mar.status,
-    mar.resume_period,
-    mar.effective_from_period,
-    mar.effective_to_period,
-    mar.is_visible_in_office,
-    mar.created_at,
-    mar.updated_at
-FROM initiative_metric_assignment ima
-JOIN metric_applicability_request mar
-    ON mar.initiative_metric_assignment_id = ima.id
-WHERE ima.id = 26
-ORDER BY mar.created_at DESC, mar.id DESC;
+Коллеги, по текущему коду сохранение метрик проверяет применимость не только по текущему статусу assignment, а по периоду: для сохраняемого месяца ищется PENDING/APPROVED-заявка, чей effective_from/effective_to перекрывает этот месяц.
+
+На DEV нашли ситуацию, когда assignment уже ACTIVE, но при этом в metric_applicability_request остаётся APPROVED-заявка с незакрытым интервалом effective_to_period = NULL. Для backend это означает, что метрика всё ещё неприменима в сохраняемом периоде, поэтому он возвращает Metric unlink.
+
+Но DEV пока не показатель, потому что там данные могли ранее вручную менять скриптами для тестирования пограничных сценариев.
+
+Так как аналогичная проблема воспроизводится на PROD, предлагаю на проблемной инициативе выполнить read-only запрос и проверить:
+— какой сейчас applicability_status у assignment;
+— какие PENDING/APPROVED-заявки есть по нему;
+— перекрывают ли их effective_from/effective_to сохраняемый месяц.
+
+Если на PROD получим ACTIVE assignment, но при этом действующий по датам PENDING/APPROVED интервал, значит ошибку в POST вызывает именно такое состояние данных. После этого уже отдельно нужно будет понять, каким штатным сценарием эти данные появились и есть ли ошибка в переходах состояний.
 
 ```
