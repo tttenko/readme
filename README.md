@@ -1,14 +1,5 @@
 ```java
 
-@Query("""
-    SELECT obj
-    FROM InitiativeMetaAiObjectEntity obj
-    WHERE obj.initiative.id = :initiativeId
-      AND obj.ciSolution IS NOT NULL
-""")
-fun findAllWithCiSolutionByInitiativeId(@Param("initiativeId") initiativeId: Long): List<InitiativeMetaAiObjectEntity>
-
-
 /**
  * Обновляет КЭ инициативы в initiative_meta_ai_object.
  */
@@ -19,12 +10,10 @@ class CiSolutionsUpdater(
 ) {
 
     fun updateCiSolutions(agent: AIAgentEntity, rawCiSolutionsValue: Any?) {
-        val initiativeId = requireNotNull(agent.id) { "Не указан ID инициативы" }
-        val currentUserId = userInfoProvider.currentUser().id.toString()
         val requestedCiValues = parseCiSolutions(rawCiSolutionsValue)
-
-        val existingObjects = initiativeMetaAiObjectRepository.findAllWithCiSolutionByInitiativeId(initiativeId)
+        val existingObjects = initiativeMetaAiObjectRepository.findAllWithCiSolutionByInitiativeId(agent.id)
         val existingByCi = existingObjects.associateBy { it.ciSolution }
+        val currentUserId = userInfoProvider.currentUser().id.toString()
 
         requestedCiValues.forEach { ciValue ->
             val existing = existingByCi[ciValue]
@@ -61,17 +50,16 @@ class CiSolutionsUpdater(
 
     private fun parseCiSolutions(rawCiSolutionsValue: Any?): Set<String> {
         if (rawCiSolutionsValue == null) return emptySet()
+        val rawList = rawCiSolutionsValue as? List<*> ?: return emptySet()
 
-        val rawList = rawCiSolutionsValue as? List<*>
-            ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "ciSolutions должен быть массивом")
-
-        return rawList.mapNotNull { value ->
-            when (value) {
-                is String -> value.trim().takeIf { it.isNotEmpty() }
-                is Number -> value.toString()
-                else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Недопустимое значение ciSolutions")
-            }
-        }.toSet()
+        return rawList
+            .mapNotNull { value ->
+                when (value) {
+                    is String -> value.trim().takeIf { it.isNotEmpty() }
+                    is Number -> value.toString()
+                    else -> null
+                }
+            }.toSet()
     }
 }
 ```
