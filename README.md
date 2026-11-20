@@ -1,21 +1,10 @@
 ```java
 
-SELECT
-    ji.jira_key AS crossgoal,
-    a.id AS initiative_id,
-    a.agent_name
-FROM jira_issue ji
-JOIN ai_agent a ON a.id = ji.agent_id
-WHERE LOWER(ji.project) = 'crossgoal'
-  AND ji.type = 'initiative'
-  AND ji.jira_key IS NOT NULL
-  AND TRIM(ji.jira_key) <> ''
-  AND a.disabled = false
-  AND NOT EXISTS (
-      SELECT 1
-      FROM initiative_meta_ai_object obj
-      WHERE obj.initiative_id = a.id
-  )
-ORDER BY a.id DESC
-LIMIT 30;
+CROSSGOAL	КЭ модуля	Наименование	Является агентом	GigaUsage ID	Ссылка на META
+CROSSGOAL-41438	KE-TEST-001	Тестовый ИИ-агент (начальное название)	ИСТИНА	GU-000123	https://meta.example.com/objects/agent-001
+CROSSGOAL-41438	KE-TEST-002	Тестовое LLM-решение	ЛОЖЬ	GU-000456	https://meta.example.com/objects/llm-002
+CROSSGOAL-41438	KE-TEST-003				
+CROSSGOAL-41438	KE-TEST-001	Тестовый ИИ-агент (итоговое название)	ИСТИНА	GU-000123	https://meta.example.com/objects/agent-001
+<img width="32766" height="231" alt="image" src="https://github.com/user-attachments/assets/14d78ad4-4cc7-421f-94e4-46d21bc9d1ea" />
+
 ```
