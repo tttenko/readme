@@ -1,41 +1,31 @@
 ```java
 
+meta.ai.objects.upload.duplicate.column=Дублируется колонка {0}
+meta.ai.objects.upload.required.value=Не заполнено обязательное поле {0}
+meta.ai.objects.upload.max.length=Значение поля {0} превышает {1} символов
+meta.ai.objects.upload.invalid.agent.type=Поле Является агентом должно содержать true, false или быть пустым
+meta.ai.objects.upload.invalid.cell=Некорректное значение ячейки в колонке {0}
+meta.ai.objects.upload.row.error=Строка {0}: {1}
+meta.ai.objects.upload.file.name.too.long=Имя файла превышает {0} символов
 
-@Query("""
-    SELECT DISTINCT j.agent.id AS agentId, j.jiraKey AS jiraKey
-    FROM JiraIssueEntity j
-    WHERE lower(j.project) = 'crossgoal'
-      AND lower(j.type) = 'initiative'
-      AND j.jiraKey IN :jiraKeys
-      AND j.agent IS NOT NULL
-""")
-fun findMetaAiObjectsInitiativesByCrossgoalKeys(
-    @Param("jiraKeys") jiraKeys: Set<String>
-): List<CrossgoalAgentIdProjection>
+const val META_AI_OBJECTS_UPLOAD_DUPLICATE_COLUMN = "meta.ai.objects.upload.duplicate.column"
+const val META_AI_OBJECTS_UPLOAD_REQUIRED_VALUE = "meta.ai.objects.upload.required.value"
+const val META_AI_OBJECTS_UPLOAD_MAX_LENGTH = "meta.ai.objects.upload.max.length"
+const val META_AI_OBJECTS_UPLOAD_INVALID_AGENT_TYPE = "meta.ai.objects.upload.invalid.agent.type"
+const val META_AI_OBJECTS_UPLOAD_INVALID_CELL = "meta.ai.objects.upload.invalid.cell"
+const val META_AI_OBJECTS_UPLOAD_ROW_ERROR = "meta.ai.objects.upload.row.error"
+const val META_AI_OBJECTS_UPLOAD_FILE_NAME_TOO_LONG = "meta.ai.objects.upload.file.name.too.long"
 
-@Repository
-interface InitiativeAiObjectHistoryRepository : JpaRepository<InitiativeAiObjectHistoryEntity, Long>
 
-@Repository
-interface InitiativeMetaAiObjectRepository : JpaRepository<InitiativeMetaAiObjectEntity, Long> {
-    @Query("""
-        SELECT obj.ciSolution
-        FROM InitiativeMetaAiObjectEntity obj
-        WHERE obj.initiative.id = :initiativeId
-          AND obj.isActive = true
-          AND obj.ciSolution IS NOT NULL
-    """)
-    fun findActiveCiSolutionValuesByInitiativeId(@Param("initiativeId") initiativeId: Long): List<String>
-
-    @Query("""
-        SELECT obj
-        FROM InitiativeMetaAiObjectEntity obj
-        WHERE obj.initiative.id = :initiativeId
-          AND obj.ciSolution IS NOT NULL
-    """)
-    fun findAllWithCiSolutionByInitiativeId(@Param("initiativeId") initiativeId: Long): List<InitiativeMetaAiObjectEntity>
+/** Ожидаемые названия колонок нового шаблона Excel. */
+internal enum class MetaAiObjectsExcelColumn(val header: String) {
+    CROSSGOAL("CROSSGOAL"),
+    CI_SOLUTION("КЭ модуля"),
+    NAME("Наименование"),
+    IS_AGENT("Является агентом"),
+    GIGAUSAGE("GigaUsage ID"),
+    META_LINK("Ссылка на META")
 }
-
 
 import org.apache.poi.hssf.usermodel.HSSFWorkbook
 import org.apache.poi.ss.usermodel.Cell
@@ -48,8 +38,218 @@ import org.apache.poi.ss.usermodel.Workbook
 import org.springframework.stereotype.Component
 import java.nio.file.Files
 import java.nio.file.Path
+import java.text.MessageFormat
 import java.util.Locale
 
+@Component
+class MetaAiObjectsExcelReader(
+    private val messageProvider: MessageProvider
+) {
+    private companion object {
+        const val MAX_TEXT_LENGTH = 255
+        val REQUIRED_COLUMNS = setOf(
+            MetaAiObjectsExcelColumn.CROSSGOAL,
+            MetaAiObjectsExcelColumn.CI_SOLUTION
+        )
+    }
+
+    /** Структуру проверяем синхронно, до создания file_upload и ответа 201. */
+    fun validateStructure(source: Path, extension: String) {
+        withFirstSheet(source, extension) { sheet, formatter ->
+            val rows = sheet.iterator()
+            if (!rows.hasNext()) invalidFile(Metadata.ErrorMessages.AI_UPLOAD_EMPTY_FILE)
+
+            readHeader(rows.next(), formatter)
+
+            // На этом этапе не проверяем значения строк: ошибки строк относятся
+            // к фоновой обработке и попадают в file_upload.error_description.
+            val hasDataRow = rows.asSequence().any(::containsData)
+            if (!hasDataRow) invalidFile(Metadata.ErrorMessages.AI_UPLOAD_EMPTY_FILE)
+        }
+    }
+
+    fun read(source: Path, extension: String): MetaAiObjectsParsedFile =
+        withFirstSheet(source, extension) { sheet, formatter ->
+            val rows = sheet.iterator()
+            if (!rows.hasNext()) invalidFile(Metadata.ErrorMessages.AI_UPLOAD_EMPTY_FILE)
+
+            val indices = readHeader(rows.next(), formatter)
+            val validRows = mutableListOf<MetaAiObjectsExcelRow>()
+            val errors = mutableListOf<String>()
+
+            while (rows.hasNext()) {
+                val row = rows.next()
+                val rowNumber = row.rowNum + 1
+                try {
+                    readDataRow(row, indices, formatter)?.let(validRows::add)
+                } catch (failure: Exception) {
+                    val reason = failure.message ?: messageProvider[Metadata.ErrorMessages.IncorrectDataFormat]
+                    errors += format(Metadata.ErrorMessages.META_AI_OBJECTS_UPLOAD_ROW_ERROR, rowNumber, reason)
+                }
+            }
+
+            MetaAiObjectsParsedFile(validRows, errors)
+        }
+
+    private fun readHeader(row: Row, formatter: DataFormatter): Map<MetaAiObjectsExcelColumn, Int> {
+        val indices = mutableMapOf<MetaAiObjectsExcelColumn, Int>()
+
+        row.forEach { cell ->
+            val header = readCellText(cell, formatter, "Заголовок") ?: return@forEach
+            val column = MetaAiObjectsExcelColumn.entries.firstOrNull {
+                it.header.equals(header, ignoreCase = true)
+            } ?: return@forEach
+
+            if (indices.putIfAbsent(column, cell.columnIndex) != null) {
+                invalidFile(Metadata.ErrorMessages.META_AI_OBJECTS_UPLOAD_DUPLICATE_COLUMN, column.header)
+            }
+        }
+
+        REQUIRED_COLUMNS.forEach { column ->
+            if (column !in indices) {
+                invalidFile(Metadata.ErrorMessages.REQUIRED_COLUMN_NOT_FOUND, column.header)
+            }
+        }
+        return indices
+    }
+
+    private fun readDataRow(
+        row: Row,
+        indices: Map<MetaAiObjectsExcelColumn, Int>,
+        formatter: DataFormatter
+    ): MetaAiObjectsExcelRow? {
+        val crossgoal = readField(row, MetaAiObjectsExcelColumn.CROSSGOAL, indices, formatter)
+        val ciSolution = readField(row, MetaAiObjectsExcelColumn.CI_SOLUTION, indices, formatter)
+        val name = readField(row, MetaAiObjectsExcelColumn.NAME, indices, formatter)
+        val isAgentValue = readField(row, MetaAiObjectsExcelColumn.IS_AGENT, indices, formatter)
+        val gigausage = readField(row, MetaAiObjectsExcelColumn.GIGAUSAGE, indices, formatter)
+        val metaLink = readField(row, MetaAiObjectsExcelColumn.META_LINK, indices, formatter)
+
+        if (listOf(crossgoal, ciSolution, name, isAgentValue, gigausage, metaLink).all { it == null }) {
+            return null
+        }
+
+        if (crossgoal == null) {
+            invalidFile(Metadata.ErrorMessages.META_AI_OBJECTS_UPLOAD_REQUIRED_VALUE, MetaAiObjectsExcelColumn.CROSSGOAL.header)
+        }
+        if (ciSolution == null) {
+            invalidFile(Metadata.ErrorMessages.META_AI_OBJECTS_UPLOAD_REQUIRED_VALUE, MetaAiObjectsExcelColumn.CI_SOLUTION.header)
+        }
+
+        checkLength(MetaAiObjectsExcelColumn.CROSSGOAL, crossgoal)
+        checkLength(MetaAiObjectsExcelColumn.NAME, name)
+        checkLength(MetaAiObjectsExcelColumn.GIGAUSAGE, gigausage)
+        checkLength(MetaAiObjectsExcelColumn.META_LINK, metaLink)
+
+        val isAgent = when (isAgentValue?.lowercase(Locale.ROOT)) {
+            null -> null
+            "true" -> true
+            "false" -> false
+            else -> invalidFile(Metadata.ErrorMessages.META_AI_OBJECTS_UPLOAD_INVALID_AGENT_TYPE)
+        }
+
+        return MetaAiObjectsExcelRow(
+            rowNumber = row.rowNum + 1,
+            crossgoal = crossgoal,
+            ciSolution = ciSolution,
+            name = name,
+            isAgent = isAgent,
+            gigausage = gigausage,
+            metaLink = metaLink
+        )
+    }
+
+    private fun readField(
+        row: Row,
+        column: MetaAiObjectsExcelColumn,
+        indices: Map<MetaAiObjectsExcelColumn, Int>,
+        formatter: DataFormatter
+    ): String? {
+        val index = indices[column] ?: return null
+        return readCellText(row.getCell(index), formatter, column.header)
+    }
+
+    private fun readCellText(cell: Cell?, formatter: DataFormatter, fieldName: String): String? {
+        if (cell == null) return null
+
+        val value = try {
+            val effectiveType = if (cell.cellType == CellType.FORMULA) cell.cachedFormulaResultType else cell.cellType
+            when (effectiveType) {
+                CellType.STRING -> cell.stringCellValue
+                CellType.BOOLEAN -> cell.booleanCellValue.toString()
+                CellType.NUMERIC -> {
+                    if (DateUtil.isCellDateFormatted(cell)) {
+                        invalidFile(Metadata.ErrorMessages.META_AI_OBJECTS_UPLOAD_INVALID_CELL, fieldName)
+                    }
+                    if (cell.cellType == CellType.FORMULA) {
+                        val style = cell.cellStyle
+                        formatter.formatRawCellContents(
+                            cell.numericCellValue,
+                            style.dataFormat.toInt(),
+                            style.dataFormatString ?: "General"
+                        )
+                    } else {
+                        formatter.formatCellValue(cell)
+                    }
+                }
+                CellType.BLANK -> ""
+                else -> invalidFile(Metadata.ErrorMessages.META_AI_OBJECTS_UPLOAD_INVALID_CELL, fieldName)
+            }
+        } catch (known: AiResponseException) {
+            throw known
+        } catch (failure: Exception) {
+            invalidFile(Metadata.ErrorMessages.META_AI_OBJECTS_UPLOAD_INVALID_CELL, fieldName)
+        }
+
+        return value.trim().takeIf(String::isNotEmpty)
+    }
+
+    private fun checkLength(column: MetaAiObjectsExcelColumn, value: String?) {
+        if (value != null && value.length > MAX_TEXT_LENGTH) {
+            invalidFile(Metadata.ErrorMessages.META_AI_OBJECTS_UPLOAD_MAX_LENGTH, column.header, MAX_TEXT_LENGTH)
+        }
+    }
+
+    private fun containsData(row: Row): Boolean = row.any { cell ->
+        when (cell.cellType) {
+            CellType.BLANK -> false
+            CellType.STRING -> cell.stringCellValue.isNotBlank()
+            else -> true // Ошибка содержимого строки фиксируется после 201, не здесь.
+        }
+    }
+
+    private fun <T> withFirstSheet(
+        source: Path,
+        extension: String,
+        block: (Sheet, DataFormatter) -> T
+    ): T {
+        try {
+            Files.newInputStream(source).use { input ->
+                val workbook: Workbook = when (extension) {
+                    "xls" -> HSSFWorkbook(input)
+                    "xlsx" -> StreamingReader.builder().rowCacheSize(100).bufferSize(4096).open(input)
+                    else -> invalidFile(Metadata.ErrorMessages.FileNotValid)
+                }
+                workbook.use {
+                    if (workbook.numberOfSheets == 0) invalidFile(Metadata.ErrorMessages.AI_UPLOAD_EMPTY_FILE)
+                    return block(workbook.getSheetAt(0), DataFormatter(Locale.ROOT))
+                }
+            }
+        } catch (known: AiResponseException) {
+            throw known
+        } catch (failure: Exception) {
+            invalidFile(Metadata.ErrorMessages.AI_UPLOAD_CORRUPTED_FILE)
+        }
+    }
+
+    private fun format(errorCode: String, vararg args: Any): String =
+        MessageFormat.format(messageProvider[errorCode], *args)
+
+    private fun invalidFile(errorCode: String, vararg args: Any): Nothing =
+        throw AiBadRequestException(errorCode = errorCode, message = format(errorCode, *args))
+}
+
+/** Одна валидная строка XLS/XLSX после нормализации значений. */
 data class MetaAiObjectsExcelRow(
     val rowNumber: Int,
     val crossgoal: String,
@@ -59,144 +259,6 @@ data class MetaAiObjectsExcelRow(
     val gigausage: String?,
     val metaLink: String?
 )
-
-data class MetaAiObjectsParsedFile(
-    val rows: List<MetaAiObjectsExcelRow>,
-    val errors: List<String>
-)
-
-class MetaAiObjectsInvalidFileException(message: String) : RuntimeException(message)
-
-@Component
-class MetaAiObjectsExcelReader {
-    private enum class Column(val header: String) {
-        CROSSGOAL("CROSSGOAL"),
-        CI_SOLUTION("КЭ модуля"),
-        NAME("Наименование"),
-        IS_AGENT("Является агентом"),
-        GIGAUSAGE("GigaUsage ID"),
-        META_LINK("Ссылка на META")
-    }
-
-    fun validateStructure(source: Path, extension: String) {
-        withSheet(source, extension) { sheet, formatter ->
-            val iterator = sheet.iterator()
-            if (!iterator.hasNext()) throw MetaAiObjectsInvalidFileException("В файле нет заголовков")
-            parseHeader(iterator.next(), formatter)
-            var hasData = false
-            while (iterator.hasNext()) {
-                val row = iterator.next()
-                if (hasNonemptyCell(row, formatter)) {
-                    hasData = true
-                    break
-                }
-            }
-            if (!hasData) throw MetaAiObjectsInvalidFileException("В файле отсутствуют строки данных")
-            // Предпроверка не разбирает строки — их ошибки попадут в file_upload после 201.
-        }
-    }
-
-    fun read(source: Path, extension: String): MetaAiObjectsParsedFile =
-        withSheet(source, extension) { sheet, formatter ->
-            val iterator = sheet.iterator()
-            if (!iterator.hasNext()) throw MetaAiObjectsInvalidFileException("В файле нет заголовков")
-            val columns = parseHeader(iterator.next(), formatter)
-            val rows = mutableListOf<MetaAiObjectsExcelRow>()
-            val errors = mutableListOf<String>()
-
-            while (iterator.hasNext()) {
-                val row = iterator.next()
-                val number = row.rowNum + 1
-                try {
-                    val crossgoal = text(row, columns[Column.CROSSGOAL], formatter)
-                    val ciSolution = text(row, columns[Column.CI_SOLUTION], formatter)
-                    val name = text(row, columns[Column.NAME], formatter)
-                    val agentRaw = text(row, columns[Column.IS_AGENT], formatter)
-                    val gigausage = text(row, columns[Column.GIGAUSAGE], formatter)
-                    val metaLink = text(row, columns[Column.META_LINK], formatter)
-                    if (listOf(crossgoal, ciSolution, name, agentRaw, gigausage, metaLink).all { it == null }) {
-                        continue
-                    }
-                    if (crossgoal == null) throw IllegalArgumentException("не заполнен CROSSGOAL")
-                    if (ciSolution == null) throw IllegalArgumentException("не заполнен КЭ модуля")
-                    if (crossgoal.length > 255) throw IllegalArgumentException("CROSSGOAL длиннее 255 символов")
-                    if (name != null && name.length > 255) throw IllegalArgumentException("Наименование длиннее 255 символов")
-                    if (gigausage != null && gigausage.length > 255) throw IllegalArgumentException("GigaUsage ID длиннее 255 символов")
-                    if (metaLink != null && metaLink.length > 255) throw IllegalArgumentException("Ссылка на META длиннее 255 символов")
-                    val isAgent = when (agentRaw?.lowercase()) {
-                        null -> null
-                        "true" -> true
-                        "false" -> false
-                        else -> throw IllegalArgumentException("Является агентом: допустимы true, false или пустое значение")
-                    }
-                    rows += MetaAiObjectsExcelRow(number, crossgoal, ciSolution, name, isAgent, gigausage, metaLink)
-                } catch (e: Exception) {
-                    errors += "Строка $number: ${e.message ?: "некорректные данные"}"
-                }
-            }
-            MetaAiObjectsParsedFile(rows, errors)
-        }
-
-    private fun parseHeader(row: Row, formatter: DataFormatter): Map<Column, Int> {
-        val result = mutableMapOf<Column, Int>()
-        row.forEach { cell ->
-            val label = text(cell, formatter)?.trim() ?: return@forEach
-            val column = Column.entries.firstOrNull { it.header.equals(label, ignoreCase = true) }
-                ?: return@forEach
-            if (result.putIfAbsent(column, cell.columnIndex) != null) {
-                throw MetaAiObjectsInvalidFileException("Дублируется колонка: ${column.header}")
-            }
-        }
-        listOf(Column.CROSSGOAL, Column.CI_SOLUTION).forEach { column ->
-            if (!result.containsKey(column)) {
-                throw MetaAiObjectsInvalidFileException("Отсутствует обязательная колонка: ${column.header}")
-            }
-        }
-        return result
-    }
-
-    private fun hasNonemptyCell(row: Row, formatter: DataFormatter): Boolean =
-        row.any { cell -> text(cell, formatter) != null }
-
-    private fun text(row: Row, columnIndex: Int?, formatter: DataFormatter): String? =
-        columnIndex?.let { text(row.getCell(it), formatter) }
-
-    private fun text(cell: Cell?, formatter: DataFormatter): String? {
-        if (cell == null) return null
-        val type = if (cell.cellType == CellType.FORMULA) cell.cachedFormulaResultType else cell.cellType
-        val raw = when (type) {
-            CellType.STRING -> cell.stringCellValue
-            CellType.BOOLEAN -> cell.booleanCellValue.toString()
-            CellType.NUMERIC -> {
-                if (DateUtil.isCellDateFormatted(cell)) throw IllegalArgumentException("Дата вместо текстового значения")
-                if (cell.cellType == CellType.FORMULA) {
-                    val style = cell.cellStyle
-                    formatter.formatRawCellContents(cell.numericCellValue, style.dataFormat.toInt(), style.dataFormatString ?: "General")
-                } else {
-                    formatter.formatCellValue(cell)
-                }
-            }
-            CellType.BLANK -> ""
-            CellType.ERROR -> throw IllegalArgumentException("Ошибка в ячейке Excel")
-            else -> throw IllegalArgumentException("Неподдерживаемый тип ячейки")
-        }
-        return raw.trim().takeIf { it.isNotEmpty() }
-    }
-
-    private fun <T> withSheet(source: Path, extension: String, block: (Sheet, DataFormatter) -> T): T {
-        Files.newInputStream(source).use { input ->
-            val workbook: Workbook = if (extension == "xls") {
-                HSSFWorkbook(input)
-            } else {
-                StreamingReader.builder().rowCacheSize(100).bufferSize(4096).open(input)
-            }
-            workbook.use {
-                if (workbook.numberOfSheets == 0) throw MetaAiObjectsInvalidFileException("В Excel-файле нет листов")
-                return block(workbook.getSheetAt(0), DataFormatter(Locale.ROOT))
-            }
-        }
-    }
-}
 
 
 import org.springframework.stereotype.Service
@@ -281,7 +343,6 @@ class MetaAiObjectsImportApplyService(
     }
 }
 
-
 import org.springframework.stereotype.Service
 import java.nio.file.Files
 import java.nio.file.Path
@@ -351,6 +412,12 @@ class MetaAiObjectsImportWorker(
     }
 }
 
+/** Результат фонового разбора: валидные строки и ошибки отдельных строк. */
+data class MetaAiObjectsParsedFile(
+    val rows: List<MetaAiObjectsExcelRow>,
+    val errors: List<String>
+)
+
 
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
@@ -378,34 +445,38 @@ class MetaAiObjectsUploadController(
 
 data class MetaAiObjectsUploadResponse(val fileId: Long)
 
-
+import jakarta.annotation.PreDestroy
 import org.apache.poi.poifs.filesystem.FileMagic
+import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.web.multipart.MultipartFile
-import org.springframework.web.server.ResponseStatusException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.text.MessageFormat
+import java.util.Locale
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import jakarta.annotation.PreDestroy
 
 @Service
 class MetaAiObjectsUploadService(
     private val fileUploadStatusService: FileUploadStatusService,
     private val userInfoProvider: UserInfoProvider,
     private val excelReader: MetaAiObjectsExcelReader,
-    private val importWorker: MetaAiObjectsImportWorker
+    private val importWorker: MetaAiObjectsImportWorker,
+    private val messageProvider: MessageProvider
 ) {
     private companion object {
         const val MAX_FILE_SIZE_BYTES = 20L * 1024 * 1024
         const val MAX_FILE_NAME_LENGTH = 255
+        val ALLOWED_EXTENSIONS = setOf("xls", "xlsx")
     }
 
-    // Отдельная очередь, чтобы не затронуть импорт общего реестра AI-агентов.
-    // При переполнении очереди не регистрируем задачу как успешно принятую.
+    private val log = LoggerFactory.getLogger(javaClass)
+
+    // Независимая очередь — импорт общего реестра AI-агентов не затрагиваем.
     private val executor = ThreadPoolExecutor(
         1,
         1,
@@ -418,16 +489,14 @@ class MetaAiObjectsUploadService(
 
     fun upload(file: MultipartFile): Long {
         val fileName = file.originalFilename.orEmpty().replace('\\', '/').substringAfterLast('/')
-        val extension = fileName.substringAfterLast('.', "").lowercase()
-        if (extension !in setOf("xls", "xlsx")) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Допустимы только файлы .xls и .xlsx")
-        }
+        val extension = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+
+        if (extension !in ALLOWED_EXTENSIONS) badRequest(Metadata.ErrorMessages.FileNotValid)
         if (fileName.length > MAX_FILE_NAME_LENGTH) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Имя файла длиннее 255 символов")
+            badRequest(Metadata.ErrorMessages.META_AI_OBJECTS_UPLOAD_FILE_NAME_TOO_LONG, MAX_FILE_NAME_LENGTH)
         }
-        if (file.isEmpty || file.size == 0L || file.size > MAX_FILE_SIZE_BYTES) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Файл пустой или превышает 20 МБ")
-        }
+        if (file.isEmpty || file.size == 0L) badRequest(Metadata.ErrorMessages.AI_UPLOAD_EMPTY_FILE)
+        if (file.size > MAX_FILE_SIZE_BYTES) badRequest(Metadata.ErrorMessages.AI_UPLOAD_MAX_FILE_SIZE)
 
         val source = Files.createTempFile("meta-ai-objects-upload-", ".$extension")
         var submitted = false
@@ -435,30 +504,33 @@ class MetaAiObjectsUploadService(
             file.inputStream.use { input ->
                 Files.newOutputStream(source).use { output -> input.copyTo(output) }
             }
-            validateMagic(source, extension)
 
-            // До создания file_upload проверяем заголовок и наличие хотя бы одной строки данных.
-            try {
-                excelReader.validateStructure(source, extension)
-            } catch (e: MetaAiObjectsInvalidFileException) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, e.message, e)
-            } catch (e: Exception) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Повреждённый Excel-файл", e)
-            }
+            validateMagic(source, extension)
+            excelReader.validateStructure(source, extension)
 
             val userId = userInfoProvider.currentUser().id
             val fileId = fileUploadStatusService.init(file, userId).id
+
             try {
                 executor.execute { importWorker.process(source, extension, fileId, userId) }
                 submitted = true
                 return fileId
             } catch (rejected: RejectedExecutionException) {
-                // Запись уже зарегистрирована отдельной транзакцией: нужно явно пометить ошибку.
-                fileUploadStatusService.updateStatus(fileId, "error", "Очередь импорта переполнена", userId)
-                throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Не удалось запустить обработку файла", rejected)
+                runCatching {
+                    fileUploadStatusService.updateStatus(fileId, "error", "Очередь загрузок переполнена", userId)
+                }.onFailure { log.error("Could not mark rejected upload as ERROR: fileId={}", fileId, it) }
+
+                throw AiResponseException(
+                    status = HttpStatus.INTERNAL_SERVER_ERROR,
+                    errorCode = Metadata.ErrorMessages.InternalServerError,
+                    message = messageProvider[Metadata.ErrorMessages.InternalServerError]
+                )
             }
         } finally {
-            if (!submitted) Files.deleteIfExists(source)
+            if (!submitted) {
+                runCatching { Files.deleteIfExists(source) }
+                    .onFailure { log.warn("Cannot delete temp upload file: {}", source, it) }
+            }
         }
     }
 
@@ -467,21 +539,30 @@ class MetaAiObjectsUploadService(
             Files.newInputStream(source).use { input ->
                 FileMagic.valueOf(FileMagic.prepareToCheckMagic(input))
             }
-        } catch (e: Exception) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Повреждённый Excel-файл", e)
+        } catch (failure: Exception) {
+            badRequest(Metadata.ErrorMessages.AI_UPLOAD_CORRUPTED_FILE)
         }
-        val matches = (extension == "xlsx" && magic == FileMagic.OOXML) ||
-            (extension == "xls" && magic == FileMagic.OLE2)
-        if (!matches) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Расширение файла не соответствует содержимому")
+
+        val matches = when (extension) {
+            "xls" -> magic == FileMagic.OLE2
+            "xlsx" -> magic == FileMagic.OOXML
+            else -> false
         }
+        if (!matches) badRequest(Metadata.ErrorMessages.FileNotValid)
     }
+
+    private fun badRequest(errorCode: String, vararg args: Any): Nothing =
+        throw AiBadRequestException(
+            errorCode = errorCode,
+            message = MessageFormat.format(messageProvider[errorCode], *args)
+        )
 
     @PreDestroy
     fun shutdown() {
         executor.shutdown()
     }
 }
+
 
 
 ```
