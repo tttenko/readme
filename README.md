@@ -1,322 +1,117 @@
 ```java
 
 
-@Repository
-interface InitiativeDeviationCountRepository : JpaRepository<AIAgentEntity, Long> {
+import org.slf4j.LoggerFactory
+import org.springframework.context.annotation.Bean
+import org.springframework.scheduling.annotation.Async
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor
+import org.springframework.stereotype.Service
+import java.nio.file.Files
+import java.nio.file.Path
 
-    @Query(
-        nativeQuery = true,
-        value = """
-            WITH candidates AS (
-                SELECT
-                    agent.id,
-                    current_status.ordering AS current_status_ordering,
-                    current_status.code AS current_status_code
-                FROM ai_agent agent
-                LEFT JOIN status current_status
-                    ON current_status.id = agent.agent_status_id
-                WHERE agent.disabled = false
-                  AND (
-                      CAST(:#{#params.userId} AS BIGINT) IS NULL
-                      OR agent.owner_id =
-                          CAST(:#{#params.userId} AS BIGINT)
-                      OR EXISTS (
-                          SELECT 1
-                          FROM agent_contact contact
-                          WHERE contact.agent_id = agent.id
-                            AND contact.user_id =
-                                CAST(:#{#params.userId} AS BIGINT)
-                      )
-                  )
-            ),
+@Service
+class MetaAiObjectsImportWorker(
+    private val reader: MetaAiObjectsExcelReader,
+    private val jiraIssueRepository: JiraIssueRepository,
+    private val applyService: MetaAiObjectsImportApplyService,
+    private val fileUploadStatusService: FileUploadStatusService
+) {
+    private val log = LoggerFactory.getLogger(javaClass)
 
-            cheap_deviations AS (
-                SELECT candidate.id
-                FROM candidates candidate
-                WHERE
+    @Bean("metaAiObjectsImportExecutor")
+    fun metaAiObjectsImportExecutor() = ThreadPoolTaskExecutor().apply {
+        corePoolSize = 1
+        maxPoolSize = 1
+        queueCapacity = 10
+        setThreadNamePrefix("meta-ai-objects-import-")
+        setWaitForTasksToCompleteOnShutdown(true)
+        setAwaitTerminationSeconds(60)
+    }
 
-                    /* STAGE_DEADLINE_EXPIRED */
-                    (
-                        :#{#params.stageDeadlineExpiredEnabled} = true
-                        AND EXISTS (
-                            SELECT 1
-                            FROM agent_status_sla sla
-                            INNER JOIN status stage_status
-                                ON stage_status.id = sla.agent_status_id
-                            WHERE sla.ai_agent_id = candidate.id
-                              AND sla.completed_date IS NULL
-                              AND stage_status.disabled = false
-                              AND stage_status.code <> 'release'
-                              AND stage_status.ordering >=
-                                  candidate.current_status_ordering
-                              AND sla.planned_date IS NOT NULL
-                              AND sla.planned_date <
-                                  :#{#params.todayStart}
-                        )
+    @Async("metaAiObjectsImportExecutor")
+    fun process(source: Path, extension: String, fileId: Long, userId: Long) {
+        try {
+            val parsed = reader.read(source, extension)
+            val errors = parsed.errors.toMutableList()
+
+            val crossgoalKeys = parsed.rows.map { it.crossgoal }.toSet()
+            val initiativeMappings = if (crossgoalKeys.isEmpty()) {
+                emptyList()
+            } else {
+                // Повторно используем существующий запрос старой загрузки КЭ.
+                // Он возвращает ВСЕ активные инициативы, связанные с CROSSGOAL.
+                jiraIssueRepository.findAgentIdsByCrossgoalKeys(crossgoalKeys)
+            }
+
+            val initiativeIdsByCrossgoal = initiativeMappings
+                .groupBy { it.jiraKey }
+                .mapValues { (_, mappings) -> mappings.map { it.agentId }.distinct() }
+
+            val rowsByInitiative = linkedMapOf<Long, MutableList<MetaAiObjectsExcelRow>>()
+
+            parsed.rows.forEach { row ->
+                val initiativeIds = initiativeIdsByCrossgoal[row.crossgoal].orEmpty()
+
+                if (initiativeIds.isEmpty()) {
+                    errors += "Строка ${row.rowNumber}: инициатива CROSSGOAL=${row.crossgoal} не найдена"
+                } else {
+                    // В отличие от прежней проверки size == 1, передаём строку
+                    // каждой найденной инициативе. Порядок строк внутри каждой
+                    // инициативы сохраняется (последняя строка с КЭ побеждает).
+                    initiativeIds.forEach { initiativeId ->
+                        rowsByInitiative.getOrPut(initiativeId) { mutableListOf() }.add(row)
+                    }
+                }
+            }
+
+            var changedTotal = 0
+
+            for ((initiativeId, initiativeRows) in rowsByInitiative) {
+                try {
+                    changedTotal += applyService.apply(initiativeId, initiativeRows, fileId, userId)
+                } catch (exception: Exception) {
+                    log.error(
+                        "Meta AI objects import failed for initiativeId={}, fileId={}",
+                        initiativeId,
+                        fileId,
+                        exception
                     )
+                    errors += "Инициатива $initiativeId: ${exception.message ?: "ошибка сохранения"}"
+                }
+            }
 
-                    OR
-
-                    /* STAGE_DEADLINES_NOT_FILLED */
-                    (
-                        :#{#params.stageDeadlinesNotFilledEnabled} = true
-                        AND EXISTS (
-                            SELECT 1
-                            FROM status stage_status
-                            LEFT JOIN agent_status_sla sla
-                                ON sla.agent_status_id = stage_status.id
-                               AND sla.ai_agent_id = candidate.id
-                            WHERE stage_status.disabled = false
-                              AND stage_status.code <> 'release'
-                              AND stage_status.ordering >=
-                                  candidate.current_status_ordering
-                              AND (
-                                  sla.ai_agent_id IS NULL
-                                  OR (
-                                      sla.completed_date IS NULL
-                                      AND sla.planned_date IS NULL
-                                  )
-                              )
-                        )
-                    )
-
-                    OR
-
-                    /* GIGAUSAGE_NOT_FILLED */
-                    (
-                        :#{#params.gigaUsageNotFilledEnabled} = true
-
-                        AND candidate.current_status_code IN (
-                            :#{#params.pilotStatus},
-                            :#{#params.targetSolutionStatus}
-                        )
-
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM jira_issue jira
-                            WHERE jira.agent_id = candidate.id
-                              AND LOWER(jira.project) =
-                                  LOWER(:#{#params.gigaUsageProject})
-                              AND NULLIF(
-                                  BTRIM(jira.jira_key),
-                                  ''
-                              ) IS NOT NULL
-                        )
-                    )
-
-                    OR
-
-                    /* ENABLERS_NOT_FILLED */
-                    (
-                        :#{#params.enablersNotFilledEnabled} = true
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM agent_enabler agent_enabler
-                            WHERE agent_enabler.agent_id =
-                                candidate.id
-                        )
-                    )
-
-                    OR
-
-                    /* STAGE_DEADLINE_TODAY */
-                    (
-                        :#{#params.stageDeadlineTodayEnabled} = true
-                        AND EXISTS (
-                            SELECT 1
-                            FROM agent_status_sla sla
-                            INNER JOIN status stage_status
-                                ON stage_status.id = sla.agent_status_id
-                            WHERE sla.ai_agent_id = candidate.id
-                              AND sla.completed_date IS NULL
-                              AND stage_status.disabled = false
-                              AND stage_status.code <> 'release'
-                              AND stage_status.ordering >=
-                                  candidate.current_status_ordering
-                              AND sla.planned_date >=
-                                  :#{#params.todayStart}
-                              AND sla.planned_date <
-                                  :#{#params.tomorrowStart}
-                        )
-                    )
-
-                    OR
-
-                    /* STAGE_DEADLINE_TOMORROW */
-                    (
-                        :#{#params.stageDeadlineTomorrowEnabled} = true
-                        AND EXISTS (
-                            SELECT 1
-                            FROM agent_status_sla sla
-                            INNER JOIN status stage_status
-                                ON stage_status.id = sla.agent_status_id
-                            WHERE sla.ai_agent_id = candidate.id
-                              AND sla.completed_date IS NULL
-                              AND stage_status.disabled = false
-                              AND stage_status.code <> 'release'
-                              AND stage_status.ordering >=
-                                  candidate.current_status_ordering
-                              AND sla.planned_date >=
-                                  :#{#params.tomorrowStart}
-                              AND sla.planned_date <
-                                  :#{#params.inTwoDaysStart}
-                        )
-                    )
-
-                    OR
-
-                    /* STAGE_DEADLINE_IN_2_DAYS */
-                    (
-                        :#{#params.stageDeadlineInTwoDaysEnabled} = true
-                        AND EXISTS (
-                            SELECT 1
-                            FROM agent_status_sla sla
-                            INNER JOIN status stage_status
-                                ON stage_status.id = sla.agent_status_id
-                            WHERE sla.ai_agent_id = candidate.id
-                              AND sla.completed_date IS NULL
-                              AND stage_status.disabled = false
-                              AND stage_status.code <> 'release'
-                              AND stage_status.ordering >=
-                                  candidate.current_status_ordering
-                              AND sla.planned_date >=
-                                  :#{#params.inTwoDaysStart}
-                              AND sla.planned_date <
-                                  :#{#params.inThreeDaysStart}
-                        )
-                    )
-
-                    OR
-
-                    /* STAGE_DEADLINE_IN_3_DAYS */
-                    (
-                        :#{#params.stageDeadlineInThreeDaysEnabled} = true
-                        AND EXISTS (
-                            SELECT 1
-                            FROM agent_status_sla sla
-                            INNER JOIN status stage_status
-                                ON stage_status.id = sla.agent_status_id
-                            WHERE sla.ai_agent_id = candidate.id
-                              AND sla.completed_date IS NULL
-                              AND stage_status.disabled = false
-                              AND stage_status.code <> 'release'
-                              AND stage_status.ordering >=
-                                  candidate.current_status_ordering
-                              AND sla.planned_date >=
-                                  :#{#params.inThreeDaysStart}
-                              AND sla.planned_date <
-                                  :#{#params.inFourDaysStart}
-                        )
-                    )
-            ),
-
-            remaining_candidates AS (
-                SELECT candidate.*
-                FROM candidates candidate
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM cheap_deviations deviation
-                    WHERE deviation.id = candidate.id
+            if (errors.isEmpty()) {
+                fileUploadStatusService.updateStatus(fileId, "success", null, userId)
+                log.info(
+                    "Meta AI objects import completed: fileId={}, changedObjects={}",
+                    fileId,
+                    changedTotal
                 )
-            ),
-
-            metric_deviations AS (
-                SELECT candidate.id
-                FROM remaining_candidates candidate
-                WHERE :#{#params.checkCurrentPeriodMetrics} = true
-
-                  /* Такое же ограничение как в showcase */
-                  AND candidate.current_status_code IN (
-                      :#{#params.pilotStatus},
-                      :#{#params.targetSolutionStatus}
-                  )
-
-                  AND EXISTS (
-                      SELECT 1
-                      FROM initiative_metric_type metric_type
-
-                      INNER JOIN metrics_directory metric
-                          ON metric.is_active IS TRUE
-                         AND (
-                             (
-                                 metric_type.agent_type = 'autonomous'
-                                 AND metric.autonomous_applicability IS TRUE
-                             )
-                             OR
-                             (
-                                 metric_type.agent_type = 'copilot'
-                                 AND metric.copilot_applicability IS TRUE
-                             )
-                             OR
-                             (
-                                 metric_type.agent_type = 'appeals'
-                                 AND metric.requires_appeals_work IS TRUE
-                             )
-                         )
-
-                      WHERE metric_type.ai_agent_id = candidate.id
-
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM initiative_metric_assignment assignment
-                            WHERE assignment.initiative_agent_type_id = metric_type.id
-                                AND assignment.metric_id = metric.id
-                                AND assignment.applicability_status <> 'ACTIVE'
-                        )
-
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM initiative_metric_value metric_value
-                            WHERE metric_value.initiative_agent_type_id =
-                                  metric_type.id
-                              AND metric_value.metric_directory_id =
-                                  metric.id
-                              AND metric_value.period_month =
-                                  :#{#params.currentPeriod}
-                              AND metric_value.metric_value IS NOT NULL
-                        )
-                  )
-            )
-
-            SELECT COUNT(*)
-            FROM (
-                SELECT id
-                FROM cheap_deviations
-
-                UNION ALL
-
-                SELECT id
-                FROM metric_deviations
-            ) initiatives_with_deviations
-        """,
-    )
-    fun countInitiativesWithDeviations(
-        @Param("params")
-        params: InitiativeDeviationCountQueryParams,
-    ): Long
+            } else {
+                val description = "Ошибок: ${errors.size}. " + errors.take(20).joinToString("; ")
+                fileUploadStatusService.updateStatus(fileId, "error", description, userId)
+                log.warn(
+                    "Meta AI objects import finished with errors: fileId={}, changedObjects={}, errors={}",
+                    fileId,
+                    changedTotal,
+                    errors.size
+                )
+            }
+        } catch (exception: Exception) {
+            log.error("Meta AI objects import failed: fileId={}", fileId, exception)
+            try {
+                fileUploadStatusService.updateStatus(fileId, "error", exception.message, userId)
+            } catch (statusException: Exception) {
+                log.error("Could not update file_upload status: fileId={}", fileId, statusException)
+            }
+        } finally {
+            try {
+                Files.deleteIfExists(source)
+            } catch (exception: Exception) {
+                log.warn("Could not delete temporary Excel: {}", source, exception)
+            }
+        }
+    }
 }
-
-data class InitiativeDeviationCountQueryParams(
-    val userId: Long?,
-    val todayStart: LocalDateTime,
-    val tomorrowStart: LocalDateTime,
-    val inTwoDaysStart: LocalDateTime,
-    val inThreeDaysStart: LocalDateTime,
-    val inFourDaysStart: LocalDateTime,
-    val currentPeriod: LocalDate,
-    val gigaUsageProject: String,
-    val pilotStatus: String,
-    val targetSolutionStatus: String,
-    val stageDeadlineExpiredEnabled: Boolean,
-    val stageDeadlinesNotFilledEnabled: Boolean,
-    val gigaUsageNotFilledEnabled: Boolean,
-    val enablersNotFilledEnabled: Boolean,
-    val stageDeadlineTodayEnabled: Boolean,
-    val stageDeadlineTomorrowEnabled: Boolean,
-    val stageDeadlineInTwoDaysEnabled: Boolean,
-    val stageDeadlineInThreeDaysEnabled: Boolean,
-    val checkCurrentPeriodMetrics: Boolean,
-)
-
 
 ```
