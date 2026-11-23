@@ -40,4 +40,35 @@ abstract class AbstractStageDeadlineStrategy(
     }
 }
 
+@Component
+class StageDeadlinesNotFilledStrategy :
+    AbstractStageDeadlineStrategy(
+        code = InitiativeDeviationCode.STAGE_DEADLINES_NOT_FILLED,
+        evaluationOrder = 20
+    ) {
+
+    override fun findMatchingInitiativeIds(
+        candidateInitiativeIds: Set<Long>,
+        session: InitiativeDeviationCalculationSession,
+        context: InitiativeDeviationEvaluationContext,
+    ): Set<Long> =
+        candidateInitiativeIds.filterTo(mutableSetOf()) { initiativeId ->
+            val currentAndFutureStatusIds = relevantStageIds(initiativeId, session)
+
+            val statusSlaByStatusId =
+                session.statusSlaByInitiativeId[initiativeId]
+                    .orEmpty()
+                    .mapNotNull { statusSla ->
+                        statusSla.primaryKey.agentStatusId
+                            ?.let { statusId -> statusId to statusSla }
+                    }
+                    .toMap()
+
+            currentAndFutureStatusIds.any { statusId ->
+                val statusSla = statusSlaByStatusId[statusId]
+                statusSla == null || (statusSla.completedDate == null && statusSla.plannedDate == null)
+            }
+        }
+}
+
 ```
