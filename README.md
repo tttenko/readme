@@ -1,14 +1,10 @@
 ```java
-@ParameterizedTest
-@ValueSource(strings = ["CMS_ADMIN", "PROJECT_OFFICE", "TRANSFORMATION_OFFICE"])
-fun `allowed roles get meta ai objects successfully`(authority: String) {
-    every { metaAiObjectsService.getMetaAiObjects(any()) } returns emptyList()
+По новой аналитике при ручном добавлении КЭ backend должен брать CROSSGOAL из инициативы и сохранять его в `initiative_meta_ai_object`.
 
-    mockMvc.perform(asUser(authority, get(OBJECTS_URL)))
-        .andExpect(status().isOk)
-        .andExpect(content().json("[]"))
+У инициативы 2439 CROSSGOAL отсутствует, поэтому КЭ не сохраняется — это соответствует текущей логике.
 
-    verify(exactly = 1) { metaAiObjectsService.getMetaAiObjects(any()) }
-}
+**Баг заключается в HTTP 500:** сейчас выбрасывается `IllegalStateException`, хотя должна возвращаться контролируемая бизнес-ошибка, например HTTP 400 с понятным сообщением.
+
+Саму логику сохранения менять не требуется.
 
 ```
